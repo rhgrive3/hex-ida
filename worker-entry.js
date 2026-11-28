@@ -92,7 +92,13 @@ export class RuntimeBootstrap extends DurableObject {
 export default {
   async scheduled(_controller, env) {
     const repo = new AuthRepository(env.AUTH_DB, env.HEX_OWNER_DISCORD_ID, Date.now);
-    await repo.pruneOAuthTransactions();
+    const results = await Promise.allSettled([
+      repo.pruneOAuthTransactions(),
+      repo.pruneSessions(),
+    ]);
+    const failures = results.filter((item) => item.status === 'rejected').map((item) => item.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Scheduled auth cleanup failed.');
   },
   async fetch(request, env, executionCtx) {
     const url = new URL(request.url);
@@ -146,7 +152,61 @@ export default {
   },
 };
 
-async function handleOpenJevSystemOne(request) {
+const OPENJEV_MAX_BODY_BYTES = 512 * 1024;
+const OPENJEV_DEFAULT_TIMEOUT_MS = 15_000;
+
+async function readBoundedOpenJevText(message, limit = OPENJEV_MAX_BODY_BYTES, { signal = null } = {}) {
+  const contentLength = message?.headers?.get?.('content-length');
+  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > limit)) {
+    const error = new Error('openjev-payload-too-large');
+    error.openJevPayloadTooLarge = true;
+    try { await message.body?.cancel?.(); } catch { /* preserve overflow classification */ }
+    throw error;
+  }
+  const body = message?.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const onAbort = () => { void reader.cancel().catch(() => {}); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        const abortError = new Error('openjev-upstream-timeout');
+        abortError.name = 'AbortError';
+        try { await reader.cancel(); } catch { /* ignore */ }
+        throw abortError;
+      }
+      const { done, value } = await reader.read();
+      if (signal?.aborted) {
+        const abortError = new Error('openjev-upstream-timeout');
+        abortError.name = 'AbortError';
+        try { await reader.cancel(); } catch { /* ignore */ }
+        throw abortError;
+      }
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      size += value.byteLength;
+      if (size > limit) {
+        const error = new Error('openjev-payload-too-large');
+        error.openJevPayloadTooLarge = true;
+        try { await reader.cancel(); } catch { /* preserve overflow classification */ }
+        throw error;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder('utf-8', { fatal: false }).decode(joined);
+}
+
+async function handleOpenJevSystemOne(request, { fetchImpl = (...args) => fetch(...args), timeoutMs = OPENJEV_DEFAULT_TIMEOUT_MS } = {}) {
   const origin = request.headers.get('origin');
   if (request.method === 'OPTIONS') return apiPreflight(origin);
   if (request.method !== 'POST') return withApiCors(methodNotAllowed('POST'), origin);
@@ -154,23 +214,40 @@ async function handleOpenJevSystemOne(request) {
   if (!/^Bearer\s+\S{4,4096}$/i.test(auth)) {
     return withApiCors(json({ error: { code: 'unauthorized', message: 'OpenJev Bearer token is required.' } }, 401), origin);
   }
-  const rawBody = await request.text();
-  if (new TextEncoder().encode(rawBody).byteLength > 512 * 1024) {
-    return withApiCors(json({ error: { code: 'payload_too_large', message: 'Request body exceeds 512 KB.' } }, 413), origin);
-  }
+  let rawBody;
   try {
-    const upstream = await fetch('https://api.openjev.sh/v1/systemone', {
+    rawBody = await readBoundedOpenJevText(request, OPENJEV_MAX_BODY_BYTES);
+  } catch (error) {
+    if (error?.openJevPayloadTooLarge) {
+      return withApiCors(json({ error: { code: 'payload_too_large', message: 'Request body exceeds 512 KB.' } }, 413), origin);
+    }
+    return withApiCors(json({ error: { code: 'invalid_request', message: 'Failed to read request body.' } }, 400), origin);
+  }
+  const controller = new AbortController();
+  const effectiveTimeout = Math.max(1, Math.floor(Number(timeoutMs) || OPENJEV_DEFAULT_TIMEOUT_MS));
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+  try {
+    const upstream = await fetchImpl('https://api.openjev.sh/v1/systemone', {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: auth },
       body: rawBody,
+      signal: controller.signal,
     });
-    const text = await upstream.text();
+    const text = await readBoundedOpenJevText(upstream, OPENJEV_MAX_BODY_BYTES, { signal: controller.signal });
     return withApiCors(new Response(text, {
       status: upstream.status,
       headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
     }), origin);
-  } catch {
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      return withApiCors(json({ error: { code: 'upstream_timeout', message: 'OpenJev upstream request timed out.' } }, 504), origin);
+    }
+    if (error?.openJevPayloadTooLarge) {
+      return withApiCors(json({ error: { code: 'upstream_payload_too_large', message: 'OpenJev upstream response exceeds 512 KB.' } }, 502), origin);
+    }
     return withApiCors(json({ error: { code: 'upstream_error', message: 'OpenJev upstream request failed.' } }, 502), origin);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -388,8 +465,8 @@ function runtimeAssetPreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
 }
-function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session, X-Hex-AI-Capability', 'access-control-max-age': '86400', vary: 'Origin' } }); }
-function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session, X-Hex-AI-Capability'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
+function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, Authorization, X-Hex-Session, X-Hex-AI-Capability', 'access-control-max-age': '86400', vary: 'Origin' } }); }
+function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, Authorization, X-Hex-Session, X-Hex-AI-Capability'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
 function appendVary(current, value) { const parts = String(current || '').split(',').map((item) => item.trim()).filter(Boolean); if (!parts.some((item) => item.toLowerCase() === value.toLowerCase())) parts.push(value); return parts.join(', '); }
 function json(body, status = 200, origin = null, extra = {}) { const headers = new Headers({ ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra }); if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); } return new Response(JSON.stringify(body), { status, headers }); }
 
@@ -398,4 +475,5 @@ export const __runtimeTest = {
   readBoundedBootstrapText,
   runtimeBootstrap,
   runtimeBootstrapAuthorityBucket,
+  handleOpenJevSystemOne,
 };
