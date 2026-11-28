@@ -1123,18 +1123,23 @@ function installRoutes(app, directFetch) {
     Object.defineProperty(routedFunctionModel, QUERY_ROUTED_FETCH, { value:directFetch });
     app._fetchFunctionModel = routedFunctionModel;
   }
+  const UI_PRESENTATION_INNER = Symbol.for('hex.uiPresentationInner');
   const original = app.analyzeFunctionAt;
-  if (typeof original === 'function' && !original?.[QUERY_ROUTED_ANALYZE]) {
+  const inner = original?.[UI_PRESENTATION_INNER] ?? original;
+  if (typeof inner === 'function' && !inner?.[QUERY_ROUTED_ANALYZE]) {
     const routedAnalyzeFunctionAt = async function routedAnalyzeFunctionAt(id, options = {}) {
-      if (!app.analysisQueries) return original.call(app, id, options);
+      if (!app.analysisQueries) return inner.call(app, id, options);
       const snapshot = await app.analysisQueries.snapshot(options);
       const result = await app.analysisQueries.function(snapshot, id, options);
       if (result.completeness === 'unsupported' || result.value == null) return null;
       applyLegacyPresentation(app, result.value);
       return result.value;
     };
-    Object.defineProperty(routedAnalyzeFunctionAt, QUERY_ROUTED_ANALYZE, { value:original.bind(app) });
+    Object.defineProperty(routedAnalyzeFunctionAt, QUERY_ROUTED_ANALYZE, { value:inner.bind(app) });
     app.analyzeFunctionAt = routedAnalyzeFunctionAt;
+    if (typeof app._reinstallPresentationWrapper === 'function') {
+      app._reinstallPresentationWrapper();
+    }
   }
 }
 

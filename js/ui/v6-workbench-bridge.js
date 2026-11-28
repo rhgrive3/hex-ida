@@ -10,7 +10,25 @@ import { detectRuntimeProfile } from '../core/budgets/runtime-profile.js';
 import { MemoryBudget } from '../core/budgets/memory-budget.js';
 import { HexDbClient } from '../cache/hexdb/hexdb-client.js';
 import { TilLiteResolver } from '../analysis/types/core/til-lite-resolver.js';
-import { TilPackManager } from '../analysis/types/core/til-pack-manager.js';
+import {
+  TilPackManager,
+  PACK_LIMITS,
+  validateCommunityMirrorUrl,
+  validateManifestPayload,
+} from '../analysis/types/core/til-pack-manager.js';
+import {
+  AUTO_ANALYSIS_STATUS,
+  isSafeAssetUrl,
+  isStrippedFunctionName,
+  normalizeVaHex,
+  safeInvokeCallback,
+} from '../analysis/common/v6-auto-contracts.js';
+import { buildAutoAnalysisProgressModel, rankStarterFunctions } from './beginner/auto-analysis-guide.js';
+import { narrateV6Enrichment } from './beginner/enrichment-narrator.js';
+import { assessPatchRisk } from './beginner/patch-risk-advisor.js';
+import { annotateGlossaryTerms, getGlossaryEntry } from './beginner/glossary-translator.js';
+import { renderBeginnerWorkflowPanel } from './beginner/beginner-workflow-panel.js';
+import { buildBeginnerFunctionCard } from './function-analysis-presentation.js';
 import { DirtyConeIndex } from '../analysis/types/core/dirty-cone.js';
 import { TypeTransactionManager } from '../analysis/types/core/type-transaction.js';
 import { GlobalTypeMap } from '../analysis/types/core/global-type-map.js';
@@ -56,24 +74,137 @@ const DEFAULT_HEXSIG_HUB_MANIFEST = Object.freeze({
   packs: [],
 });
 
-function normalizeVaHex(va) {
-  if (va == null) return null;
-  if (typeof va === 'bigint') return va >= 0n ? `0x${va.toString(16)}` : null;
-  if (typeof va === 'number') {
-    if (!Number.isSafeInteger(va) || va < 0) return null;
-    return `0x${va.toString(16)}`;
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
+const DEFAULT_HEXSIG_MANIFEST_MAX_BYTES = 1024 * 1024;
+const DEFAULT_HEXSIG_PACK_MAX_BYTES = 4 * 1024 * 1024;
+const DEFAULT_TIL_AUTO_TIMEOUT_MS = 8_000;
+
+async function _fetchBoundedBytes(url, {
+  signal = null,
+  timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+  maxBytes = PACK_LIMITS.MAX_PACK_BYTES,
+} = {}) {
+  if (!isSafeAssetUrl(url)) {
+    throw new Error('unsafe_asset_url');
   }
-  if (typeof va === 'string') {
-    const t = va.trim();
-    if (!t) return null;
-    try {
-      const b = BigInt(t);
-      return b >= 0n ? `0x${b.toString(16)}` : null;
-    } catch {
-      return null;
+  const fetchImpl = typeof globalThis.fetch === 'function' ? globalThis.fetch : null;
+  if (!fetchImpl) {
+    throw new Error('fetch_unavailable');
+  }
+  if (signal?.aborted) {
+    const abortErr = new Error('aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
+
+  const ctrl = new AbortController();
+  let timer = null;
+  const onParentAbort = () => {
+    try { ctrl.abort(); } catch { /* ignore */ }
+  };
+  if (signal && typeof signal.addEventListener === 'function') {
+    signal.addEventListener('abort', onParentAbort, { once: true });
+  }
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      try { ctrl.abort(); } catch { /* ignore */ }
+    }, timeoutMs);
+    timer.unref?.();
+  }
+
+  try {
+    const resp = await fetchImpl(url, { signal: ctrl.signal, redirect: 'error' });
+    if (!resp || !resp.ok) {
+      await resp?.body?.cancel?.().catch(() => {});
+      throw new Error(`http_${resp?.status ?? 'error'}`);
+    }
+    const contentLen = resp.headers?.get?.('content-length');
+    if (contentLen != null) {
+      const parsedLen = Number(contentLen);
+      if (Number.isFinite(parsedLen) && parsedLen > maxBytes) {
+        await resp.body?.cancel?.().catch(() => {});
+        throw new Error('response_too_large');
+      }
+    }
+    if (resp.body && typeof resp.body.getReader === 'function') {
+      const reader = resp.body.getReader();
+      const chunks = [];
+      let total = 0;
+      try {
+        for (;;) {
+          if (ctrl.signal.aborted) {
+            await reader.cancel().catch(() => {});
+            const abortErr = new Error('aborted');
+            abortErr.name = 'AbortError';
+            throw abortErr;
+          }
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+          total += chunk.byteLength;
+          if (total > maxBytes) {
+            await reader.cancel().catch(() => {});
+            throw new Error('response_too_large');
+          }
+          chunks.push(chunk);
+        }
+      } catch (err) {
+        await reader.cancel().catch(() => {});
+        throw err;
+      }
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const c of chunks) {
+        out.set(c, offset);
+        offset += c.byteLength;
+      }
+      return out;
+    }
+    if (typeof resp.arrayBuffer === 'function') {
+      const buf = await resp.arrayBuffer();
+      if (ctrl.signal.aborted) {
+        const abortErr = new Error('aborted');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+      if (buf.byteLength > maxBytes) {
+        throw new Error('response_too_large');
+      }
+      return new Uint8Array(buf);
+    }
+    throw new Error('response_unreadable');
+  } finally {
+    if (timer != null) clearTimeout(timer);
+    if (signal && typeof signal.removeEventListener === 'function') {
+      signal.removeEventListener('abort', onParentAbort);
     }
   }
-  return null;
+}
+
+function createBoundedTilFetcher(signal = null, {
+  timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+  maxBytes = PACK_LIMITS.MAX_PACK_BYTES,
+} = {}) {
+  return async (url) => {
+    const bytes = await _fetchBoundedBytes(url, { signal, timeoutMs, maxBytes });
+    return {
+      ok: true,
+      status: 200,
+      async arrayBuffer() {
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      },
+    };
+  };
+}
+
+function makeInitialAutoAnalysisState(initialStatus = AUTO_ANALYSIS_STATUS.IDLE, binaryKey = null) {
+  return {
+    binaryKey,
+    generation: 0,
+    til: { status: initialStatus, completed: 0, total: 0, loadedPacks: [], errors: [], detail: '' },
+    hexsig: { status: initialStatus, completed: 0, total: 0, scanned: 0, named: 0, detail: '' },
+    deobf: { status: initialStatus, completed: 0, total: 0, processed: 0, deobfHits: 0, stlHits: 0, detail: '' },
+  };
 }
 
 function toBigIntVa(va) {
@@ -133,7 +264,13 @@ export class V6Workbench {
     }));
 
     this.tilResolver = new TilLiteResolver();
-    this.tilPackManager = new TilPackManager({ resolver: this.tilResolver });
+    this.tilPackManager = new TilPackManager({
+      resolver: this.tilResolver,
+      fetcher: options.tilFetcher || createBoundedTilFetcher(null, {
+        timeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
+        maxBytes: PACK_LIMITS.MAX_PACK_BYTES,
+      }),
+    });
     this.dirtyCone = new DirtyConeIndex();
     this.globalTypeMap = new GlobalTypeMap();
     this.manualSegments = new ManualSegmentMap();
@@ -183,6 +320,18 @@ export class V6Workbench {
     this._activePopoverKind = null;
     this._binaryKey = null;
     this._idleTimer = null;
+
+    this._autoAnalysisConfig = options.autoAnalysis && typeof options.autoAnalysis === 'object'
+      ? { ...options.autoAnalysis }
+      : {};
+    this._autoGen = 0;
+    this._autoAbortController = null;
+    this._activeTilAbortController = null;
+    this._autoAnalysisListeners = new Set();
+    this._mountedWorkflowPanels = new Set();
+    this._autoNamedFunctions = new Map();
+    this._autoMountedTilSlots = new Map();
+    this._autoAnalysisState = makeInitialAutoAnalysisState(AUTO_ANALYSIS_STATUS.IDLE);
   }
 
   refineDecompiledCode(pseudoC, opts = {}) {
@@ -304,6 +453,7 @@ export class V6Workbench {
   runDeobfuscationPass({ funcVa, cfg = null, mbaNodes = null, opts = {} } = {}) {
     const vaHex = normalizeVaHex(funcVa) || (funcVa != null ? String(funcVa) : null);
     const passOpts = opts && typeof opts === 'object' ? opts : {};
+    const shouldCommit = passOpts.commit !== false;
 
     let cffResult = null;
     let cffRecovered = false;
@@ -313,6 +463,7 @@ export class V6Workbench {
     }
 
     const mbaResults = [];
+    const pendingAnnotations = [];
     let simplifiedCount = 0;
     let nodesEliminated = 0;
     if (Array.isArray(mbaNodes)) {
@@ -331,12 +482,16 @@ export class V6Workbench {
           simplifiedCount++;
           nodesEliminated += Number(res.stats?.nodesEliminated ?? Math.max(0, (res.origCost ?? 0) - (res.newCost ?? 0)));
           if (nodeVa) {
-            this.deobfOverlay.setAnnotation({
+            const ann = {
               insnVa: nodeVa,
               kind: DEOBF_RECORD_KIND.LOOP_DEOBF,
               source: 'bounded_abstract_vm',
               text: `MBA simplified (${res.stage || res.engine}, cost ${res.origCost ?? '?'}->${res.newCost ?? '?'})`,
-            });
+            };
+            pendingAnnotations.push(ann);
+            if (shouldCommit) {
+              this.deobfOverlay.setAnnotation(ann);
+            }
           }
         }
       }
@@ -352,13 +507,19 @@ export class V6Workbench {
     }
 
     if (vaHex && summaryParts.length > 0) {
-      const wrote = this.deobfOverlay.setAnnotation({
+      const fnAnn = {
         insnVa: vaHex,
         kind: DEOBF_RECORD_KIND.LOOP_DEOBF,
         source: 'bounded_abstract_vm',
         text: summaryParts.join(' + '),
-      });
-      if (wrote) overlayCount++;
+      };
+      pendingAnnotations.push(fnAnn);
+      if (shouldCommit) {
+        const wrote = this.deobfOverlay.setAnnotation(fnAnn);
+        if (wrote) overlayCount++;
+      } else {
+        overlayCount++;
+      }
     }
     for (const r of mbaResults) {
       if (r.simplified && r.insnVa && r.insnVa !== vaHex) overlayCount++;
@@ -376,17 +537,20 @@ export class V6Workbench {
       },
       overlayCount,
       overlayRevision: this.deobfOverlay.revision,
+      ...(shouldCommit ? {} : { pendingAnnotations }),
     };
 
-    if (vaHex) {
+    if (shouldCommit && vaHex) {
       this._deobfSummaries.set(vaHex, summary);
     }
 
     return summary;
   }
 
-  recognizeStlPattern(input = {}) {
+  recognizeStlPattern(input = {}, opts = {}) {
     const safeInput = input && typeof input === 'object' ? input : {};
+    const safeOpts = opts && typeof opts === 'object' ? opts : {};
+    const shouldCommit = safeOpts.commit !== false && safeInput.commit !== false;
     const vaHex = normalizeVaHex(safeInput.funcVa ?? safeInput.va);
     const funcKey = vaHex || (safeInput.funcKey != null ? String(safeInput.funcKey) : 'anonymous');
 
@@ -402,8 +566,9 @@ export class V6Workbench {
       normalizedInput = { ...safeInput, symbols: expanded };
     }
 
-    const result = this.stlRecognizer.recognize(funcKey, normalizedInput);
-    if (vaHex) {
+    const recognizer = shouldCommit ? this.stlRecognizer : createStlPatternRecognizer(4);
+    const result = recognizer.recognize(funcKey, normalizedInput);
+    if (shouldCommit && vaHex) {
       this._stlByFunc.set(vaHex, result);
     }
     return result;
@@ -606,6 +771,10 @@ export class V6Workbench {
     if (!rawName && typeof xref?.name === 'string' && xref.name) {
       rawName = xref.name;
     }
+    const hexsigMatch = vaHex ? (this._autoNamedFunctions.get(vaHex) || null) : null;
+    if (!rawName && typeof hexsigMatch?.newName === 'string' && hexsigMatch.newName) {
+      rawName = hexsigMatch.newName;
+    }
 
     const demangledName = rawName ? this.demangleDisplayName(rawName, safeOpts.demangleOpts || null) : null;
     const displayName = demangledName || rawName || (vaHex ? `sub_${vaHex.slice(2)}` : null);
@@ -659,8 +828,14 @@ export class V6Workbench {
         jumpTables,
         hasObjcSwift: Boolean(idx?.objcSwift),
       },
+      hexsigMatch,
       deobfOverlay: {
-        hasOverlay: Boolean(overlayAnnotation || overlaySummary),
+        hasOverlay: Boolean(
+          overlayAnnotation
+          || overlaySummary?.cffRecovered
+          || (overlaySummary?.mba?.simplifiedCount > 0)
+          || (overlaySummary?.overlayCount > 0)
+        ),
         annotation: overlayAnnotation,
         summary: overlaySummary,
       },
@@ -908,22 +1083,107 @@ export class V6Workbench {
     }
   }
 
-  onBinaryReady(fingerprint) {
+  _emitAutoAnalysisUpdate() {
+    const snap = this.getAutoAnalysisState();
+    for (const listener of [...this._autoAnalysisListeners]) {
+      safeInvokeCallback(listener, snap);
+    }
+  }
+
+  getAutoAnalysisState() {
+    const s = this._autoAnalysisState;
+    return {
+      binaryKey: s.binaryKey ?? this._binaryKey ?? null,
+      generation: s.generation,
+      til: {
+        ...s.til,
+        loadedPacks: Array.isArray(s.til.loadedPacks) ? s.til.loadedPacks.slice() : [],
+        errors: Array.isArray(s.til.errors) ? s.til.errors.slice() : [],
+      },
+      hexsig: { ...s.hexsig },
+      deobf: { ...s.deobf },
+    };
+  }
+
+  subscribeAutoAnalysis(fn) {
+    if (typeof fn !== 'function') return () => {};
+    this._autoAnalysisListeners.add(fn);
+    return () => {
+      this._autoAnalysisListeners.delete(fn);
+    };
+  }
+
+  notifyAutoAnalysisUpdate({ deobfHit = false, stlHit = false } = {}) {
+    if (deobfHit) this._autoAnalysisState.deobf.deobfHits += 1;
+    if (stlHit) this._autoAnalysisState.deobf.stlHits += 1;
+    this._emitAutoAnalysisUpdate();
+  }
+
+  cancelAutoAnalysis({ resetState = true } = {}) {
+    this._autoGen += 1;
+    if (this._idleTimer != null) {
+      clearTimeout(this._idleTimer);
+      this._idleTimer = null;
+    }
+    if (this._autoAbortController) {
+      try { this._autoAbortController.abort(); } catch { /* ignore */ }
+      this._autoAbortController = null;
+    }
+    if (this._activeTilAbortController) {
+      try { this._activeTilAbortController.abort(); } catch { /* ignore */ }
+      this._activeTilAbortController = null;
+    }
+    if (resetState) {
+      this.deobfOverlay?.clear?.();
+      this._deobfSummaries.clear();
+      this._stlByFunc.clear();
+      this.stlRecognizer?.clear?.();
+      this._autoNamedFunctions.clear();
+      this._mountedHexSigPacks.clear();
+      this.hexsigIndex = new HexSigIndex();
+      this._wasmAnalysis = null;
+      this._wasmIndex = null;
+
+      if (this._autoMountedTilSlots.size > 0 && typeof this.tilPackManager?.getMountedSlots === 'function') {
+        const slots = this.tilPackManager.getMountedSlots();
+        for (const [slot, entry] of this._autoMountedTilSlots.entries()) {
+          const slotInfo = slots ? slots[slot] : null;
+          if (slotInfo && slotInfo.packId === entry.packId && slotInfo.lastAccess === entry.lastAccess) {
+            try {
+              this.tilPackManager.unmountSlot(slot, { releaseTidBase: true });
+            } catch {
+              // Non-fatal unmount failure during reset.
+            }
+          }
+        }
+        this._autoMountedTilSlots.clear();
+      }
+    }
+  }
+
+  onBinaryReady(fingerprint, providers = null) {
     if (!fingerprint || typeof fingerprint !== 'object') return;
     const key = [
       String(fingerprint.sha256 || fingerprint.prefix || fingerprint.name || 'unknown'),
       String(fingerprint.sliceIndex ?? ''),
       String(fingerprint.uuid || fingerprint.architecture || ''),
     ].join('|');
+    const isBinarySwitch = Boolean(this._binaryKey !== null && this._binaryKey !== key);
+    const hasProviders = Boolean(providers && typeof providers === 'object');
+
+    // 4-case matrix: resetState only on binary switch; initial phase status SKIPPED without providers, IDLE with providers.
+    this.cancelAutoAnalysis({ resetState: isBinarySwitch });
     this._binaryKey = key;
-    if (this._idleTimer != null) {
-      clearTimeout(this._idleTimer);
-      this._idleTimer = null;
-    }
+    const gen = this._autoGen;
+    const initialStatus = hasProviders ? AUTO_ANALYSIS_STATUS.IDLE : AUTO_ANALYSIS_STATUS.SKIPPED;
+    this._autoAnalysisState = makeInitialAutoAnalysisState(initialStatus, key);
+    this._autoAnalysisState.generation = gen;
+    this._emitAutoAnalysisUpdate();
+
     // Deferred idle activation so loaderOpenLatency overhead is strictly +0 ms.
     this._idleTimer = setTimeout(() => {
       this._idleTimer = null;
-      if (this._binaryKey !== key) return;
+      if (gen !== this._autoGen || this._binaryKey !== key) return;
       try {
         if (!this.hexdb) this.hexdb = this._hexdbFactory();
         if (typeof this.hexdb.open === 'function') {
@@ -932,26 +1192,592 @@ export class V6Workbench {
       } catch {
         // Non-fatal fallback to in-memory analysis.
       }
+      if (hasProviders) {
+        void this._runAutoAnalysisPipeline(gen, providers).catch(() => {});
+      }
     }, 0);
     if (typeof this._idleTimer?.unref === 'function') this._idleTimer.unref();
   }
 
+  async _runAutoAnalysisPipeline(gen, providers) {
+    if (gen !== this._autoGen) return;
+    const ctrl = new AbortController();
+    this._autoAbortController = ctrl;
+    const { signal } = ctrl;
+    const cfg = this._autoAnalysisConfig || {};
+
+    try {
+      const [
+        { createTilAutoLoader },
+        { createHexSigAutoScanner },
+        { createAutoAnalysisQueue },
+      ] = await Promise.all([
+        import('../analysis/types/core/til-auto-loader.js'),
+        import('../analysis/signature/hexsig-auto-scanner.js'),
+        import('../analysis/deobf/auto-analysis-queue.js'),
+      ]);
+      if (gen !== this._autoGen || signal.aborted) return;
+
+      let binaryMeta = {};
+      try {
+        binaryMeta = (typeof providers.getBinaryMeta === 'function' ? providers.getBinaryMeta() : providers.binaryMeta) || {};
+      } catch {
+        binaryMeta = {};
+      }
+
+      // ── Phase 1: TIL Auto-Loader ──────────────────────────────────────────
+      if (gen !== this._autoGen || signal.aborted) return;
+      const tilCtrl = new AbortController();
+      this._activeTilAbortController = tilCtrl;
+      const onParentAbortForTil = () => {
+        try { tilCtrl.abort(); } catch { /* ignore */ }
+      };
+      let tilTimer = null;
+
+      try {
+        signal.addEventListener('abort', onParentAbortForTil, { once: true });
+        const tilTimeoutMs = Number.isFinite(cfg.tilTimeoutMs) ? cfg.tilTimeoutMs : DEFAULT_TIL_AUTO_TIMEOUT_MS;
+        if (tilTimeoutMs > 0) {
+          tilTimer = setTimeout(() => {
+            try { tilCtrl.abort(); } catch { /* ignore */ }
+          }, tilTimeoutMs);
+          tilTimer.unref?.();
+        }
+
+        const tilIsCommunityMirror = Boolean(providers.tilIsCommunityMirror ?? cfg.tilIsCommunityMirror);
+        const tilManifestUrl = providers.tilManifestUrl ?? cfg.tilManifestUrl ?? null;
+        const tilBaseUrl = providers.tilBaseUrl ?? cfg.tilBaseUrl ?? '';
+        let tilFetchManifest = typeof providers.tilFetchManifest === 'function'
+          ? providers.tilFetchManifest
+          : (typeof cfg.tilFetchManifest === 'function' ? cfg.tilFetchManifest : null);
+        if (!tilFetchManifest && tilManifestUrl) {
+          tilFetchManifest = async (url, opts = {}) => {
+            if (tilIsCommunityMirror) {
+              const check = validateCommunityMirrorUrl(url);
+              if (!check.ok) throw new Error(check.error || 'community_mirror_rejected');
+            }
+            const bytes = await _fetchBoundedBytes(url, {
+              signal: opts.signal || tilCtrl.signal,
+              timeoutMs: tilTimeoutMs,
+              maxBytes: PACK_LIMITS.MAX_MANIFEST_BYTES,
+            });
+            const text = new TextDecoder().decode(bytes);
+            const parsed = JSON.parse(text);
+            const validation = validateManifestPayload(parsed);
+            if (!validation.ok) throw new Error(validation.error || 'invalid_manifest');
+            return parsed;
+          };
+        }
+
+        // Isolate auto-analysis TilPackManager fetcher signal via Proxy so _accessSeq updates
+        // stay on the single underlying tilPackManager instance without prototype shadowing.
+        const customTilFetcher = typeof providers.tilFetcher === 'function'
+          ? providers.tilFetcher
+          : (typeof cfg.tilFetcher === 'function' ? cfg.tilFetcher : null);
+        const autoTilFetcher = customTilFetcher
+          ? (url, init = {}) => customTilFetcher(url, { ...init, signal: tilCtrl.signal })
+          : createBoundedTilFetcher(tilCtrl.signal, {
+            timeoutMs: tilTimeoutMs,
+            maxBytes: PACK_LIMITS.MAX_PACK_BYTES,
+          });
+        const autoTilPackManager = new Proxy(this.tilPackManager, {
+          get(target, prop) {
+            if (prop === 'fetcher') return autoTilFetcher;
+            const val = Reflect.get(target, prop, target);
+            return typeof val === 'function' ? val.bind(autoTilPackManager) : val;
+          },
+          set(target, prop, value) {
+            return Reflect.set(target, prop, value, target);
+          },
+        });
+
+        const tilLoader = createTilAutoLoader({
+          tilPackManager: autoTilPackManager,
+          fetchManifest: tilFetchManifest,
+          manifestUrl: tilManifestUrl,
+          baseUrl: tilBaseUrl,
+          isCommunityMirror: tilIsCommunityMirror,
+          maxPacks: cfg.tilMaxPacks ?? 2,
+        });
+        const tilRes = await tilLoader.run({
+          binaryMeta,
+          signal: tilCtrl.signal,
+          onProgress: (ev) => {
+            if (gen !== this._autoGen) return;
+            this._autoAnalysisState.til = {
+              ...this._autoAnalysisState.til,
+              status: ev.status,
+              completed: ev.completed ?? 0,
+              total: ev.total ?? 0,
+              detail: ev.detail ?? '',
+            };
+            this._emitAutoAnalysisUpdate();
+          },
+        });
+        if (gen !== this._autoGen) return;
+        if (Array.isArray(tilRes.mountedSlots)) {
+          for (const entry of tilRes.mountedSlots) {
+            if (entry && entry.slot && entry.packId) {
+              this._autoMountedTilSlots.set(entry.slot, {
+                packId: entry.packId,
+                lastAccess: entry.lastAccess,
+              });
+            }
+          }
+        }
+      this._autoAnalysisState.til = {
+        status: tilRes.status,
+        completed: tilRes.loadedPacks?.length ?? 0,
+        total: tilRes.selectedPacks?.length ?? tilRes.loadedPacks?.length ?? 0,
+        loadedPacks: Array.isArray(tilRes.loadedPacks) ? tilRes.loadedPacks.slice() : [],
+        errors: Array.isArray(tilRes.errors) ? tilRes.errors.slice() : [],
+        detail: tilRes.errors?.length ? String(tilRes.errors[0].reason || '') : '',
+      };
+      this._emitAutoAnalysisUpdate();
+    } catch (err) {
+      if (gen !== this._autoGen) return;
+      this._autoAnalysisState.til = {
+        ...this._autoAnalysisState.til,
+        status: signal.aborted ? AUTO_ANALYSIS_STATUS.ABORTED : AUTO_ANALYSIS_STATUS.ERROR,
+        detail: err?.message || 'til_error',
+      };
+      this._emitAutoAnalysisUpdate();
+    } finally {
+      if (tilTimer != null) clearTimeout(tilTimer);
+      signal.removeEventListener('abort', onParentAbortForTil);
+      if (this._activeTilAbortController === tilCtrl) {
+        this._activeTilAbortController = null;
+      }
+    }
+
+    // ── Phase 2: HexSig Auto-Scanner ──────────────────────────────────────
+    if (gen !== this._autoGen || signal.aborted) return;
+    try {
+      let hubLoader = providers.hexsigHubLoader ?? cfg.hexsigHubLoader ?? null;
+      const hexsigManifest = providers.hexsigManifest ?? cfg.hexsigManifest ?? null;
+      const hexsigManifestUrl = providers.hexsigManifestUrl ?? cfg.hexsigManifestUrl ?? null;
+      const hexsigBaseUrl = providers.hexsigBaseUrl ?? cfg.hexsigBaseUrl ?? '';
+      const hexsigFetchManifest = typeof providers.hexsigFetchManifest === 'function'
+        ? providers.hexsigFetchManifest
+        : (typeof cfg.hexsigFetchManifest === 'function' ? cfg.hexsigFetchManifest : null);
+      const customHexSigFetchBytes = typeof providers.hexsigFetchBytes === 'function'
+        ? providers.hexsigFetchBytes
+        : (typeof cfg.hexsigFetchBytes === 'function' ? cfg.hexsigFetchBytes : null);
+      const makeHexSigFetchBytes = () => (customHexSigFetchBytes || ((url) => _fetchBoundedBytes(url, {
+        signal,
+        timeoutMs: cfg.hexsigTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+        maxBytes: DEFAULT_HEXSIG_PACK_MAX_BYTES,
+      })));
+
+      if (!hubLoader && hexsigManifest) {
+        hubLoader = createHexSigHubLoader({
+          manifest: hexsigManifest,
+          baseUrl: hexsigBaseUrl,
+          fetchBytes: makeHexSigFetchBytes(),
+          verifySha256: cfg.hexsigVerifySha256 ?? true,
+        });
+      } else if (!hubLoader && (hexsigFetchManifest || hexsigManifestUrl)) {
+        try {
+          let manifest;
+          if (hexsigFetchManifest) {
+            manifest = await hexsigFetchManifest(hexsigManifestUrl, { signal });
+          } else {
+            const manifestBytes = await _fetchBoundedBytes(hexsigManifestUrl, {
+              signal,
+              timeoutMs: cfg.hexsigTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS,
+              maxBytes: DEFAULT_HEXSIG_MANIFEST_MAX_BYTES,
+            });
+            manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+          }
+          if (gen !== this._autoGen || signal.aborted) return;
+          const derivedBase = hexsigBaseUrl
+            || (hexsigManifestUrl ? String(hexsigManifestUrl).replace(/[^/]*$/, '') : '');
+          hubLoader = createHexSigHubLoader({
+            manifest,
+            baseUrl: derivedBase,
+            fetchBytes: makeHexSigFetchBytes(),
+            verifySha256: cfg.hexsigVerifySha256 ?? true,
+          });
+        } catch (manifestErr) {
+          if (gen !== this._autoGen || signal.aborted) return;
+          if (!this.hexsigIndex?.entries?.length) {
+            this._autoAnalysisState.hexsig = {
+              status: AUTO_ANALYSIS_STATUS.OFFLINE,
+              completed: 0,
+              total: 0,
+              scanned: 0,
+              named: 0,
+              detail: manifestErr?.message || 'manifest_fetch_failed',
+            };
+            this._emitAutoAnalysisUpdate();
+            hubLoader = null;
+          }
+        }
+      }
+
+      if (this._autoAnalysisState.hexsig.status !== AUTO_ANALYSIS_STATUS.OFFLINE) {
+        const functions = typeof providers.getFunctions === 'function'
+          ? (providers.getFunctions() || [])
+          : (Array.isArray(providers.functions) ? providers.functions : []);
+        const readFunctionBytes = typeof providers.readFunctionBytes === 'function'
+          ? providers.readFunctionBytes
+          : null;
+
+        const scanner = createHexSigAutoScanner({
+          hexSigIndex: this.hexsigIndex,
+          hubLoader,
+          mountPack: (loaded) => this.mountHexSigPack(loaded.rawBytes, loaded.meta),
+          isPackMounted: (packId) => this._mountedHexSigPacks.has(packId),
+          extractQuery: cfg.hexsigExtractQuery || null,
+          chunkSize: cfg.hexsigChunkSize ?? 32,
+          maxBudgetMs: cfg.hexsigMaxBudgetMs ?? 800,
+          maxPacks: cfg.hexsigMaxPacks ?? 2,
+          yieldFn: cfg.yieldFn || null,
+          nowFn: cfg.nowFn || (() => Date.now()),
+        });
+
+        const hexRes = await scanner.run({
+          binaryMeta,
+          functions,
+          readFunctionBytes,
+          signal,
+          onBatchNamed: (batch) => {
+            if (gen !== this._autoGen || signal.aborted) return;
+            let accepted = batch;
+            if (typeof providers.onAutoNamedBatch === 'function') {
+              try {
+                const res = providers.onAutoNamedBatch(batch);
+                if (Array.isArray(res)) accepted = res;
+              } catch {
+                accepted = [];
+              }
+            }
+            for (const m of accepted) {
+              const vaHex = normalizeVaHex(m?.vaHex);
+              if (vaHex && m?.newName) {
+                this._autoNamedFunctions.set(vaHex, m);
+              }
+            }
+          },
+          onProgress: (ev) => {
+            if (gen !== this._autoGen) return;
+            this._autoAnalysisState.hexsig = {
+              ...this._autoAnalysisState.hexsig,
+              status: ev.status,
+              completed: ev.completed ?? 0,
+              total: ev.total ?? 0,
+              detail: ev.detail ?? '',
+            };
+            this._emitAutoAnalysisUpdate();
+          },
+        });
+
+        if (gen !== this._autoGen) return;
+        this._autoAnalysisState.hexsig = {
+          status: hexRes.status,
+          completed: hexRes.scanned ?? 0,
+          total: Math.max(functions.length, hexRes.scanned ?? 0),
+          scanned: hexRes.scanned ?? 0,
+          named: this._autoNamedFunctions.size,
+          detail: hexRes.errors?.length ? String(hexRes.errors[0].reason || '') : '',
+        };
+        this._emitAutoAnalysisUpdate();
+      }
+    } catch (err) {
+      if (gen !== this._autoGen) return;
+      this._autoAnalysisState.hexsig = {
+        ...this._autoAnalysisState.hexsig,
+        status: signal.aborted ? AUTO_ANALYSIS_STATUS.ABORTED : AUTO_ANALYSIS_STATUS.ERROR,
+        detail: err?.message || 'hexsig_error',
+      };
+      this._emitAutoAnalysisUpdate();
+    }
+
+    // ── Phase 3: CFF/MBA/STL Auto-Analysis Queue ──────────────────────────
+    if (gen !== this._autoGen || signal.aborted) return;
+    try {
+      const candidates = typeof providers.getDeobfCandidates === 'function'
+        ? (providers.getDeobfCandidates() || [])
+        : (Array.isArray(providers.deobfCandidates) ? providers.deobfCandidates : []);
+      const loadCandidateInput = typeof providers.loadDeobfCandidateInput === 'function'
+        ? providers.loadDeobfCandidateInput
+        : null;
+
+      const queue = createAutoAnalysisQueue({
+        runDeobfuscationPass: (args) => this.runDeobfuscationPass({
+          ...args,
+          opts: { ...(args?.opts || {}), commit: false },
+        }),
+        recognizeStlPattern: (input, opts) => this.recognizeStlPattern(input, {
+          ...(opts || {}),
+          commit: false,
+        }),
+        maxBudgetMs: cfg.deobfMaxBudgetMs ?? 1200,
+        maxFunctions: cfg.deobfMaxFunctions ?? 64,
+        maxMemoryBytes: cfg.deobfMaxMemoryBytes ?? (16 * 1024 * 1024),
+        estimateMemoryBytes: cfg.deobfEstimateMemoryBytes || null,
+        yieldFn: cfg.yieldFn || null,
+        nowFn: cfg.nowFn || (() => Date.now()),
+      });
+
+      const queueRes = await queue.run({
+        candidates,
+        loadCandidateInput,
+        signal,
+        generation: gen,
+        getCurrentGeneration: () => this._autoGen,
+        onResult: ({ vaHex, deobf, stl, deobfHit, stlHit }) => {
+          if (gen !== this._autoGen || signal.aborted || !vaHex) return;
+          const hasDeobfHit = Boolean(
+            deobfHit
+            || deobf?.cffRecovered
+            || (deobf?.mba?.simplifiedCount > 0)
+            || (deobf?.overlayCount > 0)
+            || (deobf?.pendingAnnotations?.length > 0),
+          );
+          if (hasDeobfHit && deobf && typeof deobf === 'object') {
+            if (Array.isArray(deobf.pendingAnnotations)) {
+              for (const ann of deobf.pendingAnnotations) {
+                this.deobfOverlay.setAnnotation(ann);
+              }
+            }
+            const committed = {
+              ...deobf,
+              overlayRevision: this.deobfOverlay.revision,
+            };
+            delete committed.pendingAnnotations;
+            this._deobfSummaries.set(vaHex, committed);
+          }
+          if ((stlHit || stl?.recognized === true) && stl && typeof stl === 'object') {
+            this._stlByFunc.set(vaHex, stl);
+          }
+        },
+        onProgress: (ev) => {
+          if (gen !== this._autoGen) return;
+          this._autoAnalysisState.deobf = {
+            ...this._autoAnalysisState.deobf,
+            status: ev.status,
+            completed: ev.completed ?? 0,
+            total: ev.total ?? 0,
+            detail: ev.detail ?? '',
+          };
+          this._emitAutoAnalysisUpdate();
+        },
+      });
+
+      if (gen !== this._autoGen) return;
+      this._autoAnalysisState.deobf = {
+        status: queueRes.status,
+        completed: queueRes.processed ?? 0,
+        total: Math.max(candidates.length, queueRes.processed ?? 0),
+        processed: queueRes.processed ?? 0,
+        deobfHits: queueRes.deobfHits ?? 0,
+        stlHits: queueRes.stlHits ?? 0,
+        detail: queueRes.errors?.length ? String(queueRes.errors[0].reason || '') : '',
+      };
+      this._emitAutoAnalysisUpdate();
+    } catch (err) {
+      if (gen !== this._autoGen) return;
+      this._autoAnalysisState.deobf = {
+        ...this._autoAnalysisState.deobf,
+        status: signal.aborted ? AUTO_ANALYSIS_STATUS.ABORTED : AUTO_ANALYSIS_STATUS.ERROR,
+        detail: err?.message || 'deobf_error',
+      };
+      this._emitAutoAnalysisUpdate();
+    }
+    } finally {
+      if (gen === this._autoGen && this._autoAbortController === ctrl) {
+        this._autoAbortController = null;
+      }
+    }
+  }
+
+  getBeginnerAutoGuide({ limit = 5, functions = null } = {}) {
+    const progress = buildAutoAnalysisProgressModel(this.getAutoAnalysisState());
+    let fnList = Array.isArray(functions) ? functions : null;
+    if (!fnList) {
+      try {
+        const rawList = this.app?.symbols?.functionList?.();
+        fnList = Array.isArray(rawList) ? rawList : [];
+      } catch {
+        fnList = [];
+      }
+    }
+
+    const enrichmentsByVa = new Map();
+    const candidateVas = new Set();
+    const maxCandidates = 64;
+    const addCandidate = (va) => {
+      if (candidateVas.size >= maxCandidates) return;
+      const vaHex = normalizeVaHex(va);
+      if (vaHex) candidateVas.add(vaHex);
+    };
+
+    for (const k of this._deobfSummaries.keys()) addCandidate(k);
+    for (const k of this._stlByFunc.keys()) addCandidate(k);
+    for (const k of this._autoNamedFunctions.keys()) addCandidate(k);
+    if (this._wasmIndex?.xrefByFunc) {
+      for (const k of this._wasmIndex.xrefByFunc.keys()) addCandidate(k);
+    }
+    if (candidateVas.size < maxCandidates && fnList.length > 0) {
+      const preRanked = rankStarterFunctions(fnList, { limit: maxCandidates });
+      for (const item of preRanked) {
+        if (candidateVas.size >= maxCandidates) break;
+        addCandidate(item?.vaHex);
+      }
+      for (let i = 0; i < fnList.length && candidateVas.size < maxCandidates; i++) {
+        const fn = fnList[i];
+        addCandidate(fn?.vaHex ?? fn?.va ?? fn?.start ?? fn?.startAddr ?? fn?.address ?? fn?.addr);
+      }
+    }
+    for (const vaHex of candidateVas) {
+      enrichmentsByVa.set(vaHex, this.getFunctionEnrichment(vaHex));
+    }
+
+    const starterFunctions = rankStarterFunctions(fnList, { limit, enrichmentsByVa });
+    return { progress, starterFunctions };
+  }
+
+  getBeginnerFunctionGuide(funcVa, opts = {}) {
+    const vaHex = normalizeVaHex(funcVa);
+    const enrichment = this.getFunctionEnrichment(funcVa, opts);
+    const narration = narrateV6Enrichment(enrichment, {
+      rawName: opts?.rawName ?? enrichment?.rawName ?? null,
+    });
+
+    let instructions = Array.isArray(opts?.instructions) ? opts.instructions : null;
+    let cfg = opts?.cfg ?? null;
+    if (!instructions || !cfg) {
+      const semRes = this.app?.semantic?.result || null;
+      const curModel = this.app?.semantic?.model || semRes?.model || null;
+      const curVa = normalizeVaHex(
+        semRes?.model?.startAddress ?? semRes?.startAddress ?? semRes?.startAddr ?? curModel?.startAddress,
+      );
+      if (vaHex && curVa === vaHex) {
+        if (!instructions && Array.isArray(curModel?.instructions)) {
+          instructions = curModel.instructions;
+        }
+        if (!cfg) {
+          cfg = semRes?.pipeline?.cfg ?? curModel?.__canonicalCfg ?? null;
+        }
+      }
+    }
+
+    const patchRisk = assessPatchRisk({
+      instructions,
+      cfg,
+      deobfOverlay: enrichment?.deobfOverlay ?? null,
+      wasmHints: enrichment?.wasmHints ?? null,
+      isSystemLibrary: Boolean(enrichment?.hexsigMatch || enrichment?.tilSignature),
+    });
+
+    const keySet = new Set();
+    const glossaryEntries = [];
+    const addKey = (k) => {
+      if (typeof k !== 'string' || !k || keySet.has(k)) return;
+      const entry = getGlossaryEntry(k);
+      if (entry) {
+        keySet.add(k);
+        glossaryEntries.push(entry);
+      }
+    };
+    for (const k of narration.glossaryKeys || []) addKey(k);
+    for (const k of patchRisk.glossaryKeys || []) addKey(k);
+    const textForTerms = [...(narration.summaryLines || []), ...(narration.highlights || [])].join(' ');
+    for (const k of annotateGlossaryTerms(textForTerms).matchedKeys || []) addKey(k);
+
+    return {
+      vaHex,
+      enrichment,
+      narration,
+      patchRisk,
+      glossaryEntries,
+    };
+  }
+
+  mountBeginnerWorkflowPanel(container, opts = {}) {
+    let activeFuncVa = normalizeVaHex(opts?.activeFuncVa ?? null);
+    let destroyed = false;
+
+    const buildModel = () => {
+      const { progress, starterFunctions } = this.getBeginnerAutoGuide({
+        limit: opts?.limit ?? 5,
+        functions: opts?.functions ?? null,
+      });
+      let activeCard = null;
+      let patchRisk = null;
+      let glossaryEntries = [];
+      if (activeFuncVa) {
+        const guide = this.getBeginnerFunctionGuide(activeFuncVa);
+        patchRisk = guide.patchRisk;
+        glossaryEntries = guide.glossaryEntries;
+        const semRes = this.app?.semantic?.result || null;
+        const curVa = normalizeVaHex(
+          semRes?.model?.startAddress ?? semRes?.startAddress ?? semRes?.startAddr ?? this.app?.semantic?.model?.startAddress,
+        );
+        if (semRes && curVa === activeFuncVa) {
+          activeCard = buildBeginnerFunctionCard(semRes, null, { v6Enrichment: guide.enrichment });
+        } else {
+          activeCard = {
+            headline: guide.narration.displayName || activeFuncVa,
+            whatItDoes: guide.narration.summaryLines,
+            patchImpact: guide.patchRisk?.cautions?.[0] || '',
+            v6Highlights: guide.narration.highlights,
+            patchRisk: guide.patchRisk,
+            glossaryMatches: guide.glossaryEntries.map((e) => e.key),
+          };
+        }
+      }
+      return {
+        progress,
+        starterFunctions,
+        activeCard,
+        patchRisk,
+        glossaryEntries,
+      };
+    };
+
+    const panelHandle = renderBeginnerWorkflowPanel(container, buildModel(), {
+      doc: opts?.doc ?? null,
+      onSelectFunction: opts?.onSelectFunction ?? null,
+      onSelectGlossary: opts?.onSelectGlossary ?? null,
+    });
+
+    const update = () => {
+      if (destroyed) return;
+      panelHandle.update(buildModel());
+    };
+
+    const unsubscribe = this.subscribeAutoAnalysis(() => {
+      update();
+    });
+
+    const handle = {
+      update,
+      setActiveFunction(funcVa) {
+        if (destroyed) return;
+        activeFuncVa = normalizeVaHex(funcVa);
+        update();
+      },
+      destroy() {
+        if (destroyed) return;
+        destroyed = true;
+        unsubscribe();
+        panelHandle.destroy();
+        self._mountedWorkflowPanels.delete(handle);
+      },
+    };
+    const self = this;
+    this._mountedWorkflowPanels.add(handle);
+    return handle;
+  }
+
   detach() {
     this.closeActivePopover();
+    this.cancelAutoAnalysis({ resetState: true });
     this._binaryKey = null;
-    if (this._idleTimer != null) {
-      clearTimeout(this._idleTimer);
-      this._idleTimer = null;
-    }
-    this.deobfOverlay?.clear?.();
     this.dirtyCone?.clear?.();
     this.typeTx?.clear?.();
-    this.stlRecognizer?.clear?.();
-    this._deobfSummaries.clear();
-    this._stlByFunc.clear();
-    this._mountedHexSigPacks.clear();
-    this._wasmAnalysis = null;
-    this._wasmIndex = null;
     if (this.hexdb) {
       try {
         if (typeof this.hexdb.close === 'function') void Promise.resolve(this.hexdb.close()).catch(() => {});
@@ -959,6 +1785,18 @@ export class V6Workbench {
         // Ignore close errors during detach.
       }
     }
+    this._autoAnalysisState = makeInitialAutoAnalysisState(AUTO_ANALYSIS_STATUS.IDLE);
+    this._autoAnalysisState.generation = this._autoGen;
+    this._emitAutoAnalysisUpdate();
+  }
+
+  dispose() {
+    this.detach();
+    for (const handle of [...this._mountedWorkflowPanels]) {
+      try { handle.destroy(); } catch { /* ignore */ }
+    }
+    this._mountedWorkflowPanels.clear();
+    this._autoAnalysisListeners.clear();
   }
 }
 
