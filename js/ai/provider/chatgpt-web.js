@@ -29,8 +29,12 @@ export class ChatGPTWebProvider extends AIProvider {
       if (options.signal.aborted) onAbort();
     }
     this.controllers.add(controller);
+    let timeoutTimer = null;
     try {
       const timeoutMs = explicitTimeout(options.timeoutMs);
+      if (timeoutMs != null) {
+        timeoutTimer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+      }
       const response = await this.bridge.request(buildChatGPTTurnPrompt(request), {
         signal: controller.signal,
         ...(timeoutMs == null ? {} : { timeoutMs }),
@@ -70,6 +74,7 @@ export class ChatGPTWebProvider extends AIProvider {
         runtimeBuildId: runtimeBuildId(),
       });
     } finally {
+      if (timeoutTimer != null) clearTimeout(timeoutTimer);
       this.controllers.delete(controller);
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
     }
@@ -111,6 +116,7 @@ export class UserscriptAIProvider extends AIProvider {
     super();
     this.chatgpt = new ChatGPTWebProvider({ bridge });
     this.gemini = new WorkerAIProvider({ endpoint: workerEndpoint, fetchImpl, timeoutMs });
+    this._selectionSeq = 0;
   }
 
   selected(request = {}) {
@@ -137,7 +143,10 @@ export class UserscriptAIProvider extends AIProvider {
   // prepared: ChatGPT reflects the bridge directly, Gemini runs its
   // capabilities preflight once (memoized in WorkerAIProvider).
   async prepareCapabilities(options = {}) {
-    this.providerCapabilities = { ...this.providerCapabilities, ...(await this.chatgpt.prepareCapabilities(options) || {}), ...(await this.gemini.prepareCapabilities(options) || {}) };
+    await Promise.allSettled([
+      this.chatgpt.prepareCapabilities(options),
+      this.gemini.prepareCapabilities(options),
+    ]);
     return this.getCapabilities();
   }
 
@@ -152,12 +161,23 @@ export class UserscriptAIProvider extends AIProvider {
   }
 
   async capabilities(options = {}) {
-    const chatgpt = this.bridgeCapabilities(options);
-    const gemini = this.geminiAvailability(options);
+    const [chatgptResult, geminiResult] = await Promise.allSettled([
+      this.bridgeCapabilities(options),
+      this.geminiAvailability(options),
+    ]);
+    const bridgeCaps = chatgptResult.status === 'fulfilled' && chatgptResult.value && typeof chatgptResult.value === 'object' && !Array.isArray(chatgptResult.value)
+      ? chatgptResult.value
+      : {};
+    const geminiCaps = geminiResult.status === 'fulfilled' && geminiResult.value && typeof geminiResult.value === 'object'
+      ? geminiResult.value
+      : { available: false, configured: null };
+    const chatgptAvailable = typeof bridgeCaps.available === 'boolean'
+      ? (this.chatgpt.available() && bridgeCaps.available)
+      : this.chatgpt.available();
     return {
       providers: [
-        { id: 'chatgpt-web', displayName: 'ChatGPT Web', available: this.chatgpt.available(), ...(await chatgpt) },
-        { id: 'gemini', displayName: 'Gemini', ...(await gemini) },
+        { ...bridgeCaps, id: 'chatgpt-web', displayName: 'ChatGPT Web', available: chatgptAvailable },
+        { id: 'gemini', displayName: 'Gemini', ...geminiCaps },
       ],
     };
   }
@@ -176,20 +196,25 @@ export class UserscriptAIProvider extends AIProvider {
   status() {
     const bridge = this.chatgpt.bridge;
     const chatgpt = bridge?.status?.() || { ready: false };
-    const provider = canonicalProviderId();
+    let provider = 'chatgpt-web';
+    try { provider = canonicalProviderId(); } catch { provider = 'chatgpt-web'; }
     return { provider, ready: provider === 'gemini' ? this.gemini.configured === true : !!chatgpt.ready, busy: !!chatgpt.busy, selection: chatgpt.selection || null, chatgpt };
   }
 
   getSelection() {
-    const provider = canonicalProviderId();
+    let provider = 'chatgpt-web';
+    try { provider = canonicalProviderId(); } catch { provider = 'chatgpt-web'; }
     return { provider, ...(provider === 'chatgpt-web' ? (this.chatgpt.bridge?.getSelection?.() || {}) : {}) };
   }
 
   async setSelection(selection = {}, options = {}) {
+    const seq = ++this._selectionSeq;
     const provider = canonicalProviderId(selection.provider);
     if (provider === 'gemini') {
-      globalThis.__HEX_AI_PROVIDER__ = provider;
-      try { globalThis.localStorage?.setItem?.('hex.ai.provider', provider); } catch { /* private mode */ }
+      if (seq === this._selectionSeq) {
+        globalThis.__HEX_AI_PROVIDER__ = provider;
+        try { globalThis.localStorage?.setItem?.('hex.ai.provider', provider); } catch { /* private mode */ }
+      }
       return { provider: 'gemini', model: null, reasoning: null };
     }
     if (typeof this.chatgpt.bridge?.setSelection !== 'function') throw new AIError('provider_error', 'ChatGPT Web model selection is unavailable.');
@@ -197,8 +222,10 @@ export class UserscriptAIProvider extends AIProvider {
     // succeeded: a failed selection must leave the previous provider active
     // instead of persisting 'chatgpt' on its own (#5455).
     const selected = await this.chatgpt.bridge.setSelection(selection, options);
-    globalThis.__HEX_AI_PROVIDER__ = 'chatgpt';
-    try { globalThis.localStorage?.setItem?.('hex.ai.provider', 'chatgpt'); } catch { /* private mode */ }
+    if (seq === this._selectionSeq) {
+      globalThis.__HEX_AI_PROVIDER__ = 'chatgpt';
+      try { globalThis.localStorage?.setItem?.('hex.ai.provider', 'chatgpt'); } catch { /* private mode */ }
+    }
     return { provider: 'chatgpt-web', ...selected };
   }
 }
@@ -238,7 +265,10 @@ export function buildChatGPTTurnPrompt(request = {}) {
 }
 
 export function parseChatGPTDecision(value) {
-  if (value && typeof value === 'object') return value;
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value)) throw new AIError('invalid_model_output', 'ChatGPT Web returned a non-object JSON value.');
+    return value;
+  }
   let text = String(value ?? '').trim();
   if (!text) throw new AIError('invalid_model_output', 'ChatGPT Web returned an empty response.');
 
@@ -374,5 +404,11 @@ function explicitTimeout(value) {
 function apiEndpoint(path) {
   const base = globalThis.__HEX_API_BASE__;
   if (!base) return path;
-  try { return new URL(path, base).href; } catch { return path; }
+  try {
+    const url = new URL(path, base);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return path;
+    return url.href;
+  } catch {
+    return path;
+  }
 }
