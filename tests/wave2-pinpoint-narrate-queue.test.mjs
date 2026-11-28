@@ -203,3 +203,25 @@ test('auto-analysis-queue: prioritizeDeobfCandidates merges tags and reasons bid
   assert.deepEqual(res2[0].reasons, ['r-cff', 'r-dup', 'r-stl']);
   assert.equal(res2[0].priorityScore, singleHigh.priorityScore, 'score must remain existing higher priorityScore');
 });
+
+test('guardedAnalyze: bounded 512-entry cache evicts oldest entry on 513th distinct key', async () => {
+  let calls = 0;
+  const rawAnalyze = async (addr, end) => {
+    calls++;
+    return { addr, end, calls };
+  };
+  const shapes = {};
+  const wrapped = __guardedAnalyzeForTest(rawAnalyze, { shapes, maxUniqueAnalyses: 1000 });
+  for (let i = 0; i < 513; i++) {
+    await wrapped(BigInt(0x1000 + i * 4), BigInt(0x1004 + i * 4));
+  }
+  assert.equal(calls, 513);
+
+  const hitRes = await wrapped(0x1004n, 0x1008n);
+  assert.equal(calls, 513);
+  assert.equal(hitRes.addr, 0x1004n);
+
+  const evictedRes = await wrapped(0x1000n, 0x1004n);
+  assert.equal(calls, 514);
+  assert.equal(evictedRes.addr, 0x1000n);
+});

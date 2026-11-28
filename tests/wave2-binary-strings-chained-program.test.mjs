@@ -82,9 +82,8 @@ test('scanSourceStrings UTF-16LE: ASCII strings emit no parity-1 CJK shadow and 
     new Uint8Array([0, 0]),
   );
   const res = await scanSourceStrings(makeFakeImage(raw.length), makeBufferSource(raw), {
-    min: 4,
+    minLength: 4,
     utf16: 'utf16le',
-    blockSize: 64,
   });
   const utf16 = res.results.filter((s) => s.encoding === 'utf16le');
   assert.deepEqual(utf16.map((s) => s.text), ['ABCD', 'EFGH']);
@@ -101,9 +100,8 @@ test('scanSourceStrings UTF-16LE: parity-1 odd-offset string after many parity-0
   const raw = concatBytes(...parts);
 
   const all = await scanSourceStrings(makeFakeImage(raw.length), makeBufferSource(raw), {
-    min: 4,
+    minLength: 4,
     utf16: 'utf16le',
-    blockSize: 1024,
   });
   const utf16All = all.results.filter((s) => s.encoding === 'utf16le');
   assert.ok(utf16All.some((s) => s.text === 'ODDSTR' && (s.fileOffset & 1n) === 1n));
@@ -118,16 +116,31 @@ test('scanSourceStrings UTF-16LE: parity-1 odd-offset string after many parity-0
     new Uint8Array([0, 0]),
   );
   const limited = await scanSourceStrings(makeFakeImage(fairRaw.length), makeBufferSource(fairRaw), {
-    min: 4,
+    minLength: 4,
     utf16: 'utf16le',
     limit: 1,
-    blockSize: 64,
   });
   const utf16Limited = limited.results.filter((s) => s.encoding === 'utf16le');
   assert.equal(utf16Limited.length, 1);
   assert.equal(utf16Limited[0].text, 'FIRST1');
   assert.equal(limited.capped, true);
 });
+
+function makeChunkedSource(bytes, maxReadLength) {
+  const base = makeBufferSource(bytes);
+  let reads = 0;
+  return {
+    get reads() { return reads; },
+    source: {
+      size: base.size,
+      maxReadLength,
+      async read(offset, length) {
+        reads++;
+        return base.read(offset, length);
+      },
+    },
+  };
+}
 
 test('scanSourceStrings UTF-16LE: cross-block boundary extraction preserves string without duplicating seen spans', async () => {
   const raw = concatBytes(
@@ -138,13 +151,44 @@ test('scanSourceStrings UTF-16LE: cross-block boundary extraction preserves stri
     encodeUtf16LE('ODDCROSS'),
     new Uint8Array([0, 0]),
   );
-  const res = await scanSourceStrings(makeFakeImage(raw.length), makeBufferSource(raw), {
-    min: 4,
+  const chunked = makeChunkedSource(raw, 10);
+  const res = await scanSourceStrings(makeFakeImage(raw.length), chunked.source, {
+    minLength: 4,
     utf16: 'utf16le',
-    blockSize: 10,
   });
+  assert.ok(chunked.reads > 1, `expected multi-block reads, got ${chunked.reads}`);
   const utf16 = res.results.filter((s) => s.encoding === 'utf16le');
   assert.deepEqual(utf16.map((s) => s.text), ['CROSSBLOCK', 'ODDCROSS']);
+});
+
+test('scanSourceStrings UTF-16LE: cross-block odd-offset ASCII string is not eclipsed by parity-0 CJK shadow', async () => {
+  const raw = new Uint8Array([0x00, 0x41, 0x00, 0x42, 0x00, 0x43, 0x00, 0x44, 0x00, 0x00, 0x00]);
+  const chunked = makeChunkedSource(raw, 10);
+  const res = await scanSourceStrings(makeFakeImage(raw.length), chunked.source, {
+    minLength: 4,
+    utf16: 'utf16le',
+  });
+  assert.ok(chunked.reads > 1, `expected multi-block reads, got ${chunked.reads}`);
+  const utf16 = res.results.filter((s) => s.encoding === 'utf16le');
+  assert.deepEqual(utf16.map((s) => s.text), ['ABCD']);
+  assert.equal(utf16[0].fileOffset, 1n);
+});
+
+test('scanSourceStrings UTF-16LE: trailing string after non-ASCII string and opposite-parity unfinished carry is not dropped', async () => {
+  const raw = concatBytes(
+    encodeUtf16LE('猫犬鳥魚'),
+    new Uint8Array([0, 0]),
+    encodeUtf16LE('AfterBoundary'),
+    new Uint8Array([0, 0]),
+  );
+  const chunked = makeChunkedSource(raw, 12);
+  const res = await scanSourceStrings(makeFakeImage(raw.length), chunked.source, {
+    minLength: 4,
+    utf16: 'utf16le',
+  });
+  assert.ok(chunked.reads > 1, `expected multi-block reads, got ${chunked.reads}`);
+  const utf16 = res.results.filter((s) => s.encoding === 'utf16le');
+  assert.deepEqual(utf16.map((s) => s.text), ['猫犬鳥魚', 'AfterBoundary']);
 });
 
 test('chained.js stubSlot: decodes ARM64e ADRP + ADD (imm64) + LDR, Xd!==Xn, rd===31 guards, and preserves base on unrelated ADD', () => {
