@@ -108,7 +108,7 @@ export const GOALS = [
       /(?:frame|sample|bit|refresh|baud|heart|tick|error|hit|miss|deceleration|data|sampling|polling)[\s_-]*rate/i,
       /enumerate[\s_-]*interfaces/i,
       /draw[\s_-]*(?:call|rect|in[\s_-]*rect|mesh|sprite|text|image|line|path|layer|buffer|pass|order|mode|index(?:ed)?|array|element|primitive|vertex|quad|triangle|canvas|context|surface|texture|shadow|view|node|gizmo|batch)/i,
-      /(?:MarketingAd|AdUnit|AdView|AdBanner|AdInterstitial|AdRewarded)\w*.*\bdraw\b/i,
+      /(?:MarketingAd|AdUnit|AdView|AdBanner|AdInterstitial|AdRewarded)\w*.*draw\b/i,
     ],
     expects: { numeric: true, call: true },
   },
@@ -194,7 +194,7 @@ export const GOALS = [
     weak: [/upgrade/i, /grow/i, /rank/i, /強化/, /育成/],
     avoid: [
       /(?:log|verbosity|battery|zoom|compression|mip(?:map)?|window|api|feature|debug|error|warning|trace|severity|nesting|indent|low)[\s_-]*level/i,
-      /(?:MarketingAd|Ad|Log|Logger|Trace|Debug|Console|Severity)\w*Error.*\blevel\b/i,
+      /(?:MarketingAd|Ad|Log|Logger|Trace|Debug|Console|Severity)\w*Error.*level\b/i,
       /\b(?:alloc(?:ator)?|prev->levels|even one level|level\s*>=\s*1|skiplist\w*)\b|lla_skiplist\w*/i,
       /(?:crank|frank|prank|drank|shrank)/i,
       /^_*(?:exp|exp2|exp10|expm1|frexp|ldexp)$/i,
