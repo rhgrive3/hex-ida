@@ -40,7 +40,7 @@ For two-step execution, call `decompile(model, { ...options, phase8PrepareProof:
 - Admits only unconditional, total, pure bitvector (BV) expressions with a solver-proved scalar result: integer `add`/`sub`/`mul`/bitwise/shifts, pure comparisons, selection, extraction/concatenation, and explicit native-width casts within 1–64 bits.
 - Refuses loads, stores, calls, division, partial semantics, unsupported sorts, nonempty preconditions, and input renamings.
 - This is **scalar value projection**, not whole-machine observable equivalence. Architectural register/memory effects, traps, faults, calls, and atomic ordering remain in canonical IR.
-- Display lowering binds directly to translator-owned SSA inputs (`phase8.solver-constants` v2.3.0; `solver-scalar` for nonconstant proved terms, `solver-constant` for constants). Explicit C casts/masks preserve native integer promotion and odd BV widths.
+- Display lowering binds directly to translator-owned SSA inputs (`phase8.solver-constants` v2.10.0; `solver-scalar` for nonconstant proved terms, `solver-constant` for constants). Explicit C casts/masks preserve native integer promotion and odd BV widths.
 - Normal-return PC is tracked as a separate observable in `queryMemoryEquivalence` (PC scope v3, retaining no-PC v1/v2 compatibility) without expanding scalar projection authority to memory or fault transforms.
 
 ## Candidate Strategies
