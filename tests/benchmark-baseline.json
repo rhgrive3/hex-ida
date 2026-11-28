@@ -120,7 +120,7 @@
         "TsumTsum": {
           "timing": { "loaderMsMedian": 3969.698, "loaderMsSamples": [4015.292, 3969.698, 3756.105] },
           "work": { "rangeReads": 12, "totalRequestedBytes": 1572880, "largestSingleRead": 262144 },
-          "identity": { "bytes": 45994784, "format": "macho", "arch": "arm64", "sourceBacked": true, "sections": 57, "imports": 3189, "importSites": 3941, "functionSeeds": 152488, "symbols": 0, "exports": 0, "auditErrors": 0, "auditWarnings": 0 }
+          "identity": { "bytes": 46402912, "format": "macho", "arch": "arm64", "sourceBacked": true, "sections": 57, "imports": 3189, "importSites": 3941, "functionSeeds": 152488, "symbols": 0, "exports": 0, "auditErrors": 0, "auditWarnings": 0 }
         },
         "YWP": {
           "timing": { "loaderMsMedian": 3011.629, "loaderMsSamples": [2859.493, 3011.629, 3112.78] },
