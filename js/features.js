@@ -72,7 +72,7 @@ const FEATURES = [
   },
   {
     id: 'anticheat', ja: 'チート対策・改造検知', en: 'Anti-cheat',
-    re: /cheat|jailbreak|jailbroken|cydia|frida|substrate|tamper|integrity|debugger|emulator|root_?detect|不正|改造|チート|検知/i,
+    re: /cheat|jailbreak|jailbroken|cydia|frida(?!y)|substrate|tamper|integrity|debugger|emulator|root_?detect|不正|改造|チート|検知/i,
   },
   {
     id: 'ads', ja: '広告', en: 'Advertising',

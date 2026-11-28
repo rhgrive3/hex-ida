@@ -16,7 +16,7 @@ import { runWasmStructuralAnalysis } from './analysis/wasm-suite.js';
 
 const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
-  { id: 'anticheat', level: 'high', re: /jailbr|jailbroken|cydia|frida|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
+  { id: 'anticheat', level: 'high', re: /jailbr|jailbroken|cydia|frida(?!y)|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
   { id: 'crypto', level: 'normal', re: /\baes\b|\bsha(1|256|512)\b|\bhmac\b|\brsa\b|encrypt|decrypt|cipher|keychain|private_?key/i, max: 8 },
   { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded[\s_-]?(?:ads?|video|interstitial)/i, max: 6 },
   { id: 'purchase', level: 'high', re: /storekit|skpayment|receipt|verifyreceipt|subscription|in_?app_?purchase/i, max: 6 },
@@ -258,7 +258,15 @@ function stringByteSpan(s) {
 export function findings(strings, program, symbols, limit = 40) {
   const out = [];
   if (!program || limit <= 0) return out;
-  const buckets = SIGNALS.map(() => []);
+  // Collect referenced (actionable) matches first per signal so dead/unreferenced
+  // strings at the front of the table cannot starve real code references (#findings-priority).
+  const buckets = SIGNALS.map((sig) => ({
+    actionable: [],
+    unreferenced: [],
+    probes: 0,
+    maxProbes: Math.max(sig.max * 64, 256),
+    done: false,
+  }));
   let activeSignals = SIGNALS.length;
   for (const s of strings || []) {
     if (activeSignals === 0) break;
@@ -267,16 +275,8 @@ export function findings(strings, program, symbols, limit = 40) {
     for (let si = 0; si < SIGNALS.length; si++) {
       const sig = SIGNALS[si];
       const bucket = buckets[si];
-      if (bucket.length >= sig.max) continue;
+      if (bucket.done) continue;
       if (!sig.re.test(text) && !(sig.caseRe && sig.caseRe.test(text))) continue;
-      bucket.push(s);
-      if (bucket.length >= sig.max) activeSignals--;
-    }
-  }
-  for (let si = 0; si < SIGNALS.length && out.length < limit; si++) {
-    const sig = SIGNALS[si];
-    for (const s of buckets[si]) {
-      if (out.length >= limit) break;
       // The xref span is a virtual-address byte range (#5698): use the
       // string's authoritative raw byte extent; entries without one stay
       // visible as data but get no xref authority (no over-inclusive
@@ -287,7 +287,7 @@ export function findings(strings, program, symbols, limit = 40) {
         ? { length: 0, complete: false, map: () => [] }
         : program.functionsReferencing(addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
-      out.push({
+      const entry = {
         id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
         actionable,
         status: actionable ? 'referenced' : 'unreferenced',
@@ -296,7 +296,30 @@ export function findings(strings, program, symbols, limit = 40) {
           addr: u.addr, site: u.site,
           name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
         })),
-      });
+      };
+      bucket.probes++;
+      if (actionable) {
+        bucket.actionable.push(entry);
+        if (bucket.actionable.length >= sig.max) {
+          bucket.done = true;
+          activeSignals--;
+        }
+      } else if (bucket.unreferenced.length < sig.max) {
+        bucket.unreferenced.push(entry);
+      }
+      if (!bucket.done && bucket.probes >= bucket.maxProbes) {
+        bucket.done = true;
+        activeSignals--;
+      }
+    }
+  }
+  for (let si = 0; si < SIGNALS.length && out.length < limit; si++) {
+    const sig = SIGNALS[si];
+    const bucket = buckets[si];
+    const combined = bucket.actionable.concat(bucket.unreferenced).slice(0, sig.max);
+    for (const entry of combined) {
+      if (out.length >= limit) break;
+      out.push(entry);
     }
   }
   // Proven/actionable findings always precede dead strings.
