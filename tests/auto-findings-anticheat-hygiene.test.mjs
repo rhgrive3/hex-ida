@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { findings } from '../js/auto.js';
+import { findings, notableFunctions } from '../js/auto.js';
 import { groupByFeature } from '../js/features.js';
 import { goalFromPreset } from '../js/goals.js';
 import { buildStringMap } from '../js/appmap.js';
@@ -71,4 +71,64 @@ test('findings() prioritizes referenced (actionable) matches even after sig.max 
   assert.equal(referenced.length, 1);
   assert.equal(referenced[0].text, 'ptrace_deny_attach');
   assert.equal(referenced[0].users[0].addr, 0x100500n);
+});
+
+test('findings() deduplicates identical text per signal while merging and promoting users', () => {
+  const strings = [
+    { addr: 0x1000n, text: 'https://api.example.com/v1/check', byteLength: 32 },
+    { addr: 0x1100n, text: 'https://api.example.com/v1/check', byteLength: 32 },
+    { addr: 0x1200n, text: 'https://api.example.com/v2/other', byteLength: 32 },
+  ];
+  const program = {
+    functionsReferencing(addr) {
+      if (addr === 0x1100n) return [{ addr: 0x200000n, site: 0x200010n }];
+      return [];
+    },
+  };
+
+  const hits = findings(strings, program, null, 40);
+  const endpoints = hits.filter((h) => h.id === 'endpoint');
+  assert.equal(endpoints.length, 2);
+  const checkHit = endpoints.find((h) => h.text === 'https://api.example.com/v1/check');
+  assert.equal(checkHit.actionable, true);
+  assert.equal(checkHit.status, 'referenced');
+  assert.equal(checkHit.users.length, 1);
+  assert.equal(checkHit.users[0].addr, 0x200000n);
+});
+
+test('notableFunctions() falls back to next function boundary when range.end is null (Mach-O LC_FUNCTION_STARTS)', () => {
+  const region = { vmAddr: 0x100000n, size: 0x1000n };
+  const symbols = {
+    functionCount: 2,
+    funcs: [0x100000n, 0x100200n],
+    functionList() {
+      return [
+        { addr: 0x100000n, name: null, size: null },
+        { addr: 0x100200n, name: null, size: null },
+      ];
+    },
+    _containmentBound(idx) {
+      return idx === 0 ? 0x100200n : 0x101000n;
+    },
+  };
+  const program = {
+    functionRange(addr) {
+      return { start: addr, end: null, region };
+    },
+    statsOf(start, end) {
+      if (start === 0x100000n && end === 0x100200n) {
+        return { total: 40, numeric: 4, store: 3, load: 4, cmp: 3 };
+      }
+      return { total: 4, numeric: 0, store: 0, load: 0, cmp: 0 };
+    },
+    callCountOf(addr) {
+      return addr === 0x100000n ? 5 : 0;
+    },
+  };
+
+  const notable = notableFunctions(program, symbols, region, 12);
+  assert.equal(notable.length, 1);
+  assert.equal(notable[0].addr, 0x100000n);
+  assert.equal(notable[0].range.end, 0x100200n);
+  assert.ok(notable[0].score > 6);
 });

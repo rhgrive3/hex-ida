@@ -140,13 +140,39 @@ function fairFunctionList(symbols, region, max = 20000) {
   return out;
 }
 
+function fallbackFunctionEnd(symbols, addr, region) {
+  const funcs = symbols?.funcs;
+  if (!funcs || !funcs.length) return null;
+  const idx = lowerBoundBig(funcs, addr);
+  if (idx < 0 || idx >= funcs.length || funcs[idx] !== addr) return null;
+  if (typeof symbols._containmentBound === 'function') {
+    const bound = symbols._containmentBound(idx);
+    if (bound != null && bound > addr) return bound;
+  }
+  const regionEnd = (region && region.vmAddr != null && region.size != null)
+    ? BigInt(region.vmAddr) + BigInt(region.size)
+    : null;
+  const next = idx + 1 < funcs.length ? funcs[idx + 1] : null;
+  if (next != null && next > addr && next - addr <= 0x40000n) {
+    return regionEnd != null && regionEnd < next ? regionEnd : next;
+  }
+  if (regionEnd != null && regionEnd > addr) {
+    const capped = addr + 0x40000n;
+    return regionEnd < capped ? regionEnd : capped;
+  }
+  return null;
+}
+
 export function notableFunctions(program, symbols, region, limit = 12) {
   if (!program || !symbols || !symbols.functionCount) return [];
   const list = fairFunctionList(symbols, region, 20000);
   const out = [];
   for (const f of list) {
-    const range = program.functionRange(f.addr);
-    if (!range || range.end == null) continue;
+    const rawRange = program.functionRange(f.addr);
+    if (!rawRange) continue;
+    const end = rawRange.end != null ? rawRange.end : fallbackFunctionEnd(symbols, rawRange.start, rawRange.region || region);
+    if (end == null || end <= rawRange.start) continue;
+    const range = rawRange.end != null ? rawRange : { ...rawRange, end };
     const stats = program.statsOf(range.start, range.end);
     if (!stats.total) continue;
     const called = program.callCountOf(f.addr);
@@ -263,6 +289,7 @@ export function findings(strings, program, symbols, limit = 40) {
   const buckets = SIGNALS.map((sig) => ({
     actionable: [],
     unreferenced: [],
+    byText: new Map(),
     probes: 0,
     maxProbes: Math.max(sig.max * 64, 256),
     done: false,
@@ -287,25 +314,51 @@ export function findings(strings, program, symbols, limit = 40) {
         ? { length: 0, complete: false, map: () => [] }
         : program.functionsReferencing(addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
-      const entry = {
-        id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
-        actionable,
-        status: actionable ? 'referenced' : 'unreferenced',
-        xrefsComplete: users.complete !== false,
-        users: users.map((u) => ({
-          addr: u.addr, site: u.site,
-          name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
-        })),
-      };
+      const mappedUsers = users.map((u) => ({
+        addr: u.addr, site: u.site,
+        name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
+      }));
       bucket.probes++;
-      if (actionable) {
-        bucket.actionable.push(entry);
-        if (bucket.actionable.length >= sig.max) {
-          bucket.done = true;
-          activeSignals--;
+      const existing = bucket.byText.get(text);
+      if (existing) {
+        for (const u of mappedUsers) {
+          if (existing.users.length >= 8) break;
+          if (!existing.users.some((eu) => eu.addr === u.addr && eu.site === u.site)) {
+            existing.users.push(u);
+          }
         }
-      } else if (bucket.unreferenced.length < sig.max) {
-        bucket.unreferenced.push(entry);
+        if (actionable && !existing.actionable) {
+          existing.actionable = true;
+          existing.status = 'referenced';
+          existing.addr = addr ?? existing.addr;
+          existing.xrefsComplete = users.complete !== false;
+          const idx = bucket.unreferenced.indexOf(existing);
+          if (idx >= 0) bucket.unreferenced.splice(idx, 1);
+          bucket.actionable.push(existing);
+          if (bucket.actionable.length >= sig.max) {
+            bucket.done = true;
+            activeSignals--;
+          }
+        }
+      } else {
+        const entry = {
+          id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
+          actionable,
+          status: actionable ? 'referenced' : 'unreferenced',
+          xrefsComplete: users.complete !== false,
+          users: mappedUsers,
+        };
+        if (actionable) {
+          bucket.byText.set(text, entry);
+          bucket.actionable.push(entry);
+          if (bucket.actionable.length >= sig.max) {
+            bucket.done = true;
+            activeSignals--;
+          }
+        } else if (bucket.unreferenced.length < sig.max) {
+          bucket.byText.set(text, entry);
+          bucket.unreferenced.push(entry);
+        }
       }
       if (!bucket.done && bucket.probes >= bucket.maxProbes) {
         bucket.done = true;
