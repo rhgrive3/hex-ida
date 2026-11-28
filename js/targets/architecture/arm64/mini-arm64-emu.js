@@ -372,6 +372,25 @@ export class MiniArm64Emu {
     return acc;
   }
 
+  readVecBytes(va, widthBytes) {
+    const out = new Uint8Array(16);
+    for (let i = 0; i < widthBytes; i++) {
+      const b = this.readByte((va + BigInt(i)) & MASK64);
+      if (b === null) return null;
+      out[i] = b;
+    }
+    return out;
+  }
+
+  writeVecBytes(va, bytes16, widthBytes, writerInsnOff = 0) {
+    for (let i = 0; i < widthBytes; i++) {
+      if (!this.writeByte((va + BigInt(i)) & MASK64, bytes16[i], writerInsnOff)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   writeInt(va, val, widthBytes, writerInsnOff = 0) {
     const v = BigInt(val) & MASK64;
     for (let i = 0; i < widthBytes; i++) {
@@ -1100,6 +1119,133 @@ export class MiniArm64Emu {
         if (v === null) break;
         const out = new Uint8Array(16);
         out.fill(Number(v & 0xffn));
+        this.setVec(rd, out);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // SIMD&FP LDR Literal (S/D/Q)
+      if (((w & 0x3f000000) >>> 0) === 0x1c000000) {
+        const opc = (w >>> 30) & 3;
+        if (opc === 3) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const width = 4 << opc;
+        const delta = signExtend((w >>> 5) & 0x7ffff, 19) * 4;
+        const addr = (this.pc + BigInt(delta)) & MASK64;
+        const rt = w & 0x1f;
+        const bytes16 = this.readVecBytes(addr, width);
+        if (bytes16 === null) break;
+        this.setVec(rt, bytes16);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // SIMD&FP LDR / STR unsigned offset (B/H/S/D/Q, bit 26 V=1)
+      if (((w & 0x3f000000) >>> 0) === 0x3d000000) {
+        const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        const is128 = size === 0 && (opc === 2 || opc === 3);
+        if (!is128 && opc > 1) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const width = is128 ? 16 : (1 << size);
+        const scale = is128 ? 4 : size;
+        const isLoad = Boolean(opc & 1);
+        const imm = BigInt(((w >>> 10) & 0xfff) << scale);
+        const rn = (w >>> 5) & 0x1f;
+        const rt = w & 0x1f;
+        const base = this.getGpr(rn, true);
+        if (base === null) break;
+        const addr = (base + imm) & MASK64;
+        if (isLoad) {
+          const bytes16 = this.readVecBytes(addr, width);
+          if (bytes16 === null) break;
+          this.setVec(rt, bytes16);
+        } else {
+          const vec = this.getVec(rt);
+          if (vec === null) break;
+          if (!this.writeVecBytes(addr, vec, width, insnOff)) break;
+        }
+        this.pc = nextPc;
+        continue;
+      }
+
+      // SIMD&FP LDUR / STUR unscaled immediate (B/H/S/D/Q, bit 26 V=1)
+      if (((w & 0x3f200c00) >>> 0) === 0x3c000000) {
+        const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        const is128 = size === 0 && (opc === 2 || opc === 3);
+        if (!is128 && opc > 1) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const width = is128 ? 16 : (1 << size);
+        const isLoad = Boolean(opc & 1);
+        const simm9 = BigInt(signExtend((w >>> 12) & 0x1ff, 9));
+        const rn = (w >>> 5) & 0x1f;
+        const rt = w & 0x1f;
+        const base = this.getGpr(rn, true);
+        if (base === null) break;
+        const addr = (base + simm9) & MASK64;
+        if (isLoad) {
+          const bytes16 = this.readVecBytes(addr, width);
+          if (bytes16 === null) break;
+          this.setVec(rt, bytes16);
+        } else {
+          const vec = this.getVec(rt);
+          if (vec === null) break;
+          if (!this.writeVecBytes(addr, vec, width, insnOff)) break;
+        }
+        this.pc = nextPc;
+        continue;
+      }
+
+      // SIMD&FP LDR / STR post-index & pre-index (B/H/S/D/Q, bit 26 V=1)
+      if (((w & 0x3f200400) >>> 0) === 0x3c000400) {
+        const size = (w >>> 30) & 3;
+        const opc = (w >>> 22) & 3;
+        const is128 = size === 0 && (opc === 2 || opc === 3);
+        if (!is128 && opc > 1) {
+          this.stopReason = HEX_EMU_STOP_REASON.UNSUPPORTED_INSN;
+          break;
+        }
+        const width = is128 ? 16 : (1 << size);
+        const isLoad = Boolean(opc & 1);
+        const isPre = Boolean((w >>> 11) & 1);
+        const simm9 = BigInt(signExtend((w >>> 12) & 0x1ff, 9));
+        const rn = (w >>> 5) & 0x1f;
+        const rt = w & 0x1f;
+        const base = this.getGpr(rn, true);
+        if (base === null) break;
+        const addr = isPre ? ((base + simm9) & MASK64) : base;
+        if (isLoad) {
+          const bytes16 = this.readVecBytes(addr, width);
+          if (bytes16 === null) break;
+          this.setVec(rt, bytes16);
+        } else {
+          const vec = this.getVec(rt);
+          if (vec === null) break;
+          if (!this.writeVecBytes(addr, vec, width, insnOff)) break;
+        }
+        this.setGpr(rn, (base + simm9) & MASK64, true);
+        this.pc = nextPc;
+        continue;
+      }
+
+      // Minimal NEON: EOR Vd.8B/16B, Vn.8B/16B, Vm.8B/16B
+      if (((w & 0xbfe0fc00) >>> 0) === 0x2e201c00) {
+        const lanes = ((w >>> 30) & 1) ? 16 : 8;
+        const rd = w & 0x1f;
+        const rn = (w >>> 5) & 0x1f;
+        const rm = (w >>> 16) & 0x1f;
+        const va = this.getVec(rn);
+        const vb = this.getVec(rm);
+        if (!va || !vb) break;
+        const out = new Uint8Array(16);
+        for (let i = 0; i < lanes; i++) out[i] = va[i] ^ vb[i];
         this.setVec(rd, out);
         this.pc = nextPc;
         continue;
