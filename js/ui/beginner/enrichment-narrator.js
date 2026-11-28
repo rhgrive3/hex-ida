@@ -132,7 +132,26 @@ export function narrateV6Enrichment(v6Enrichment, { rawName = null } = {}) {
   const hexsigName = nonEmptyString(hexsigMatch?.newName) || nonEmptyString(hexsigMatch?.symbolName);
   const hexsigLib = nonEmptyString(hexsigMatch?.libName) || nonEmptyString(hexsigMatch?.lib);
 
-  const displayName = explicitDisplayName || demangledName || hexsigName || effectiveRawName || null;
+  const cxxClass = v6Enrichment.cxxClass && typeof v6Enrichment.cxxClass === 'object'
+    ? v6Enrichment.cxxClass
+    : null;
+  const semanticName = v6Enrichment.semanticName && typeof v6Enrichment.semanticName === 'object'
+    ? v6Enrichment.semanticName
+    : null;
+  const semanticNaming = semanticName?.naming && typeof semanticName.naming === 'object'
+    ? semanticName.naming
+    : null;
+  const semanticConfidence = nonEmptyString(semanticNaming?.confidence)?.toLowerCase() || null;
+  const semanticJaLabel = nonEmptyString(semanticNaming?.labelJa);
+  const semanticEnLabel = nonEmptyString(semanticNaming?.nameEn);
+  const isTrustedSemanticConfidence = semanticConfidence === 'high' || semanticConfidence === 'medium';
+  const semanticDisplayName = isTrustedSemanticConfidence
+    ? nonEmptyString(pick(semanticJaLabel || semanticEnLabel || '', semanticEnLabel || semanticJaLabel || ''))
+    : null;
+  const virtualFolderPath = nonEmptyString(v6Enrichment.virtualFolderPath)
+    || nonEmptyString(semanticName?.folderPath);
+
+  const displayName = semanticDisplayName || explicitDisplayName || demangledName || hexsigName || effectiveRawName || null;
 
   // 1. Demangled symbol name (guarded so plain C names like main === main do not misfire)
   const isActuallyDemangled = Boolean(demangledName && demangledName !== compareRawName);
@@ -496,6 +515,91 @@ export function narrateV6Enrichment(v6Enrichment, { rawName = null } = {}) {
         'Leaf computation function that finishes its work without calling other functions.',
       ));
     }
+  }
+
+  // 7. Restored C++ class owner (RTTI), semantic naming, and virtual folder classification
+  if (cxxClass) {
+    const primaryOwner = nonEmptyString(cxxClass.primaryOwner);
+    const sharedOwners = Array.isArray(cxxClass.sharedOwners)
+      ? cxxClass.sharedOwners.map(nonEmptyString).filter(Boolean)
+      : [];
+    const slotIndex = Number.isInteger(cxxClass.slotIndex) && cxxClass.slotIndex >= 0
+      ? cxxClass.slotIndex
+      : null;
+
+    if (primaryOwner) {
+      addBadge('cxx-class', primaryOwner, 'ok');
+      if (slotIndex != null) {
+        addSummary(pick(
+          `復元された C++ クラス「${primaryOwner}」の仮想関数（slot ${slotIndex}）に属しています。`,
+          `Belongs to restored C++ class "${primaryOwner}" (vtable slot ${slotIndex}).`,
+        ));
+      } else {
+        addSummary(pick(
+          `復元された C++ クラス「${primaryOwner}」のメソッドです。`,
+          `Method belonging to restored C++ class "${primaryOwner}".`,
+        ));
+      }
+      addHighlight(pick(
+        `所属クラス: ${primaryOwner}`,
+        `Owner class: ${primaryOwner}`,
+      ));
+      addGlossaryKey('vtable');
+      addGlossaryKey('demangle');
+    } else if (cxxClass.isShared && sharedOwners.length > 0) {
+      const sampleOwners = sharedOwners.slice(0, 3).join(', ');
+      addBadge('cxx-class', pick('共有メソッド', 'Shared C++ Method'), 'info');
+      addSummary(pick(
+        `複数の C++ クラス（${sampleOwners} など）で共有されている仮想メソッドです。`,
+        `Shared virtual method across multiple C++ classes (${sampleOwners}).`,
+      ));
+      addHighlight(pick(
+        `共有クラス候補: ${sampleOwners}`,
+        `Shared owner candidates: ${sampleOwners}`,
+      ));
+      addGlossaryKey('vtable');
+    }
+  }
+
+  if (semanticNaming && isTrustedSemanticConfidence) {
+    const reasons = Array.isArray(semanticNaming.reasons)
+      ? semanticNaming.reasons.map(nonEmptyString).filter(Boolean)
+      : [];
+    const confTone = semanticConfidence === 'high' ? 'ok' : 'info';
+    addBadge(
+      'semantic-name',
+      semanticConfidence === 'high'
+        ? pick('役割推定 (高確信)', 'Semantic Name (High)')
+        : pick('役割推定 (中確信)', 'Semantic Name (Medium)'),
+      confTone,
+    );
+    if (semanticDisplayName) {
+      addHighlight(pick(
+        `推定された役割: ${semanticDisplayName}`,
+        `Inferred purpose: ${semanticDisplayName}`,
+      ));
+    }
+    if (reasons.length > 0) {
+      const reasonText = reasons.slice(0, 3).join(' / ');
+      addSummary(pick(
+        `機能の推定根拠: ${reasonText}`,
+        `Inference evidence: ${reasonText}`,
+      ));
+    }
+    if (isStrippedFunctionName(effectiveRawName)) {
+      addGlossaryKey('stripped');
+    }
+  }
+
+  if (virtualFolderPath) {
+    addSummary(pick(
+      `仮想フォルダ分類: ${virtualFolderPath}`,
+      `Virtual folder path: ${virtualFolderPath}`,
+    ));
+    addHighlight(pick(
+      `分類フォルダ: ${virtualFolderPath}`,
+      `Folder: ${virtualFolderPath}`,
+    ));
   }
 
   return {

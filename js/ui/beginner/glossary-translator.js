@@ -4,9 +4,23 @@
  */
 
 import { pick } from '../../i18n.js';
-import { GLOSSARY_KEYS, GLOSSARY_KEY_SET } from '../../analysis/common/v6-auto-contracts.js';
+import {
+  GLOSSARY_KEYS,
+  GLOSSARY_KEY_SET,
+  EXTENDED_GLOSSARY_KEYS,
+  EXTENDED_GLOSSARY_KEY_SET,
+  ALL_GLOSSARY_KEYS,
+  ALL_GLOSSARY_KEY_SET,
+} from '../../analysis/common/v6-auto-contracts.js';
 
-export { GLOSSARY_KEYS, GLOSSARY_KEY_SET };
+export {
+  GLOSSARY_KEYS,
+  GLOSSARY_KEY_SET,
+  EXTENDED_GLOSSARY_KEYS,
+  EXTENDED_GLOSSARY_KEY_SET,
+  ALL_GLOSSARY_KEYS,
+  ALL_GLOSSARY_KEY_SET,
+};
 
 const DEFAULT_MAX_INPUT_LENGTH = 8192;
 const ASCII_WORD_START_RE = /^[A-Za-z0-9_]/;
@@ -329,6 +343,71 @@ const GLOSSARY_DEFINITIONS = Object.freeze({
       'Use decompiled pseudocode to grasp the big picture quickly, then verify exact instructions in assembly when needed.',
     ],
   }),
+
+  rtti: Object.freeze({
+    term: ['実行時型情報 (RTTI)', 'Run-Time Type Information (RTTI)'],
+    shortLabel: ['アプリの中に残ったクラス名や親子の手がかり', 'Class names and inheritance clues left inside a C++ app'],
+    explanation: [
+      'C++ で作られたアプリが、実行中に「このデータは何のクラスか」を判断するために残している名札のような情報です。関数名が消されていても、ここから元のクラス名や親子関係を復元できることがあります。',
+      'Metadata that C++ apps keep so they can check what class an object belongs to while running. Even when function names are removed, it often lets us recover class names and inheritance.',
+    ],
+    tip: [
+      '名前が消されたアプリでも、RTTI から復元されたクラス名を見ると「コイン管理」「画面表示」などの役割が見つけやすくなります。',
+      'Even in stripped apps, class names recovered from RTTI quickly point you toward areas like coins, players, or menus.',
+    ],
+  }),
+
+  typeinfo: Object.freeze({
+    term: ['型情報レコード (typeinfo)', 'Type Info Record (typeinfo)'],
+    shortLabel: ['クラスの正式名称と親クラスを記した名簿データ', 'A small data card storing a class name and its parent class'],
+    explanation: [
+      'RTTI の中身を構成するデータのかたまりで、そのクラスの名前と「どの親クラスを引き継いでいるか」への目印が入っています。仮想関数テーブルのすぐ近くからたどることができます。',
+      'A small record inside RTTI that holds a class name and links to its parent classes. It can be reached directly from the class virtual table.',
+    ],
+    tip: [
+      '親クラスへのつながりをたどると、共通の土台となる処理と個別の画面・キャラごとの処理を見分けられます。',
+      'Following parent links helps you separate shared base behavior from specialized subclass behavior.',
+    ],
+  }),
+
+  virtual_tree: Object.freeze({
+    term: ['仮想フォルダツリー', 'Virtual Folder Tree'],
+    shortLabel: ['関数をクラスや役割ごとのフォルダに整理した一覧', 'A folder view grouping functions by class and purpose'],
+    explanation: [
+      '何万個もの関数を、復元したクラス名や名前空間（例: Game / System / Coin）や、通信・保存・画面などの役割ごとにフォルダ分けして見やすくまとめたツリー表示です。',
+      'An explorer-style tree that organizes thousands of functions into folders by recovered class hierarchy (such as Game / System / Coin) or inferred role like Network and Storage.',
+    ],
+    tip: [
+      '関数を 1 つずつ探すより、関係しそうなフォルダを開いて中身を絞るほうが目的の処理へ素早くたどり着けます。',
+      'Open the folder matching the feature you care about instead of scrolling through every function in the binary.',
+    ],
+  }),
+
+  semantic_name: Object.freeze({
+    term: ['役割ベースの仮名', 'Semantic Role Name'],
+    shortLabel: ['手がかりから付けた「何をする処理か」のわかりやすい名前', 'A plain-language label describing what a function likely does'],
+    explanation: [
+      '所属クラス・使っている文字列・呼び出す OS 機能・データ書き換えなどの証拠を組み合わせて、元の名前がない関数に「対象＋目的」が伝わる仮の名前を付けたものです。証拠が少ない場合は無理に決めつけず「未確定」のままにします。',
+      'A readable label built from concrete clues—such as class ownership, strings, OS APIs, and state writes—to describe what an unnamed function appears to do. When clues are weak, it stays marked low-confidence instead of guessing.',
+    ],
+    tip: [
+      '仮名の横にある確信度（高・中・低）と根拠リストを一緒に確認すると、どこまで信用してよいか判断できます。',
+      'Check the confidence level and evidence list beside the label to see how strongly the clues support it.',
+    ],
+  }),
+
+  primary_owner: Object.freeze({
+    term: ['本来の持ち主クラス', 'Primary Owner Class'],
+    shortLabel: ['そのメソッドを最初に定義した元のクラス', 'The class that originally defined a shared virtual method'],
+    explanation: [
+      '子クラスが親クラスの処理をそのまま引き継いでいると、同じ関数が複数のクラスの表に載ります。親子関係をたどって「実際にその処理を書いた本来の持ち主」を特定したものが本来の持ち主クラスです。',
+      'When subclasses inherit a method unchanged, the same function appears in several class tables. Tracing the inheritance chain identifies the original class that actually owns the method.',
+    ],
+    tip: [
+      '見かけ上たくさんのクラスに出てくる関数でも、本来の持ち主クラスを見れば「どこを直せば全体に影響するか」が分かります。',
+      'Looking at the primary owner shows where a shared method really lives and how widely a change will affect subclasses.',
+    ],
+  }),
 });
 
 /**
@@ -588,7 +667,7 @@ function pushSegment(segments, text, glossaryKey) {
 export function getGlossaryEntry(key) {
   if (typeof key !== 'string') return null;
   const normalized = key.trim().toLowerCase();
-  if (!GLOSSARY_KEY_SET.has(normalized)) return null;
+  if (!ALL_GLOSSARY_KEY_SET.has(normalized)) return null;
   const def = GLOSSARY_DEFINITIONS[normalized];
   if (!def) return null;
   return {
@@ -602,16 +681,19 @@ export function getGlossaryEntry(key) {
 
 /**
  * List bilingual glossary entries.
- * When `keys` is omitted or null, returns all 24 canonical entries in order.
+ * When `keys` is omitted or null, returns all 24 canonical entries in order
+ * (or all 29 entries when `opts.includeExtended === true`).
  * When `keys` is provided as an iterable/array, resolves valid keys, deduplicating
  * while preserving first-seen order.
  * @param {Iterable<string>|null} [keys=null]
+ * @param {{ includeExtended?: boolean }} [opts]
  * @returns {Array<{ key: string, term: string, shortLabel: string, explanation: string, tip: string }>}
  */
-export function listGlossaryEntries(keys = null) {
+export function listGlossaryEntries(keys = null, opts = {}) {
   if (keys == null) {
+    const sourceKeys = opts?.includeExtended === true ? ALL_GLOSSARY_KEYS : GLOSSARY_KEYS;
     const all = [];
-    for (const key of GLOSSARY_KEYS) {
+    for (const key of sourceKeys) {
       const entry = getGlossaryEntry(key);
       if (entry) all.push(entry);
     }
