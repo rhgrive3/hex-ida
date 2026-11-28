@@ -424,8 +424,10 @@
   background: var(--ui-accent);
 }
 .product-ui-ready .ui-choice-row.toggle .ui-choice-mark { border-radius: 6px; }
-.product-ui-ready .ui-choice-row.toggle[aria-pressed="true"] .ui-choice-mark { background: var(--ui-accent); }
-.product-ui-ready .ui-choice-row.toggle[aria-pressed="true"] .ui-choice-mark::after {
+.product-ui-ready .ui-choice-row.toggle[aria-pressed="true"] .ui-choice-mark,
+.product-ui-ready .ui-choice-row.toggle[aria-checked="true"] .ui-choice-mark { background: var(--ui-accent); }
+.product-ui-ready .ui-choice-row.toggle[aria-pressed="true"] .ui-choice-mark::after,
+.product-ui-ready .ui-choice-row.toggle[aria-checked="true"] .ui-choice-mark::after {
   content: "✓";
   width: auto;
   height: auto;
@@ -477,9 +479,16 @@
 /* The typedef header is folded until asked for; Copy still includes it. */
 .product-ui-ready .ui-pseudocode.fold-prelude:not(.show-prelude) .ui-pseudocode-line.prelude { display: none; }
 .product-ui-ready .ui-pseudocode-line[role="button"]:hover { background: rgb(255 255 255 / 0.06); }
-.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child { border-radius: 0; border-bottom: 0; }
-.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child input {
-  flex: 1 1 140px;
+/* The phone toolbar rule (nowrap + fixed-size children) squeezed the address
+   field to a sliver; this row wraps and lets the field take a full line. */
+.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child {
+  border-radius: 0;
+  border-bottom: 0;
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
+.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child > input {
+  flex: 1 1 160px;
   min-width: 0;
   min-height: var(--ui-touch);
   padding: 0 var(--ui-space-3);
@@ -488,10 +497,6 @@
   background: var(--ui-surface-2);
   color: var(--ui-text);
 }
-/* The phone toolbar rule (nowrap + fixed-size children) squeezed the address
-   field to a sliver; this row wraps and lets the field take a full line. */
-.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child { flex-wrap: wrap; overflow-x: visible; }
-.product-ui-ready .ui-decompiler-provenance > .ui-code-toolbar:first-child > input { flex: 1 1 160px; }
 
 /* Which decompiler produced the pseudocode and whether it is whole. */
 .product-ui-ready .ui-decompile-notice {
@@ -811,4 +816,64 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Wave 5 Part A: Goal highlight gutter preservation & missing UI component styles */
+.product-ui-ready .ui-pseudocode-line.hex-goal-highlight {
+  display: block;
+  padding-left: 3.4em;
+  border-left: 3px solid var(--ui-accent, #f59e0b);
+  background: rgb(245 158 11 / 0.14);
+}
+.product-ui-ready .ui-quickstart-host {
+  width: min(100%, var(--ui-content));
+  margin: var(--ui-space-3) auto;
+  padding-inline: var(--ui-space-3);
+}
+.product-ui-ready .ui-quickstart-host[hidden] { display: none; }
+.product-ui-ready .ui-quickstart-card {
+  position: relative;
+}
+.product-ui-ready .ui-quickstart-section + .ui-quickstart-section {
+  margin-top: var(--ui-space-4);
+}
+.product-ui-ready .ui-quickstart-heading {
+  margin: 0 0 var(--ui-space-2);
+  font-size: var(--ui-font-sm);
+  font-weight: 700;
+  color: var(--ui-text-muted);
+}
+.product-ui-ready .ui-quickstart-dismiss {
+  margin-bottom: var(--ui-space-3);
+}
+.product-ui-ready .ui-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-1);
+  flex: none;
+}
+.product-ui-ready .ui-row-note-btn,
+.product-ui-ready .ui-row-xrefs {
+  min-height: 30px;
+  padding: 4px 8px;
+  font-size: var(--ui-font-xs);
+  white-space: nowrap;
+}
+.product-ui-ready .ui-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface-2);
+  color: var(--ui-text-muted);
+  font-size: var(--ui-font-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.product-ui-ready .ui-badge-confirmed {
+  border-color: color-mix(in srgb, var(--ui-confirmed) 50%, transparent);
+  background: color-mix(in srgb, var(--ui-confirmed) 14%, var(--ui-surface));
+  color: var(--ui-confirmed);
 }
