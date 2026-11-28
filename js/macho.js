@@ -726,14 +726,15 @@
   }
 
   /** セクションに定義されている（＝アドレスを持つ）シンボルだけを取り出す。 */
-  function definedSymbols(sym) {
+  function definedSymbols(sym, opts = {}) {
+    const allowZero = !!opts?.allowZero;
     const out = [];
     for (let i = 0; i < sym.names.length; i++) {
       const t = sym.types[i];
       if (t & N_STAB) continue;                   // デバッグ情報
       if ((t & N_TYPE) !== N_SECT) continue;      // セクション内でないものは飛ばす
       const v = sym.values[i];
-      if (v === 0n) continue;
+      if (v === 0n && !allowZero) continue;
       const name = sym.names[i];
       if (!name) continue;
       // N_EXT が立っていれば、外のライブラリからも呼べる名前（エクスポート）の印

@@ -1,6 +1,7 @@
 import { validateRenderProvenance, renderRecordWitnesses } from '../decompiler/phase8/render-provenance.js';
 import { addrHex, parseAddress } from '../format.js';
 import { decompiledText } from '../decompile.js';
+import { formatCleanViewLines } from '../decompiler/clean-view.js';
 import { h, uiButton } from './primitives.js';
 
 const EMPTY = Object.freeze([]);
@@ -578,9 +579,18 @@ export function createDecompilerProvenanceView(query, options = {}) {
   tokNav.append(tokCount, tokPrev, tokNext);
   controls.append(tokNav);
 
-  const lines = query?.value?.lines;
-  if (Array.isArray(lines)) {
-    const prelude = preludeLength(lines);
+  const rawLines = query?.value?.lines;
+  if (Array.isArray(rawLines)) {
+    const indexedRaw = rawLines.map((line, origIdx) => ({ ...line, _origIdx: origIdx }));
+    const cleanedResult = formatCleanViewLines(indexedRaw, {
+      hideTypedefPrelude: false,
+      elideDeadSpills: true,
+      refineAppleSwift: true,
+    });
+    const cleanLines = Array.isArray(cleanedResult?.lines) ? cleanedResult.lines : indexedRaw;
+    let cleanViewOn = options.cleanView !== false;
+
+    const prelude = preludeLength(rawLines);
     if (prelude > 0) {
       code.classList.add('fold-prelude');
       const toggle = uiButton(text(`型の定義を表示（${prelude} 行）`, `Show type definitions (${prelude} lines)`), { cls:'ui-secondary-action', pressed:false, onClick:() => {
@@ -591,6 +601,17 @@ export function createDecompilerProvenanceView(query, options = {}) {
       } });
       controls.append(toggle);
     }
+    const cleanToggle = uiButton(text('Clean View', 'Clean View'), {
+      cls: 'ui-secondary-action',
+      pressed: cleanViewOn,
+      onClick: () => {
+        cleanViewOn = !cleanViewOn;
+        cleanToggle.setAttribute('aria-pressed', String(cleanViewOn));
+        renderActiveLines();
+      },
+    });
+    controls.append(cleanToggle);
+
     const fnComment = typeof options.functionComment === 'string' ? options.functionComment.trim() : '';
     const makeCommentRow = () => {
       const commentRow = h('span', 'ui-pseudocode-line is-fn-comment');
@@ -598,74 +619,84 @@ export function createDecompilerProvenanceView(query, options = {}) {
       commentRow.append(h('span', 'tok-cmt', commentLines), h('span', null, '\n'));
       return commentRow;
     };
-    let commentInserted = false;
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index];
-      const content = line.kind === 'blank' ? '' : '    '.repeat(Math.max(0, line.indent || 0)) + line.text;
-      const rowClasses = ['ui-pseudocode-line'];
-      if (index < prelude) rowClasses.push('prelude');
-      const isSig = line.kind === 'sig';
-      if (isSig) {
-        rowClasses.push('is-sig');
-        if (fnComment && !commentInserted) {
-          code.append(makeCommentRow());
-          commentInserted = true;
+
+    const renderActiveLines = () => {
+      tokenHighlight?.destroy?.();
+      code.replaceChildren();
+      rows.length = 0;
+      const activeLines = cleanViewOn ? cleanLines : indexedRaw;
+      const activePrelude = preludeLength(activeLines);
+      let commentInserted = false;
+      for (let index = 0; index < activeLines.length; index++) {
+        const line = activeLines[index];
+        const origIdx = Number.isInteger(line._origIdx) ? line._origIdx : index;
+        const content = line.kind === 'blank' ? '' : '    '.repeat(Math.max(0, line.indent || 0)) + line.text;
+        const rowClasses = ['ui-pseudocode-line'];
+        if (index < activePrelude) rowClasses.push('prelude');
+        const isSig = line.kind === 'sig';
+        if (isSig) {
+          rowClasses.push('is-sig');
+          if (fnComment && !commentInserted) {
+            code.append(makeCommentRow());
+            commentInserted = true;
+          }
         }
+        if (line.kind === 'decl') {
+          rowClasses.push('is-decl');
+          if (activeLines[index + 1]?.kind !== 'decl') rowClasses.push('is-decl-last');
+        }
+        if (line.kind === 'case' || /^\s*(?:case\b|default\s*:)/.test(String(line.text || ''))) rowClasses.push('is-case');
+        const row = h('span', rowClasses.join(' '));
+        appendHighlighted(row, content, {
+          isSig,
+          text,
+          resolveCallee: options.resolveCallee || null,
+          onOpenCallee: options.onOpenCallee || null,
+          onOpenAddress: typeof options.onNavigate === 'function'
+            ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onNavigate(address); }
+            : null,
+          onBookmarkAddress: typeof options.onBookmarkAddress === 'function'
+            ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onBookmarkAddress(address); }
+            : null,
+        });
+        if (index + 1 < activeLines.length) row.append(h('span', null, '\n'));
+        const entity = query.value.renderProvenance?.entities?.[`L${origIdx}:${line.kind ?? 'null'}`];
+        if (navigation.available && entity?.role === 'semantic') {
+          row.tabIndex = 0;
+          row.setAttribute('role', 'button');
+          row.setAttribute('aria-label', text('行の根拠を見る: ', 'Inspect line origins: ') + content.trim());
+          row.addEventListener('click', (event) => {
+            if (typeof window !== 'undefined' && window.getSelection?.()?.toString()) return;
+            const tokEl = event?.target?.closest?.('[data-tok]');
+            if (tokEl && row.contains?.(tokEl) && (tokEl.classList.contains('tok-fn-link') || tokEl.classList.contains('tok-addr-link'))) return;
+            select(() => navigation.selectLine(origIdx));
+          });
+          row.addEventListener('keydown', event => {
+            if (event.defaultPrevented) return;
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); return select(() => navigation.selectLine(origIdx)); }
+          });
+        }
+        rows[origIdx] = row;
+        code.append(row);
       }
-      if (line.kind === 'decl') {
-        rowClasses.push('is-decl');
-        if (lines[index + 1]?.kind !== 'decl') rowClasses.push('is-decl-last');
+      if (fnComment && !commentInserted) {
+        code.prepend(makeCommentRow());
       }
-      if (line.kind === 'case' || /^\s*(?:case\b|default\s*:)/.test(String(line.text || ''))) rowClasses.push('is-case');
-      const row = h('span', rowClasses.join(' '));
-      appendHighlighted(row, content, {
-        isSig,
-        text,
-        resolveCallee: options.resolveCallee || null,
-        onOpenCallee: options.onOpenCallee || null,
-        onOpenAddress: typeof options.onNavigate === 'function'
-          ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onNavigate(address); }
-          : null,
-        onBookmarkAddress: typeof options.onBookmarkAddress === 'function'
-          ? (address) => { if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onBookmarkAddress(address); }
-          : null,
+      tokenHighlight = attachTokenHighlight(code, {
+        onHighlightChange: ({ token, count, index }) => {
+          if (!token || !count) {
+            tokNav.hidden = true;
+            tokCount.textContent = '';
+            tokCount.title = '';
+            return;
+          }
+          tokNav.hidden = false;
+          tokCount.textContent = `${index + 1}/${count}`;
+          tokCount.title = token;
+        },
       });
-      if (index + 1 < lines.length) row.append(h('span', null, '\n'));
-      const entity = query.value.renderProvenance?.entities?.[`L${index}:${line.kind ?? 'null'}`];
-      if (navigation.available && entity?.role === 'semantic') {
-        row.tabIndex = 0;
-        row.setAttribute('role', 'button');
-        row.setAttribute('aria-label', text('行の根拠を見る: ', 'Inspect line origins: ') + content.trim());
-        row.addEventListener('click', (event) => {
-          if (typeof window !== 'undefined' && window.getSelection?.()?.toString()) return;
-          const tokEl = event?.target?.closest?.('[data-tok]');
-          if (tokEl && row.contains?.(tokEl) && (tokEl.classList.contains('tok-fn-link') || tokEl.classList.contains('tok-addr-link'))) return;
-          select(() => navigation.selectLine(index));
-        });
-        row.addEventListener('keydown', event => {
-          if (event.defaultPrevented) return;
-          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); return select(() => navigation.selectLine(index)); }
-        });
-      }
-      rows.push(row);
-      code.append(row);
-    }
-    if (fnComment && !commentInserted) {
-      code.prepend(makeCommentRow());
-    }
-    tokenHighlight = attachTokenHighlight(code, {
-      onHighlightChange: ({ token, count, index }) => {
-        if (!token || !count) {
-          tokNav.hidden = true;
-          tokCount.textContent = '';
-          tokCount.title = '';
-          return;
-        }
-        tokNav.hidden = false;
-        tokCount.textContent = `${index + 1}/${count}`;
-        tokCount.title = token;
-      },
-    });
+    };
+    renderActiveLines();
     if (options.signal) {
       if (options.signal.aborted) tokenHighlight.destroy();
       else options.signal.addEventListener?.('abort', () => tokenHighlight?.destroy?.(), { once: true });
