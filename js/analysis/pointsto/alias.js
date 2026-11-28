@@ -29,6 +29,9 @@ function absoluteInterval(target, accessWidth) {
   if (target?.address == null || range?.min == null || range?.max == null) {
     return { interval: null, reason: null };
   }
+  if (typeof range.min !== 'bigint' || typeof range.max !== 'bigint') {
+    return { interval: null, reason: 'provenance-lost' };
+  }
   // Access width describes the loaded/stored value, not the address domain.
   // Missing pointer-width evidence cannot be reconstructed from it (#4515).
   const pointerWidth = target.widthBits;
@@ -135,7 +138,9 @@ export function pointsToAlias(left, right, options = {}) {
     return unknownAlias(status, [status.stopReason === 'iteration-limit' ? 'budget-exhausted' : 'unresolved-root']);
   }
   if (left.top || right.top) {
-    const reasons = [...new Set([...left.lossReasons, ...right.lossReasons])];
+    const leftLoss = Array.isArray(left.lossReasons) ? left.lossReasons : [];
+    const rightLoss = Array.isArray(right.lossReasons) ? right.lossReasons : [];
+    const reasons = [...new Set([...leftLoss, ...rightLoss])];
     // Loss reasons are mapped onto the closed proof-reason vocabulary so the
     // weak answer is still explainable rather than an opaque shrug.
     const mapped = reasons.map((reason) => (
@@ -148,7 +153,9 @@ export function pointsToAlias(left, right, options = {}) {
     ));
     return unknownAlias(status, mapped.length ? [...new Set(mapped)] : ['unresolved-root']);
   }
-  if (!left.targets.length || !right.targets.length) return unknownAlias(status, ['unresolved-root']);
+  if (!Array.isArray(left.targets) || !Array.isArray(right.targets) || !left.targets.length || !right.targets.length) {
+    return unknownAlias(status, ['unresolved-root']);
+  }
   if (widthA == null || widthB == null) return unknownAlias(status, ['unresolved-offset']);
 
   const relations = [];
@@ -185,7 +192,9 @@ export function pointsToAlias(left, right, options = {}) {
                 reasonCodes.add('disjoint-global-interval');
                 continue;
               }
-              if (a.offsetRange.exact && b.offsetRange.exact && spanA_min === spanB_min && widthA === widthB) {
+              if (a.offsetRange.exact && b.offsetRange.exact
+                  && spanA_min === spanA_max && spanB_min === spanB_max
+                  && spanA_min === spanB_min && widthA === widthB) {
                 relations.push('must');
                 reasonCodes.add('identical-root-and-exact-offset');
                 continue;
@@ -209,9 +218,10 @@ export function pointsToAlias(left, right, options = {}) {
         // Separation is preserved for pairs of allocations with proven storage
         // or non-bare roots.
         const hasBareAbsolute = isBareAbsolute(a) || isBareAbsolute(b);
+        const sameEntity = a.rootEntityId != null && b.rootEntityId != null && a.rootEntityId === b.rootEntityId;
         const aNonEscaping = nonEscaping.has(a.rootKey) || (a.rootEntityId && nonEscaping.has(a.rootEntityId));
         const bNonEscaping = nonEscaping.has(b.rootKey) || (b.rootEntityId && nonEscaping.has(b.rootEntityId));
-        if (!hasBareAbsolute && (aNonEscaping && bNonEscaping)) {
+        if (!hasBareAbsolute && !sameEntity && (aNonEscaping && bNonEscaping)) {
           relations.push('no');
           reasonCodes.add('distinct-non-escaping-allocation');
           continue;

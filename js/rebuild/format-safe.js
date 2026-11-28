@@ -195,6 +195,7 @@ function parseElf(bytes) {
   };
   if (header.machine !== ELF_X86_64_MACHINE) fail('format-safe-elf-architecture-unsupported');
   if (header.headerSize !== ELF64_HEADER_SIZE || header.sectionHeaderSize !== ELF64_SECTION_HEADER_SIZE) fail('format-safe-elf-header-size-invalid');
+  if (header.programHeaderCount > 0 && header.programHeaderSize !== 56) fail('format-safe-elf-program-header-size-invalid');
   ensureRange(bytes, header.programHeaderOffset, header.programHeaderSize * header.programHeaderCount, 'format-safe-elf-program-table-invalid');
   ensureRange(bytes, header.sectionTableOffset, header.sectionHeaderSize * header.sectionCount, 'format-safe-elf-section-table-invalid');
   const sections = elfSections(bytes, header);
@@ -279,11 +280,13 @@ function parsePe(bytes) {
   ensureRange(bytes, sectionTableOffset, sectionCount * PE_SECTION_HEADER_SIZE, 'format-safe-pe-section-table-invalid');
   const header = { peOffset, machine, sectionCount, timestamp, optionalHeaderSize, optionalOffset, sectionTableOffset, optional };
   const sections = peSections(bytes, header);
+  const checkSum = u32(bytes, optionalOffset + 64);
   return {
     format: 'pe',
     architecture: machine === PE_I386_MACHINE ? 'x86' : 'x86_64',
     header,
     sections,
+    checkSum,
     target: { name: 'COFF.TimeDateStamp', offset: peOffset + 8, size: 4, data: bytes.slice(peOffset + 8, peOffset + 12) },
     maskedFileDigest: bytesDigestMasked(bytes, peOffset + 8, 4),
     signatureState: certificateTableSize === 0 ? 'unsigned' : 'authenticode-present',
@@ -476,6 +479,12 @@ function elfNobitsLayoutPlan(source, image, mutation) {
   if (source.length !== image.header.sectionTableOffset + image.header.sectionCount * ELF64_SECTION_HEADER_SIZE) fail('format-safe-elf-section-table-not-terminal');
   if ((source.length + ELF64_SECTION_HEADER_SIZE) % alignment !== 0) fail('format-safe-elf-nobits-offset-alignment-invalid');
   if (source.slice(nameOffset, nameOffset + encodedName.length).some((byte) => byte !== 0)) fail('format-safe-elf-section-name-space-not-zero');
+  for (const section of image.sections) {
+    if (section.type === ELF_SHT_NOBITS || section.index === image.header.sectionNameIndex || section.size <= 0) continue;
+    if (section.offset < nameOffset + encodedName.length && nameOffset < section.offset + section.size) {
+      fail('format-safe-elf-section-name-space-overlap');
+    }
+  }
 
   const sectionHeader = new Uint8Array(ELF64_SECTION_HEADER_SIZE);
   const sectionView = new DataView(sectionHeader.buffer);
@@ -546,7 +555,7 @@ function peSectionVirtualSizePlan(source, image, mutation) {
   const sectionAlignment = image.header.optional.sectionAlignment;
   const fileAlignment = image.header.optional.fileAlignment;
   if (!Number.isSafeInteger(sectionAlignment) || sectionAlignment < 1 || (sectionAlignment & (sectionAlignment - 1)) !== 0
-    || !Number.isSafeInteger(fileAlignment) || fileAlignment < 1 || sectionAlignment < fileAlignment) {
+    || !Number.isSafeInteger(fileAlignment) || fileAlignment < 1 || (fileAlignment & (fileAlignment - 1)) !== 0 || sectionAlignment < fileAlignment) {
     fail('format-safe-pe-layout-alignment-invalid');
   }
   const originalSizeOfImage = image.header.optional.sizeOfImage;
@@ -556,8 +565,16 @@ function peSectionVirtualSizePlan(source, image, mutation) {
   const originalBucket = alignUp(target.virtualAddress + target.virtualSize, sectionAlignment);
   const outputBucket = alignUp(target.virtualAddress + requestedSize, sectionAlignment);
   if (originalBucket !== outputBucket) fail('format-safe-pe-layout-alignment-bucket-invalid');
-  const next = image.sections[target.index + 1];
-  if (next && target.virtualAddress + requestedSize > next.virtualAddress) fail('format-safe-pe-layout-section-overlap');
+  const targetStart = target.virtualAddress;
+  const targetNewEnd = target.virtualAddress + requestedSize;
+  for (const section of image.sections) {
+    if (section === target) continue;
+    const otherStart = section.virtualAddress;
+    const otherEnd = section.virtualAddress + Math.max(section.virtualSize, section.rawSize, 1);
+    if (targetStart < otherEnd && otherStart < targetNewEnd) {
+      fail('format-safe-pe-layout-section-overlap');
+    }
+  }
   const sectionHeaderOffset = image.header.sectionTableOffset + target.index * PE_SECTION_HEADER_SIZE;
   return {
     operations: [{
@@ -603,10 +620,17 @@ function machoSectionSizePlan(source, image, mutation) {
   if (!target) fail('format-safe-macho-layout-target-unavailable');
   const segment = image.segments.find((item) => item.commandIndex === target.commandIndex);
   if (!segment || segment.sectionCount !== 2) fail('format-safe-macho-layout-segment-invalid');
-  const next = image.sections.filter((section) => section.commandIndex === target.commandIndex && section.offset > target.offset).sort((left, right) => left.offset - right.offset)[0];
-  const nextSectionOffset = next?.offset ?? segment.fileOffset + segment.fileSize;
-  if (target.offset + target.size > nextSectionOffset) fail('format-safe-macho-layout-source-overlap');
-  let availableGap = nextSectionOffset - (target.offset + target.size);
+  const segmentFileEnd = segment.fileOffset + segment.fileSize;
+  if (target.offset < segment.fileOffset || target.offset + target.size > segmentFileEnd) {
+    fail('format-safe-macho-layout-source-file-range-invalid');
+  }
+  if (target.address < segment.vmaddr || target.address + target.size > segment.vmaddr + segment.vmsize) {
+    fail('format-safe-macho-layout-source-vm-range-invalid');
+  }
+  const isZeroFillSection = (section) => {
+    const secType = section.flags & MACHO_SECTION_TYPE;
+    return secType === MACHO_S_ZEROFILL || secType === MACHO_S_GB_ZEROFILL || secType === MACHO_S_THREAD_LOCAL_ZEROFILL;
+  };
   /* Mach-O section file offsets and VM addresses are independent invariants:
      extending within the file gap can still drive the section's VM range into
      the next section's address range. Sections are identified by their owning
@@ -616,10 +640,19 @@ function machoSectionSizePlan(source, image, mutation) {
   const segmentSections = image.sections.filter((section) => section.commandIndex === target.commandIndex);
   for (const section of segmentSections) {
     if (section === target || !section.size) continue;
+    if (!isZeroFillSection(section) && section.offset < target.offset + target.size && target.offset < section.offset + section.size) {
+      fail('format-safe-macho-layout-source-overlap');
+    }
     if (section.address < target.address + target.size && target.address < section.address + section.size) {
       fail('format-safe-macho-layout-source-vm-overlap');
     }
   }
+  const next = segmentSections
+    .filter((section) => !isZeroFillSection(section) && section.offset > target.offset)
+    .sort((left, right) => left.offset - right.offset)[0];
+  const nextSectionOffset = Math.min(next?.offset ?? segmentFileEnd, segmentFileEnd);
+  if (target.offset + target.size > nextSectionOffset) fail('format-safe-macho-layout-source-overlap');
+  let availableGap = nextSectionOffset - (target.offset + target.size);
   const nextByAddress = segmentSections
     .filter((section) => section.address > target.address)
     .sort((left, right) => left.address - right.address)[0];
@@ -687,6 +720,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
   const image = parseImage(source);
   if (image.format !== format || image.architecture !== architecture) fail('format-safe-source-identity-mismatch');
   if (image.signatureState !== 'unsigned') fail('format-safe-signed-or-build-identified-input-unsupported');
+  if (format === 'pe' && image.checkSum !== 0) fail('format-safe-pe-checksum-nonzero-unsupported');
   const mutation = input.mutation;
   if (!mutation || typeof mutation !== 'object' || Array.isArray(mutation)) fail('format-safe-mutation-required');
   let operations;
@@ -741,7 +775,7 @@ export function createFormatSafeRebuildTransaction(input = {}) {
     architecture,
     loaderVersion: input.loaderVersion,
     operations,
-    impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind), sections: [safeState.section || safeState.field], relocationBindings: [] },
+    impact: { layoutMoving: ['elf-add-nobits-section', 'pe-section-virtual-size', 'macho-section-size'].includes(mutation.kind), sections: [safeState.section || safeState.field || safeState.command], relocationBindings: [] },
     expectedOriginalState: { sourceHash, formatSafe: safeState },
     ...(input.discoveryArtifact == null ? {} : { discoveryArtifact: input.discoveryArtifact }),
     additionalValidators: ['format-invariants'],
@@ -766,6 +800,7 @@ export function validateFormatSafeMutation({ transaction, original, output } = {
     const outputImage = parseImage(candidate);
     if (sourceImage.format !== format || outputImage.format !== format || sourceImage.architecture !== architecture || outputImage.architecture !== architecture) return reject('format-safe-format-identity-mismatch');
     if (sourceImage.signatureState !== 'unsigned') return reject('format-safe-signed-or-build-identified-input-unsupported');
+    if (format === 'pe' && (sourceImage.checkSum !== 0 || outputImage.checkSum !== 0)) return reject('format-safe-pe-checksum-nonzero-unsupported');
     if (digestBytes(source) !== transaction.sourceHash) return reject('format-safe-source-hash-mismatch');
     const safeState = transaction.expectedOriginalState?.formatSafe;
     if (!safeState || safeState.schema !== FORMAT_SAFE_REBUILD_SCHEMA) return reject('format-safe-state-missing');

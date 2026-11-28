@@ -94,7 +94,8 @@ function finalize(result, model, opts) {
     // No semantic-mode promotion or invented analysis snapshot for fallback
     // output. Missing snapshot identity remains explicit in the shared map.
     try { closed.renderProvenance = buildRenderProvenance({ result: closed, budget: opts.renderProvenanceBudget, shouldAbort: opts.shouldAbort }); }
-    catch {
+    catch (error) {
+      if (isAbortError(error)) throw error;
       closed.renderProvenance = null;
       closed.expressionHistoryBinding = Object.freeze({ scope:'producer-consumer-observations',
         completeness:'incomplete', reasons:Object.freeze(['switch-map-unavailable']) });
@@ -217,6 +218,7 @@ export function semanticModelForDecompiler(model) {
   for (let index = 0; index < instructionCount; index++) {
     if (!(index in originalInstructions)) continue;
     const insn = originalInstructions[index];
+    if (!insn || typeof insn !== 'object') continue;
     const mn = String(insn.mnemonic || insn.mn || '').toLowerCase();
     const directBranch = mn === 'b' || /^b\.[a-z]{2}$/.test(mn) || /^(?:cbz|cbnz|tbz|tbnz)$/.test(mn);
     const directCall = mn === 'bl';
@@ -313,7 +315,7 @@ function blockAddress(result, model, opts, bi) {
   if (!b) return opts.addr ?? model.instructions?.[0]?.address ?? 0n;
   return model.instructions?.find((x) => x.row === b.startRow)?.address
     ?? opts.addrOfRow?.(b.startRow)
-    ?? (opts.addr ?? model.instructions?.[0]?.address ?? 0n) + BigInt(b.startRow || 0) * 4n;
+    ?? BigInt(opts.addr ?? model.instructions?.[0]?.address ?? 0n) + BigInt(b.startRow || 0) * 4n;
 }
 
 function labelAddress(result, model, opts, bi) {
@@ -499,10 +501,18 @@ function ensureSemanticLabel(result, model, opts, bi) {
   if (!block || !result?.lines) return false;
   const label = labelAddress(result, model, opts, bi);
   if (result.lines.some((l) => String(l.text || '').replace(/:$/, '') === label)) return true;
-  let at = result.lines.findIndex((l) => l.row != null && l.row >= block.startRow && l.kind !== 'sig');
+  const open = result.lines.findIndex((l) => l.kind === 'ctrl' && l.text === '{');
+  const floor = open >= 0 ? open + 1 : 1;
+  let at = result.lines.findIndex((l, i) => i >= floor && l.row != null && l.row >= block.startRow && l.kind !== 'sig');
   if (at < 0) return false;
-  const indent = Math.max(1, result.lines[at]?.indent || 1);
-  result.lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row: block.startRow, addr: blockAddress(result, model, opts, bi), note: null });
+  const targetLine = result.lines[at];
+  const indent = Math.max(1, targetLine?.indent || 1);
+  const addr = blockAddress(result, model, opts, bi);
+  const insertItems = [{ kind: 'label', indent, text: `${label}:`, row: block.startRow, addr, note: null }];
+  if (targetLine?.kind === 'ctrl' && targetLine?.text === '}') {
+    insertItems.push({ kind: 'stmt', indent: indent + 1, text: ';', row: block.startRow, addr, note: null });
+  }
+  result.lines.splice(at, 0, ...insertItems);
   return true;
 }
 

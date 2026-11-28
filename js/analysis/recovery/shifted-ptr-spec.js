@@ -11,10 +11,18 @@ export const SHIFTED_PTR_FLAGS = Object.freeze({
 
 export const SHIFTED_PTR_SPEC_BYTES = 24;
 
+const UTF8_ENCODER = new TextEncoder();
+const INT32_MIN = -0x80000000;
+const INT32_MAX = 0x7fffffff;
+
 function toBigIntVa(v) {
   if (typeof v === 'bigint') return v;
-  if (typeof v === 'number') return BigInt(Math.trunc(v));
-  if (typeof v === 'string') return BigInt(v.trim());
+  if (typeof v === 'number') return Number.isFinite(v) ? BigInt(Math.trunc(v)) : 0n;
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (!trimmed) return 0n;
+    try { return BigInt(trimmed); } catch { return 0n; }
+  }
   return 0n;
 }
 
@@ -23,9 +31,9 @@ function toBigIntVa(v) {
  */
 export function fnv1a32(str) {
   let hash = 0x811c9dc5;
-  const text = String(str);
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i) & 0xff;
+  const bytes = UTF8_ENCODER.encode(String(str));
+  for (let i = 0; i < bytes.length; i++) {
+    hash ^= bytes[i];
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return hash >>> 0;
@@ -41,8 +49,9 @@ export function parseShiftedTypeAnnotation(str) {
     );
   if (!m) return null;
   const parentType = m[2];
-  const shiftOffset = Number(m[3]);
-  if (!Number.isInteger(shiftOffset)) return null;
+  const raw = m[3];
+  const shiftOffset = /^-0x/i.test(raw) ? -parseInt(raw.slice(3), 16) : Number(raw);
+  if (!Number.isInteger(shiftOffset) || shiftOffset < INT32_MIN || shiftOffset > INT32_MAX) return null;
   return {
     pointeeType: m[1] || parentType,
     parentType,
@@ -58,11 +67,14 @@ export class ShiftedPtrRegistry {
   }
 
   register(funcVa, spec) {
+    if (!spec || typeof spec !== 'object') return { ok: false, reason: 'invalid_spec' };
     const vaBig = toBigIntVa(funcVa);
     const varKey = String(spec.varKey || '');
     if (!varKey) return { ok: false, reason: 'missing_var_key' };
     const shiftOffset = Number(spec.shiftOffset ?? spec.shift_offset ?? 0);
-    if (!Number.isInteger(shiftOffset)) return { ok: false, reason: 'invalid_shift_offset' };
+    if (!Number.isInteger(shiftOffset) || shiftOffset < INT32_MIN || shiftOffset > INT32_MAX) {
+      return { ok: false, reason: 'invalid_shift_offset' };
+    }
 
     let fnMap = this.byFunc.get(vaBig);
     if (!fnMap) {
@@ -117,8 +129,13 @@ export class ShiftedPtrRegistry {
       Boolean(options.alreadyAdjustedByThunk) &&
       (spec.specFlags & SHIFTED_PTR_FLAGS.FROM_CXX_THUNK) !== 0;
 
+    const numericAccessOffset = Number(accessOffset);
+    if (!Number.isInteger(numericAccessOffset)) {
+      return { ok: false, reason: 'invalid_access_offset' };
+    }
+
     const effectiveShift = alreadyAdjusted ? 0 : spec.shiftOffset;
-    const parentOffset = effectiveShift + Number(accessOffset);
+    const parentOffset = effectiveShift + numericAccessOffset;
     if (parentOffset < 0 && (spec.specFlags & SHIFTED_PTR_FLAGS.ALLOW_NEG_OFFSET) === 0) {
       return {
         ok: false,
@@ -136,11 +153,23 @@ export class ShiftedPtrRegistry {
     }
 
     const varDisplay = options.varName || varKey;
-    const memberName = matchedMember?.name || `field_${Math.abs(parentOffset).toString(16)}`;
-    const hexShift = `0x${Math.abs(spec.shiftOffset).toString(16)}`;
+    const fallbackName = parentOffset < 0
+      ? `field_neg_${Math.abs(parentOffset).toString(16)}`
+      : `field_${parentOffset.toString(16)}`;
+    const memberName = matchedMember?.name || fallbackName;
 
-    const pathAExpr = `ADJ(${varDisplay})->${memberName}`;
-    const pathBC11Expr = `HEX_CONTAINER_OF(${varDisplay}, ${spec.parentType}, ${hexShift})->${memberName}`;
+    let pathAExpr;
+    let pathBC11Expr;
+    if (effectiveShift === 0) {
+      pathAExpr = `${varDisplay}->${memberName}`;
+      pathBC11Expr = `${varDisplay}->${memberName}`;
+    } else {
+      const shiftExpr = effectiveShift < 0
+        ? `-0x${Math.abs(effectiveShift).toString(16)}`
+        : `0x${effectiveShift.toString(16)}`;
+      pathAExpr = `ADJ(${varDisplay})->${memberName}`;
+      pathBC11Expr = `HEX_CONTAINER_OF(${varDisplay}, ${spec.parentType}, ${shiftExpr})->${memberName}`;
+    }
 
     return {
       ok: true,
