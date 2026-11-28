@@ -294,37 +294,103 @@ function chooseUtf16Encodings(image, option) {
 function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding, isFinalBlock) {
   const be = encoding === 'utf16be';
   const len = bytes.length;
-  let unfinishedStart = len;
-  for (let p = 0; p < len;) {
-    const first = utf16AtPacked(bytes, p, len, be);
-    if (first < 0 || !printableCodePoint(first >>> 3)) {
-      if (!isFinalBlock && first < 0 && incompleteUtf16Prefix(bytes, p, len, be)
-        && base + BigInt(len) < range.end) {
-        unfinishedStart = p;
+  const maxCollect = Number.isFinite(limit) ? Math.max(0, limit - out.length + 1) : Infinity;
+
+  const scanParity = (parity, skipSpans) => {
+    const candidates = [];
+    const spans = [];
+    let unfinishedStart = len;
+    let eligibleCount = 0;
+    let spanIdx = 0;
+
+    for (let p = parity; p < len;) {
+      if (skipSpans && skipSpans.length) {
+        while (spanIdx < skipSpans.length && skipSpans[spanIdx].end <= p) spanIdx++;
+        if (spanIdx < skipSpans.length && p >= skipSpans[spanIdx].start && p < skipSpans[spanIdx].end) {
+          const spanEnd = skipSpans[spanIdx].end;
+          p = (spanEnd & 1) === parity ? spanEnd : spanEnd + 1;
+          continue;
+        }
+      }
+
+      const first = utf16AtPacked(bytes, p, len, be);
+      if (first < 0 || !printableCodePoint(first >>> 3)) {
+        if (!isFinalBlock && first < 0 && incompleteUtf16Prefix(bytes, p, len, be)
+          && base + BigInt(len) < range.end) {
+          unfinishedStart = p;
+          break;
+        }
+        p += 2;
+        continue;
+      }
+      const start = p;
+      let q = p;
+      let chars = 0;
+      let asciiCount = 0;
+      while (q < len && chars < max) {
+        const x = utf16AtPacked(bytes, q, len, be);
+        const cp = x >>> 3;
+        if (x < 0 || !printableCodePoint(cp)) break;
+        if (cp <= 0x7f) asciiCount++;
+        q += x & 7;
+        chars++;
+      }
+      if (!isFinalBlock && chars < max && base + BigInt(len) < range.end
+        && (q === len || incompleteUtf16Prefix(bytes, q, len, be))) {
+        unfinishedStart = start;
         break;
       }
-      p++;
-      continue;
+      if (chars >= min) {
+        candidates.push({ start, end: q, asciiCount });
+        const fileOffset = base + BigInt(start);
+        const inRange = fileOffset >= range.start && fileOffset < range.end;
+        if (inRange) {
+          if (!skipSpans && asciiCount > 0) spans.push({ start, end: q });
+          if (!seen.has(`${fileOffset}:${encoding}`)) {
+            eligibleCount++;
+            if (eligibleCount >= maxCollect) break;
+          }
+        }
+      }
+      p = chars >= max ? q : Math.max(q + (q < len ? 2 : 0), p + 2);
+      if ((p & 1) !== parity) p += 1;
     }
-    const start = p;
-    let q = p;
-    let chars = 0;
-    while (q < len && chars < max) {
-      const x = utf16AtPacked(bytes, q, len, be);
-      if (x < 0 || !printableCodePoint(x >>> 3)) break;
-      q += x & 7;
-      chars++;
+
+    return { candidates, spans, unfinishedStart };
+  };
+
+  const p0 = scanParity(0, null);
+  const p1 = scanParity(1, p0.spans);
+
+  const merged = p0.candidates.concat(p1.candidates);
+  merged.sort((a, b) => a.start - b.start || b.end - a.end);
+
+  let lastEmittedEnd = 0;
+  for (let i = 0; i < merged.length; i++) {
+    const cand = merged[i];
+    if (cand.start < lastEmittedEnd) continue;
+    // Avoid letting a 1-byte-shifted NUL-prefixed non-ASCII shadow eclipse a true overlapping ASCII UTF-16 string.
+    if (cand.asciiCount === 0 && i + 1 < merged.length) {
+      const next = merged[i + 1];
+      if (next.start < cand.end && next.asciiCount > 0) continue;
     }
-    if (!isFinalBlock && chars < max && base + BigInt(len) < range.end
-      && (q === len || incompleteUtf16Prefix(bytes, q, len, be))) {
-      unfinishedStart = start;
-      break;
+    const fileOffset = base + BigInt(cand.start);
+    const inRange = fileOffset >= range.start && fileOffset < range.end;
+    const key = `${fileOffset}:${encoding}`;
+    const alreadySeen = inRange && seen.has(key);
+    const { emitted, capped } = tryEmit(image, bytes, base, cand.start, cand.end - cand.start, encoding, range, out, seen, limit);
+    if (capped) return { unfinishedStart: len, capped: true };
+    if (emitted || alreadySeen) {
+      if (cand.end > lastEmittedEnd) lastEmittedEnd = cand.end;
     }
-    if (chars >= min) {
-      const { capped } = tryEmit(image, bytes, base, start, q - start, encoding, range, out, seen, limit);
-      if (capped) return { unfinishedStart: len, capped: true };
-    }
-    p = chars >= max ? q : Math.max(q + (q < len ? 1 : 0), p + 1);
+  }
+
+  let unfinishedStart = len;
+  if (p0.unfinishedStart < len && p0.unfinishedStart >= lastEmittedEnd && p0.unfinishedStart < unfinishedStart) {
+    unfinishedStart = p0.unfinishedStart;
+  }
+  if (p1.unfinishedStart < len && p1.unfinishedStart >= lastEmittedEnd && p1.unfinishedStart < unfinishedStart) {
+    unfinishedStart = p1.unfinishedStart;
   }
   return { unfinishedStart, capped: false };
 }

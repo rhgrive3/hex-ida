@@ -248,6 +248,7 @@
     if (n === 0 || n > 32) return null;
     const entry = is64 ? 32 : 20;
     if (8 + n * entry > buf.byteLength) return null;
+    const headerEnd = BigInt(8 + n * entry);
     const staged = [];
     for (let i = 0; i < n; i++) {
       const o = 8 + i * entry;
@@ -255,7 +256,7 @@
       const cpusubtype = dv.getInt32(o + 4, false);
       const offset = is64 ? dv.getBigUint64(o + 8, false) : BigInt(dv.getUint32(o + 8, false));
       const size = is64 ? dv.getBigUint64(o + 16, false) : BigInt(dv.getUint32(o + 12, false));
-      if (size <= 0n || offset + size > fileSize) return null;
+      if (offset < headerEnd || size <= 0n || offset + size > fileSize) return null;
       staged.push({ cputype, cpusubtype, offset, size });
     }
     const seen = new Set();
