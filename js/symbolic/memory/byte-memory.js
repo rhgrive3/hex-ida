@@ -23,9 +23,8 @@ function primitiveInteger(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
   throw new QueryFailure('unsafe-integer');
 }
-const VALID_MEMORY_KINDS = new Set([
-  'const','fresh_symbol','unary','binary','compare','connective','ite','extract','concat','cast'
-]);
+// All node kinds, freeze invariants, sorts, widths, symbolIds, and depth<=128
+// are validated in a single pass by collectSymbols (inspectMemoryExpressions).
 // Structural equality, not a name/string/hash/solver-boolean alias heuristic.
 // Calls are bounded by the validated term size and the query work budget.
 function children(expr) {
@@ -47,19 +46,6 @@ export function assertMemoryExpr(expr, guard, width = null) {
   const validated=collectSymbols([expr],{maxExprNodes:available,maxExprDepth:128,guard});
   if(validated.limitExceeded) guard.fail('budget:workItems');
   if(validated.unsupportedReason||validated.depthExceeded) throw new QueryFailure(validated.unsupportedReason??'expression-depth');
-  const work = [[expr,0]], seen = new Set();
-  while (work.length) {
-    guard.take('workItems');
-    const [node,depth] = work.pop();
-    if (!node || !Object.isFrozen(node) || !Object.isFrozen(node.sort) || depth > 128 ||
-        !VALID_MEMORY_KINDS.has(node.kind) ||
-        (node.sort?.kind !== 'bool' && node.sort?.kind !== 'bv')) throw new QueryFailure('unsupported-expression');
-    if (node.sort.kind === 'bv' && (!Number.isSafeInteger(node.sort.width) || node.sort.width < 1 || node.sort.width > 64)) throw new QueryFailure('unsupported-width');
-    if (node.kind==='fresh_symbol' && (typeof node.symbolId!=='string'||!node.symbolId)) throw new QueryFailure('missing-canonical-symbol-id');
-    if (seen.has(node)) continue;
-    seen.add(node);
-    for (const child of children(node)) work.push([child,depth+1]);
-  }
   if (width != null && (expr.sort.kind !== 'bv' || expr.sort.width !== width)) throw new QueryFailure('width-mismatch');
   return expr;
 }
@@ -151,8 +137,13 @@ function makeState(arena, copy = null) {
     arena.initialSymbols.add(expression);
     let byte=Object.freeze({expression,label:labels.unknown});
     // Every earlier read participates, including expressions observed by sibling paths.
-    for (const prior of arena.reads) byte=choose(eq(a,prior.address),prior.byte,byte);
-    for (const [key,known] of arena.initial) byte=choose(eq(a,createBv(bits,key)),known,byte);
+    for (const prior of arena.reads) {
+      if (a.kind==='const' && prior.address.kind==='const') continue;
+      byte=choose(eq(a,prior.address),prior.byte,byte);
+    }
+    if (a.kind!=='const') {
+      for (const [key,known] of arena.initial) byte=choose(eq(a,createBv(bits,key)),known,byte);
+    }
     arena.reads.push(Object.freeze({address:a,byte}));
     return byte;
   }
@@ -266,6 +257,7 @@ export function joinByteMemory(condition,yes,no,label=null) {
   const a=states.get(yes),b=states.get(no);
   if(!a||!b||a.arena!==b.arena) throw new QueryFailure('unrelated-memory-states');
   const {guard}=a.arena;
+  guard.check();
   assertMemoryExpr(condition,guard);
   if(condition.sort.kind!=='bool') throw new QueryFailure('join-condition-sort');
   guard.take('aliasForks');guard.take('allocationUnits',a.current.size+a.history.length+b.current.size+b.history.length);

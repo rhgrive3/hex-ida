@@ -108,6 +108,21 @@ class CandidateEGraph {
       }
       this.index=index;
     }
+    const dedup=new Set(), compacted=[];
+    this.guard.take('allocationUnits',this.nodes.length);
+    for(const node of this.nodes) {
+      this.guard.take('workItems');
+      const owner=this.find(node.owner);
+      const children=node.children.map(id=>this.find(id));
+      const key=this.key(node.header,children);
+      const dedupKey=owner+'|'+key;
+      if(dedup.has(dedupKey))continue;
+      dedup.add(dedupKey);
+      node.owner=owner;
+      node.children=children;
+      compacted.push(node);
+    }
+    this.nodes=compacted;
   }
   insert(frontier,candidate) {
     for(let index=0;index<frontier.length;index++){
@@ -129,7 +144,7 @@ class CandidateEGraph {
     // arbitrary cycle cut that would invent a value.
     let prevChangedClasses=new Set();
     let currChangedClasses=new Set();
-    for(let pass=0;pass<=frontiers.size;pass++) {
+    for(let pass=0;pass<=frontiers.size*MAX_FRONTIER;pass++) {
       this.guard.take('extractionPasses');let changed=false;
       for(const node of this.nodes) {
         this.guard.take('workItems');
@@ -146,6 +161,7 @@ class CandidateEGraph {
           if(!anyChildChanged && (prevChangedClasses.has(r) || currChangedClasses.has(r)))anyChildChanged=true;
         }
         if(anyEmpty)continue;
+        if(pass>0 && !anyChildChanged)continue;
         let choices=[[]];
         for(const input of inputs) {
           const next=[];
@@ -161,7 +177,7 @@ class CandidateEGraph {
           this.guard.take('workItems',cost.treeNodes);
           const ownerRoot=this.find(node.owner);
           const frontier=frontiers.get(ownerRoot);
-          if((pass>0 && !anyChildChanged) || isStrictlyDominated(frontier,cost))continue;
+          if(isStrictlyDominated(frontier,cost))continue;
           const expression=rebuildCanonicalExpression(node.witness,choice.map(child=>child.expression));
           const digest=E.computeStructuralHash(expression);
           if(this.insert(frontier,{expression,cost:Object.freeze(cost),digest})){
