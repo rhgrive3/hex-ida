@@ -16,7 +16,7 @@ import { runWasmStructuralAnalysis } from './analysis/wasm-suite.js';
 
 const SIGNALS = [
   { id: 'endpoint', level: 'high', re: /^https?:\/\/[^\s"']{4,}/i, max: 12 },
-  { id: 'anticheat', level: 'high', re: /jailbr|jailbroken|cydia|frida|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
+  { id: 'anticheat', level: 'high', re: /cheat|jailbr|jailbroken|cydia|frida(?!y)|substrate|tamper|integrity|debugger|ptrace|sandbox_?check|不正|改造|チート/i, max: 8 },
   { id: 'crypto', level: 'normal', re: /\baes\b|\bsha(1|256|512)\b|\bhmac\b|\brsa\b|encrypt|decrypt|cipher|keychain|private_?key/i, max: 8 },
   { id: 'ads', level: 'normal', re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adjust\.com|appsflyer|interstitial|rewarded[\s_-]?(?:ads?|video|interstitial)/i, max: 6 },
   { id: 'purchase', level: 'high', re: /storekit|skpayment|receipt|verifyreceipt|subscription|in_?app_?purchase/i, max: 6 },
@@ -140,13 +140,39 @@ function fairFunctionList(symbols, region, max = 20000) {
   return out;
 }
 
+function fallbackFunctionEnd(symbols, addr, region) {
+  const funcs = symbols?.funcs;
+  if (!funcs || !funcs.length) return null;
+  const idx = lowerBoundBig(funcs, addr);
+  if (idx < 0 || idx >= funcs.length || funcs[idx] !== addr) return null;
+  if (typeof symbols._containmentBound === 'function') {
+    const bound = symbols._containmentBound(idx);
+    if (bound != null && bound > addr) return bound;
+  }
+  const regionEnd = (region && region.vmAddr != null && region.size != null)
+    ? BigInt(region.vmAddr) + BigInt(region.size)
+    : null;
+  const next = idx + 1 < funcs.length ? funcs[idx + 1] : null;
+  if (next != null && next > addr && next - addr <= 0x40000n) {
+    return regionEnd != null && regionEnd < next ? regionEnd : next;
+  }
+  if (regionEnd != null && regionEnd > addr) {
+    const capped = addr + 0x40000n;
+    return regionEnd < capped ? regionEnd : capped;
+  }
+  return null;
+}
+
 export function notableFunctions(program, symbols, region, limit = 12) {
   if (!program || !symbols || !symbols.functionCount) return [];
   const list = fairFunctionList(symbols, region, 20000);
   const out = [];
   for (const f of list) {
-    const range = program.functionRange(f.addr);
-    if (!range || range.end == null) continue;
+    const rawRange = program.functionRange(f.addr);
+    if (!rawRange) continue;
+    const end = rawRange.end != null ? rawRange.end : fallbackFunctionEnd(symbols, rawRange.start, rawRange.region || region);
+    if (end == null || end <= rawRange.start) continue;
+    const range = rawRange.end != null ? rawRange : { ...rawRange, end };
     const stats = program.statsOf(range.start, range.end);
     if (!stats.total) continue;
     const called = program.callCountOf(f.addr);
@@ -255,10 +281,19 @@ function stringByteSpan(s) {
   return carried;
 }
 
-export function findings(strings, program, symbols, limit = 40) {
+export function findings(strings, program, symbols, limit = 50) {
   const out = [];
   if (!program || limit <= 0) return out;
-  const buckets = SIGNALS.map(() => []);
+  // Collect referenced (actionable) matches first per signal so dead/unreferenced
+  // strings at the front of the table cannot starve real code references (#findings-priority).
+  const buckets = SIGNALS.map((sig) => ({
+    actionable: [],
+    unreferenced: [],
+    byText: new Map(),
+    probes: 0,
+    maxProbes: Math.max(sig.max * 512, 2048),
+    done: false,
+  }));
   let activeSignals = SIGNALS.length;
   for (const s of strings || []) {
     if (activeSignals === 0) break;
@@ -267,16 +302,8 @@ export function findings(strings, program, symbols, limit = 40) {
     for (let si = 0; si < SIGNALS.length; si++) {
       const sig = SIGNALS[si];
       const bucket = buckets[si];
-      if (bucket.length >= sig.max) continue;
+      if (bucket.done) continue;
       if (!sig.re.test(text) && !(sig.caseRe && sig.caseRe.test(text))) continue;
-      bucket.push(s);
-      if (bucket.length >= sig.max) activeSignals--;
-    }
-  }
-  for (let si = 0; si < SIGNALS.length && out.length < limit; si++) {
-    const sig = SIGNALS[si];
-    for (const s of buckets[si]) {
-      if (out.length >= limit) break;
       // The xref span is a virtual-address byte range (#5698): use the
       // string's authoritative raw byte extent; entries without one stay
       // visible as data but get no xref authority (no over-inclusive
@@ -287,21 +314,67 @@ export function findings(strings, program, symbols, limit = 40) {
         ? { length: 0, complete: false, map: () => [] }
         : program.functionsReferencing(addr, BigInt(Math.max(1, Math.min(span, 256))), 8);
       const actionable = users.length > 0;
-      out.push({
-        id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
-        actionable,
-        status: actionable ? 'referenced' : 'unreferenced',
-        xrefsComplete: users.complete !== false,
-        users: users.map((u) => ({
-          addr: u.addr, site: u.site,
-          name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
-        })),
-      });
+      const mappedUsers = users.map((u) => ({
+        addr: u.addr, site: u.site,
+        name: u.addr != null && symbols ? symbols.nameAt(u.addr) : null,
+      }));
+      bucket.probes++;
+      const existing = bucket.byText.get(text);
+      if (existing) {
+        for (const u of mappedUsers) {
+          if (existing.users.length >= 8) break;
+          if (!existing.users.some((eu) => eu.addr === u.addr && eu.site === u.site)) {
+            existing.users.push(u);
+          }
+        }
+        if (actionable && !existing.actionable) {
+          existing.actionable = true;
+          existing.status = 'referenced';
+          existing.addr = addr ?? existing.addr;
+          existing.xrefsComplete = users.complete !== false;
+          const idx = bucket.unreferenced.indexOf(existing);
+          if (idx >= 0) bucket.unreferenced.splice(idx, 1);
+          bucket.actionable.push(existing);
+          if (bucket.actionable.length >= sig.max) {
+            bucket.done = true;
+            activeSignals--;
+          }
+        }
+      } else {
+        const entry = {
+          id: sig.id, level: sig.level, text: s.text, addr: addr ?? s.addr,
+          actionable,
+          status: actionable ? 'referenced' : 'unreferenced',
+          xrefsComplete: users.complete !== false,
+          users: mappedUsers,
+        };
+        if (actionable) {
+          bucket.byText.set(text, entry);
+          bucket.actionable.push(entry);
+          if (bucket.actionable.length >= sig.max) {
+            bucket.done = true;
+            activeSignals--;
+          }
+        } else if (bucket.unreferenced.length < sig.max) {
+          bucket.byText.set(text, entry);
+          bucket.unreferenced.push(entry);
+        }
+      }
+      if (!bucket.done && bucket.probes >= bucket.maxProbes) {
+        bucket.done = true;
+        activeSignals--;
+      }
     }
   }
-  // Proven/actionable findings always precede dead strings.
+  for (let si = 0; si < SIGNALS.length; si++) {
+    const sig = SIGNALS[si];
+    const bucket = buckets[si];
+    const combined = bucket.actionable.concat(bucket.unreferenced).slice(0, sig.max);
+    for (const entry of combined) out.push(entry);
+  }
+  // Proven/actionable findings always precede dead strings before applying total limit.
   out.sort((a, b) => Number(b.actionable) - Number(a.actionable) || b.users.length - a.users.length);
-  return out;
+  return out.slice(0, limit);
 }
 
 export async function autoAnalyze(opts) {

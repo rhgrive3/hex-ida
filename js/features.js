@@ -40,7 +40,7 @@ const FEATURES = [
   },
   {
     id: 'save', ja: 'セーブ・データ保存', en: 'Save data',
-    re: /save|savedata|autosave|progress|checkpoint|userdefault|preference|realm|sqlite|\.db\b|セーブ|保存|データ|進行|記録/i,
+    re: /save|savedata|autosave|(?<!in[\s_-])progress(?![\s_\\/-]*(?:bar|meter|view|indicator|hud|dialog))|checkpoint|userdefault|preference|realm|sqlite|\.db\b|セーブ|保存|データ|進行|記録/i,
   },
   {
     id: 'battle', ja: 'バトル・戦闘', en: 'Battle',
@@ -72,7 +72,7 @@ const FEATURES = [
   },
   {
     id: 'anticheat', ja: 'チート対策・改造検知', en: 'Anti-cheat',
-    re: /cheat|jailbreak|jailbroken|cydia|frida|substrate|tamper|integrity|debugger|emulator|root_?detect|不正|改造|チート|検知/i,
+    re: /cheat|jailbreak|jailbroken|cydia|frida(?!y)|substrate|tamper|integrity|debugger|emulator|root_?detect|不正|改造|チート|検知/i,
   },
   {
     id: 'ads', ja: '広告', en: 'Advertising',

@@ -60,7 +60,7 @@ const CLASS_NAME_HINTS = [
   { id: 'social', points: 3, re: /friend|guild|clan|chat|message|mail|social|invite|follow/i },
   { id: 'ranking', points: 3, re: /rank|leaderboard|score|record|achievement/i },
   { id: 'ads', points: 3, re: /admob|applovin|unityads|ironsource|vungle|tapjoy|adcolony|interstitial|rewarded|banner|\bads?[a-z]{0,24}(?:manager|helper|view|unit)/i },
-  { id: 'anticheat', points: 3, re: /jailbreak|frida|magisk|ptrace|ssl[\s_-]?pinning|root(?:detect|check|ed|guard|jail)|tamper|integrity|antichea|cheat|security|crypt|cipher|hash(?!map|table|set|code)|keychain|obfusc|protect|guard(?!ian)/i },
+  { id: 'anticheat', points: 3, re: /jailbreak|frida(?!y)|magisk|ptrace|ssl[\s_-]?pinning|root(?:detect|check|ed|guard|jail)|tamper|integrity|antichea|cheat|security|crypt|cipher|hash(?!map|table|set|code)|keychain|obfusc|protect|guard(?!ian)/i },
   { id: 'audio', points: 3, re: /audio|sound|\bbgm\b|music|voice|\bse[\s_-]?(?:manager|player)\b/i },
   { id: 'tutorial', points: 3, re: /tutorial|onboard|(?<!layout)guide|walkthrough/i },
   { id: 'settings', points: 2, re: /setting|config|option|preference|locale|language/i },

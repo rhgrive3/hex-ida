@@ -223,7 +223,7 @@ export const GOALS = [
   },
   {
     id: 'anticheat', ja: 'チート対策・改造検知', en: 'Anti-cheat', icon: '🚨',
-    strong: [/jailbreak|jailbroken/i, /cydia/i, /frida/i, /substrate/i, /tamper/i,
+    strong: [/jailbreak|jailbroken/i, /cydia/i, /frida(?!y)/i, /substrate/i, /tamper/i,
       /\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b/i, /magisk/i, /ptrace/i, /ssl[\s_-]*pinning/i,
       /integrity/i, /debugger/i, /cheat/i, /改造/, /不正/],
     weak: [/detect/i, /verify/i, /signature/i, /検知/],
@@ -696,7 +696,7 @@ const SYNONYMS = [
   [/ガチャ|gacha|抽選|召喚/i, ['gacha', 'lottery', 'draw', 'summon', 'ガチャ']],
   [/プレミアム|サブスク|premium|\bvip\b|subscrib\w*|subscription/i, ['premium', 'vip', 'subscription', 'subscribe', 'entitlement', 'purchase', 'プレミアム']],
   [/課金|購入|買|purchase|payment|iap|in-?app|sku|entitlement|storekit|receipt/i, ['purchase', 'payment', 'billing', 'receipt', 'iap', 'inapp', 'sku', 'entitlement', 'storekit', '購入']],
-  [/チート|改造|不正|cheat|jailbreak|frida|tamper|\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'rooted', 'rooting', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
+  [/チート|改造|不正|cheat|jailbreak|frida(?!y)|tamper|\b(?:rooted|rooting|root[\s_-]*(?:detect|check|guard|jail|access|device|bypass))\b|magisk|ptrace|sslpinning/i, ['jailbreak', 'frida', 'tamper', 'cheat', 'rooted', 'rooting', 'magisk', 'ptrace', 'sslpinning', '改造', '不正']],
   [/ログイン|login|認証|\bauth(?:enticat\w*|oriz\w*|n|z)?\b/i, ['login', 'auth', 'signin', 'ログイン']],
   [/広告(?:を)?(?:消|非表示|削除|オフ|除去|なし|カット|ブロック)|remove[\s_-]*ads?|no[\s_-]*ads?|ad[\s_-]*free/i, ['noAds', 'removeAds', 'adFree', 'ad', 'ads', '広告']],
   [/広告|\bads?\b/i, ['ad', 'ads', 'interstitial', 'rewarded', '広告']],
