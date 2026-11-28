@@ -19,7 +19,7 @@ test('the reconciled ARM64e provider retains zero-modifier aliases AND authentic
     }, {});
     assert.equal(bundle?.completeness, 'exact-with-intrinsic', mnemonic);
     assert.equal(bundle.operations.some(operation => operation.kind === 'memory-read'), memoryRead, mnemonic);
-    const key = mnemonic.includes('ib') || mnemonic === 'ldrab' ? 'APIBKey' : 'APIAKey';
+    const key = mnemonic === 'ldraa' ? 'APDAKey' : mnemonic === 'ldrab' ? 'APDBKey' : mnemonic.includes('ib') ? 'APIBKey' : 'APIAKey';
     assert.ok(bundle.operations.some(operation => operation.kind === 'register-read'
       && operation.register.registerId === key), `${mnemonic}: retains the correct key state`);
   }

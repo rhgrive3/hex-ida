@@ -38,6 +38,10 @@ function signExtend(val, bits) {
   return (val << shift) >> shift;
 }
 
+function signExtendBig(val, bits) {
+  return BigInt.asIntN(bits, BigInt(val));
+}
+
 function evalCond(cond, flags) {
   if (!flags.known) return null;
   const { N, Z, C, V } = flags;
@@ -89,6 +93,25 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
   function isStackByteDefined(off) {
     if (off < 0 || off >= ABSTRACT_VM_VSTACK_SIZE) return false;
     return Boolean(definedMask[off >> 3] & (1 << (off & 7)));
+  }
+
+  function clearAllStack() {
+    vstack.fill(0);
+    definedMask.fill(0);
+  }
+
+  function clearStackRange(startAddr, endAddr) {
+    if (startAddr === null || endAddr === null || endAddr <= startAddr) return;
+    const vstackEnd = vstackBase + BigInt(ABSTRACT_VM_VSTACK_SIZE);
+    const lo = startAddr > vstackBase ? startAddr : vstackBase;
+    const hi = endAddr < vstackEnd ? endAddr : vstackEnd;
+    if (lo >= hi) return;
+    const startOff = Number(lo - vstackBase);
+    const endOff = Number(hi - vstackBase);
+    for (let off = startOff; off < endOff; off++) {
+      vstack[off] = 0;
+      definedMask[off >> 3] &= ~(1 << (off & 7));
+    }
   }
 
   function readRoByte(va) {
@@ -154,16 +177,25 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
     steps++;
     let nextOff = pcOff + 4;
 
-    if (w === 0xd65f03c0) break;
+    // RET Xn / RETAA / RETAB
+    if (((w & 0xfffffc1f) >>> 0) === 0xd65f0000 || w === 0xd65f0bff || w === 0xd65f0fff) break;
 
+    // State-preserving HINT family (NOP / BTI / PACIASP / AUTIASP / XPACLRI, etc.)
     if (((w & 0xfffff01f) >>> 0) === 0xd503201f) {
       pcOff = nextOff;
       continue;
     }
 
-    if (((w & 0xffe0001f) >>> 0) === 0xd4000001 || ((w & 0xfc000000) >>> 0) === 0x94000000 || ((w & 0xfffffc1f) >>> 0) === 0xd63f0000) {
+    // Exception-generating (SVC/HVC/SMC/BRK/HLT) and calls (BL/BLR)
+    const isExceptionGen = ((w & 0xff000000) >>> 0) === 0xd4000000;
+    const isCall = ((w & 0xfc000000) >>> 0) === 0x94000000 || ((w & 0xfffffc1f) >>> 0) === 0xd63f0000;
+    if (isExceptionGen || isCall) {
       for (let r = 0; r <= 18; r++) regs[r] = null;
       flags.known = false;
+      if (isCall) {
+        regs[30] = null;
+        clearAllStack();
+      }
       pcOff = nextOff;
       continue;
     }
@@ -173,6 +205,7 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
       const sf = (w >>> 31) & 1;
       const opc = (w >>> 29) & 3;
       const hw = (w >>> 21) & 3;
+      if ((!sf && hw >= 2) || opc === 1) break;
       const imm16 = BigInt((w >>> 5) & 0xffff);
       const rd = w & 0x1f;
       const shift = BigInt(hw * 16);
@@ -222,6 +255,9 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
       } else {
         const a = lhs & wMask;
         const res = (isSub ? (a - imm12) : (a + imm12)) & wMask;
+        if (is64 && !isSub && !setFlags && rn === 31 && rd === 31 && imm12 > 0n && res > a) {
+          clearStackRange(a, res);
+        }
         setReg(rd, res, !setFlags);
         if (setFlags) {
           const f = isSub ? computeSubFlagsArm64(a, imm12, res, is64) : computeAddFlagsArm64(a, imm12, res, is64);
@@ -238,9 +274,11 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
 
     // ADD/SUB/Logical shifted register (full LSL/LSR/ASR/ROR + exact C++ V flag!)
     if ((w & 0x1f200000) === 0x0b000000 || (w & 0x1f000000) === 0x0a000000) {
+      const isAddSubShifted = (w & 0x1f200000) === 0x0b000000;
       const is64 = Boolean((w >>> 31) & 1);
       const shiftType = (w >>> 22) & 3;
       const shiftAmt = (w >>> 10) & 0x3f;
+      if ((isAddSubShifted && shiftType === 3) || (!is64 && shiftAmt >= 32)) break;
       const rd = w & 0x1f;
       const rn = (w >>> 5) & 0x1f;
       const rm = (w >>> 16) & 0x1f;
@@ -291,18 +329,34 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
       continue;
     }
 
-    // Unsigned-offset integer LDR / STR
+    // Unsigned-offset integer LDR / STR (bit 26 V=0)
     if ((w & 0x3f000000) === 0x39000000) {
       const size = (w >>> 30) & 3;
+      const opc = (w >>> 22) & 3;
+      if (size === 3 && opc === 2) {
+        // PRFM prefetch hint: no architectural state mutation
+        pcOff = nextOff;
+        continue;
+      }
+      if (opc === 3 && size >= 2) break;
       const widthBytes = 1 << size;
-      const isLoad = Boolean((w >>> 22) & 1);
       const imm12 = BigInt(((w >>> 10) & 0xfff) * widthBytes);
       const rn = (w >>> 5) & 0x1f;
       const rt = w & 0x1f;
       const base = getReg(rn, true);
       const addr = base === null ? null : (base + imm12) & MASK64;
-      if (isLoad) setReg(rt, readMem(addr, widthBytes));
-      else writeStack(addr, getReg(rt), widthBytes);
+      if (opc === 0) {
+        writeStack(addr, getReg(rt), widthBytes);
+      } else if (opc === 1) {
+        const v = readMem(addr, widthBytes);
+        setReg(rt, v === null ? null : (size === 3 ? v : (v & MASK32)));
+      } else if (opc === 2) {
+        const v = readMem(addr, widthBytes);
+        setReg(rt, v === null ? null : BigInt.asUintN(64, signExtendBig(v, widthBytes * 8)));
+      } else {
+        const v = readMem(addr, widthBytes);
+        setReg(rt, v === null ? null : BigInt.asUintN(32, signExtendBig(v, widthBytes * 8)));
+      }
       pcOff = nextOff;
       continue;
     }
@@ -327,16 +381,16 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
           targetVa: insnVa + BigInt(imm19 * 4),
         });
         if (taken) nextOff = pcOff + imm19 * 4;
-      } else {
-        opaquePredicates.push({
-          insnVa,
-          cond,
-          result: OPAQUE_PREDICATE_RESULT.UNKNOWN,
-          targetVa: insnVa + BigInt(imm19 * 4),
-        });
+        pcOff = nextOff;
+        continue;
       }
-      pcOff = nextOff;
-      continue;
+      opaquePredicates.push({
+        insnVa,
+        cond,
+        result: OPAQUE_PREDICATE_RESULT.UNKNOWN,
+        targetVa: insnVa + BigInt(imm19 * 4),
+      });
+      break;
     }
 
     // CBZ / CBNZ
@@ -355,12 +409,19 @@ export function evalArm64Deobf(codeBytes, opts = {}) {
           targetVa: insnVa + BigInt(imm19 * 4),
         });
         if (taken) nextOff = pcOff + imm19 * 4;
+        pcOff = nextOff;
+        continue;
       }
-      pcOff = nextOff;
-      continue;
+      opaquePredicates.push({
+        insnVa,
+        result: OPAQUE_PREDICATE_RESULT.UNKNOWN,
+        targetVa: insnVa + BigInt(imm19 * 4),
+      });
+      break;
     }
 
-    pcOff = nextOff;
+    // Any other potentially state-mutating unsupported instruction stops safely
+    break;
   }
 
   let scan = 0;
