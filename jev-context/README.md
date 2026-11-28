@@ -18,9 +18,8 @@ forwarded **byte for byte**.
 ## 1. What each host can actually do
 
 The three hosts do **not** have the same extension surface, and the difference
-is not cosmetic. Everything below was read out of the installed binaries
-(Codex 0.155.1, Agy 1.2.7) or the installed package's own type definitions
-(OpenCode 1.18.29) — not inferred from documentation.
+is not cosmetic. Everything below was verified against the host binaries
+(Codex 0.155.1, Agy 1.2.7) or package type definitions (OpenCode 1.18.29).
 
 | Host | Can observe tool results | Can rewrite a tool result | Can rewrite the assembled request |
 | --- | --- | --- | --- |
@@ -65,7 +64,7 @@ are never droppable there, and are not even offered to OpenJEV.
 
 ### Codex — hooks cannot prune; the provider redirect can
 
-Codex 0.155.1's hook system, read out of the binary:
+Codex 0.155.1's hook system:
 
 * events: `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`,
   `PostCompact`, `SessionStart`, `SessionEnd`, `SubagentStart`, `SubagentStop`,
@@ -108,6 +107,8 @@ export OPENJEV_API_KEY=...            # never written to disk, never logged
 node jev-context/bin/jev-prune.mjs install opencode --root /path/to/project
 node jev-context/bin/jev-prune.mjs install agy
 node jev-context/bin/jev-prune.mjs install codex
+# or install all three hosts:
+node jev-context/bin/jev-prune.mjs install all
 ```
 
 That is the whole setup for OpenCode and Agy — their hooks are installed with
@@ -119,9 +120,7 @@ node jev-context/bin/jev-prune.mjs active   # start applying decisions
 ```
 
 Codex additionally needs its model traffic pointed at the local proxy, which is
-*not* written into `config.toml` automatically (changing how Codex authenticates
-upstream is exactly the kind of edit this project does not make behind your
-back):
+*not* written into `config.toml` automatically:
 
 ```bash
 node jev-context/bin/jev-prune.mjs proxy &   # start the proxy
@@ -165,11 +164,13 @@ jev-context/
     opencode/plugin.mjs     # experimental.chat.messages.transform
     agy/hooks.mjs           # PostToolUse -> overwrite_result
     codex/hooks.mjs         # observe + prewarm (Codex hooks cannot prune)
+    codex/config.sample.toml
     hooks/{protocol,handler,prewarm-worker}.mjs
     install.mjs             # installers/uninstallers + Codex provider sample
   proxy/server.mjs          # OpenAI-compatible proxy; Codex's removal path
   bin/jev-prune.mjs         # CLI
-  tests/, benchmark/
+  tests/{run,adapters,hooks-stdin,issue-9618-decision-cache-limit}.mjs
+  benchmark/run.mjs
 ```
 
 Two decision paths share one engine:
@@ -286,9 +287,9 @@ processes each host spawns for hooks and plugins.
 
 **Fail-open is absolute.** Missing key, timeout, 401, 422, 503, connection
 refused, malformed or unparseable answer, corrupt cache, corrupt state file,
-unwritable stash, an exception inside the adapter — every one of them resolves
-to *forward the original context unchanged*. OpenJEV being down cannot make
-Codex, Agy or OpenCode unusable. There is a test for each of those cases.
+unwritable stash, oversized hook stdin, or an exception inside the adapter —
+every one of them resolves to *forward the original context unchanged*. OpenJEV
+being down cannot make Codex, Agy or OpenCode unusable.
 
 ---
 
@@ -298,9 +299,11 @@ Codex, Agy or OpenCode unusable. There is a test for each of those cases.
 | --- | --- | --- |
 | `OPENJEV_API_KEY` | — | required; **never stored** |
 | `OPENJEV_BASE_URL` | `https://api.openjev.sh` | endpoint base |
+| `OPENJEV_MODEL` | `openjev` | model identifier |
 | `JEV_PRUNING_ENABLED` | `true` | master switch |
 | `JEV_PRUNING_MODE` | `shadow` | `off` \| `shadow` \| `active` |
 | `JEV_PRUNING_THRESHOLD_TOKENS` | `12000` | do nothing below this much tool output |
+| `JEV_PRUNING_CONTEXT_LIMIT_FACTOR` | `3` | multiplier over `thresholdTokens` for near-limit pressure |
 | `JEV_PRUNING_TIMEOUT_MS` | `4000` | per OpenJEV request |
 | `JEV_PRUNING_MAX_STATE_TOKENS` | `24000` | cap on state sent per call |
 | `JEV_PRUNING_MIN_CONFIDENCE` | `0.72` | minimum answer confidence |
@@ -314,7 +317,7 @@ Codex, Agy or OpenCode unusable. There is a test for each of those cases.
 | `JEV_PRUNING_SEND_TASK` | `true` | send the (redacted) task statement; relevance needs it |
 | `JEV_PRUNING_ELISION_STASH` | `true` | keep verbatim originals of elided items |
 | `JEV_PRUNING_ELISION_EXCERPT_CHARS` | `160` | first-line hint in a marker (0 = none) |
-| `JEV_PRUNING_HOME` | `~/.jev-prune` | state, cache, metrics, log, elisions |
+| `JEV_PRUNING_HOME` | `~/.jev-prune` | state, cache, metrics, log, elisions (overridable individually via `JEV_PRUNING_{CACHE,ELISION,STATE,METRICS,LOG}_PATH`) |
 | `JEV_PRUNING_DEBUG` | — | `1` prints the decision reason to stderr (no content) |
 
 `JEV_PRUNING_HOME` must be the same for the host process and for every hook the
@@ -333,33 +336,8 @@ jev-prune cache clear       # drop cached decisions and elided originals
 jev-prune metrics reset
 jev-prune probe             # one authenticated round trip
 jev-prune proxy [--port N]  # start the pruning proxy
-jev-prune install <host>    # opencode | agy | codex
-jev-prune uninstall <host>
-```
-
-```
-$ jev-prune status
-enabled: true
-mode: active (persisted; env default shadow)
-provider: OpenJEV
-endpoint: https://api.openjev.sh/v1/systemone
-api key: present (not shown)
-policy version: jev-pruning-policy-1
-evaluated: 1,284 items
-kept: 672
-dropped: 612
-decision-cache: 451 entries, protocol hit rate 71.0%
-main input tokens avoided: ~2,301,442
-context tokens: 3,918,204 -> 1,616,762 (58.74% removed)
-OpenJEV calls: 188 (input tokens 41,203, output 9,411)
-average OpenJEV latency: 704 ms
-OpenJEV failures: 3
-timeouts: 3
-fallbacks: 3
-secrets skipped before transmission: 11
-model calls affected: 214
-elided originals kept: yes
-elision stash: /home/you/.jev-prune/elided
+jev-prune install <host>    # opencode | agy | codex | all
+jev-prune uninstall <host>  # opencode | agy | codex | all
 ```
 
 ---
@@ -384,86 +362,72 @@ elision stash: /home/you/.jev-prune/elided
 
 ### Tests — `node jev-context/tests/run.mjs`
 
-68 checks, all passing. The suite drives the real pipeline, the real redaction,
-the real batching, the real cache, the real policy vetoes and the real HTTP
-client, and stubs only the OpenJEV service — so what is under test is behaviour,
-not a mock.
+76 checks, all passing (`76/76 checks passed`, also wired into `npm test`). The
+suite drives the real pipeline, redaction, batching, bounded decision cache,
+policy vetoes, hook stdin byte-limit guards, installers, and HTTP client,
+stubbing only the OpenJEV service.
 
-Fixtures A–O from the design brief are covered, including: bulk logs dropped;
-an unresolved error kept; a user constraint kept; three reads of one file with
-only the latest kept; an old grep not unconditionally dropped; a secret never
-transmitted; timeout / 401 / 503 / malformed answered fail-open; a low-confidence
-drop becoming a keep; stable-prefix byte-identity; a corrupt cache; a corrupt
-session store; concurrent sessions not cross-contaminating.
-
-Adapter-level and adversarial cases added on top: the OpenCode transform over
-real `ToolPart` shapes; an OpenJEV outage leaving the assembled context
-byte-identical; the proxy forwarding the exact original bytes on failure; the
-Agy hook eliding a 120-line build log and stashing the original; a fresh file
-read never even being offered to OpenJEV; an unresolved failure surviving a
-confident drop; a repeat costing no second call; a redactable key never leaving
-in the clear; an unidentifiable credential withheld *and* kept; shadow mode
-adding zero latency; an unwritable stash refusing the elision; and Codex's
-PostToolUse being structurally unable to rewrite a non-MCP result.
+Fixtures A–O are covered alongside adapter-level and adversarial tests: bulk
+logs dropped; unresolved error kept; user constraint kept; three reads of one
+file keeping only the newest; old search not unconditionally dropped; secrets
+redacted or withheld; timeout / 401 / 503 / malformed responses fail-open;
+low-confidence drops kept; stable-prefix byte-identity; corrupt cache and
+session store recovery; concurrent session isolation; OpenCode `ToolPart`
+transforms; proxy pass-through on failure; Agy build-log elision and stash
+refusal on write failure; Codex non-MCP `PostToolUse` immutability; and
+oversized hook stdin rejection before EOF.
 
 ### Benchmark — `node jev-context/benchmark/run.mjs`
 
-60 simulated turns, 305 items, 42,804 tokens unpruned. Latency is simulated at
-the measured live round-trip; `--live` uses the real service.
+60 simulated turns, 305 items, 42,804 tokens unpruned (offline fixture,
+simulated 700 ms round trip; `--live` uses the real service).
 
 ```
 mode        main input tokens   vs OFF    dropped  would-drop  JEV calls  cache hit   p50 ms  p95 ms  correctness
 off                   1,305,036      0.0%        0           0          0        n/a        2       3    PASS
-shadow                1,305,036      0.0%        0        5310         59      96.7%       10      12    PASS
-active                   78,771     94.0%     5310           0         59      96.7%        9      11    PASS
-active (bg)             119,759     90.8%     5133           0         59      96.7%        3       6    PASS
-agy shadow               42,804     96.7%        0         305          0        n/a        0       0    PASS
+shadow                1,305,036      0.0%        0        5310         59      96.7%        9      11    PASS
+active                   78,771     94.0%     5310           0         59      96.7%        9      13    PASS
+active (bg)             119,759     90.8%     5133           0         59      96.7%        2       5    PASS
+agy shadow               42,804     96.7%        0         120        120        n/a        0       6    PASS
 agy active                3,459     99.7%       60           0         60       0.0%        0       6    PASS
 ```
 
-* Whole-context active: **94.0%** of main-model input tokens never sent, with
-  every must-keep item still present.
-* Background mode: **90.8%**, with the model call never waiting on OpenJEV.
-* Agy write-time active: **99.7%**, 60 results elided at production time.
-* **Correctness gate passes on every row** — the benchmark fails if any item
-  that must survive went missing. "Fewer tokens but a dumber agent" is a
-  failure here, not a win.
+* Whole-context active: **94.0%** of main-model input tokens avoided, with
+  every must-keep item preserved.
+* Background mode: **90.8%** avoided, with the model call never waiting on OpenJEV.
+* Agy write-time active: **99.7%** avoided, 60 results elided at production time.
+* **Correctness gate passes on every row** — the benchmark fails if any
+  must-keep item goes missing.
 
 ### The real cost of Agy's extension point
 
 Agy's write-time path must decide inside the tool call, so its cost is one
-blocking round trip per *large* result: the benchmark shows **60 round trips
-across a 60-turn session** (~42 s total, ~700 ms each), versus 59 for the
-whole-context path but spread differently. Smaller results
+blocking round trip per *large* result: 60 round trips across a 60-turn session
+(~41 s total, ~700 ms each). Smaller results
 (`JEV_PRUNING_WRITE_TIME_MIN_TOKENS`, default 200) never pay at all, and its
-decision-cache hit rate is ~0% by construction — each new result has new
-content, so there is nothing to hit. This is why `shadow` is the default and
-`active` is an explicit choice.
+decision-cache hit rate is ~0% by construction because each new result has new
+content. This is why `shadow` is the default and `active` is an explicit choice.
 
 ---
 
-## 11. Residual constraints, stated honestly
+## 11. Residual constraints
 
 * **Codex cannot prune through hooks.** 0.155.1's `PostToolUse` output wire
   carries only `updatedMCPToolOutput`, and the binary rejects it for non-MCP
-  tools. Documented evidence is in §1; the proxy is the workaround, and it
-  requires editing `config.toml` yourself.
-* **The Codex proxy rewrites a live model request.** It is orthogonal to
-  prompt caching for the reasons in §9, but it does sit between Codex and your
-  provider. If you would rather not run a local proxy, use the hook adapter
-  alone — it still warms the cache and records shadow metrics, and it prunes
-  nothing.
+  tools. The local proxy is the supported workaround and requires editing
+  `config.toml` explicitly.
+* **The Codex proxy rewrites a live model request.** It is orthogonal to prompt
+  caching (§9), but sits between Codex and your provider. Without the proxy,
+  the hook adapter still warms the cache and records shadow metrics without
+  pruning.
 * **Agy cannot revise an older item.** Only the result of the call that just
-  ran can be rewritten. Supersession-based pruning is unavailable there.
+  ran can be rewritten; supersession-based pruning is unavailable there.
 * **The proxy needs `wire_api` to match.** The sample uses `responses`; a
   `chat` configuration needs the corresponding body shape.
-* **Token counts are estimates.** `estimateTokens` is a cheap local heuristic.
-  Provider-exact counts are not available before a request is sent.
-* **The elision stash is a second local copy** of dropped output
-  (see §4). Set `JEV_PRUNING_ELISION_STASH=false` to opt out.
-* **Agy 1.2.7's `PreCompact` is not a thing.** It is absent from the binary, so
-  no compaction guidance is registered for it. The engine coexists with each
-  host's native compaction without disabling it: native compaction stays the
+* **Token counts are estimates.** `estimateTokens` is a local heuristic.
+* **The elision stash is a second local copy** of dropped output (§4). Set
+  `JEV_PRUNING_ELISION_STASH=false` to opt out.
+* **Agy 1.2.7 has no `PreCompact` hook.** Native compaction remains the
   fallback as the context limit approaches.
 
 ---
@@ -480,5 +444,5 @@ content, so there is nothing to hit. This is why `shadow` is the default and
    request", nothing more.
 8. No API key in the repository, config, logs or metrics.
 9. No code deletes or rewrites a provider's prompt cache.
-10. A local decision cache reduces OpenJEV usage, and `jev-prune cache clear`
-    clears it.
+10. A local bounded decision cache reduces OpenJEV usage, and
+    `jev-prune cache clear` clears it.
