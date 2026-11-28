@@ -203,28 +203,9 @@ function scorePack(pack, { normPlatform, libEntries, metaHints, normLibc, normAr
       }
     }
 
-    if (Array.isArray(rules.platforms)) {
-      const normRulePlatforms = rules.platforms
-        .filter((p) => typeof p === 'string' && p.trim() !== '')
-        .map((p) => normalizePlatformName(p));
-      if (normPlatform && normRulePlatforms.includes(normPlatform)) {
-        score += 10;
-      } else if (normRulePlatforms.includes('any') && nonPlatformRuleMatched) {
-        score += 2;
-      }
-    }
   }
 
-  // Simplified shorthand fields on pack
-  if (Array.isArray(pack?.platforms) && normPlatform) {
-    const normTopPlatforms = pack.platforms
-      .filter((p) => typeof p === 'string' && p.trim() !== '')
-      .map((p) => normalizePlatformName(p));
-    if (normTopPlatforms.includes(normPlatform)) {
-      score += 5;
-    }
-  }
-
+  // Simplified shorthand non-platform fields on pack (evaluated before 'any' platform bonus)
   if (Array.isArray(pack?.frameworks) && libEntries.length > 0) {
     const uniqueFws = new Set();
     for (const item of pack.frameworks) {
@@ -234,6 +215,7 @@ function scorePack(pack, { normPlatform, libEntries, metaHints, normLibc, normAr
       uniqueFws.add(lower);
       if (matchesLibRule(lower, libEntries)) {
         score += 5;
+        nonPlatformRuleMatched = true;
       }
     }
   }
@@ -243,6 +225,27 @@ function scorePack(pack, { normPlatform, libEntries, metaHints, normLibc, normAr
       .filter((a) => typeof a === 'string' && a.trim() !== '')
       .map((a) => normalizeArchName(a));
     if (normPackArchs.includes(normArch)) {
+      score += 5;
+      nonPlatformRuleMatched = true;
+    }
+  }
+
+  if (rules && Array.isArray(rules.platforms)) {
+    const normRulePlatforms = rules.platforms
+      .filter((p) => typeof p === 'string' && p.trim() !== '')
+      .map((p) => normalizePlatformName(p));
+    if (normPlatform && normRulePlatforms.includes(normPlatform)) {
+      score += 10;
+    } else if (normRulePlatforms.includes('any') && nonPlatformRuleMatched) {
+      score += 2;
+    }
+  }
+
+  if (Array.isArray(pack?.platforms) && normPlatform) {
+    const normTopPlatforms = pack.platforms
+      .filter((p) => typeof p === 'string' && p.trim() !== '')
+      .map((p) => normalizePlatformName(p));
+    if (normTopPlatforms.includes(normPlatform)) {
       score += 5;
     }
   }
@@ -426,9 +429,11 @@ export function resolveSafePackUrl(baseUrl, pack, { isCommunityMirror = false, m
       const check = validateCommunityMirrorUrl(pack.url);
       if (!check.ok) return null;
     }
+    const urlPath = pack.url.split(/[?#]/, 1)[0];
+    const urlIsGz = /\.gz$/i.test(urlPath);
     return {
       url: pack.url,
-      expectedSha256: pack.gzSha256 || pack.sha256 || null,
+      expectedSha256: urlIsGz ? (pack.gzSha256 || pack.sha256 || null) : (pack.sha256 || null),
       expectedRawSha256: pack.sha256 || null,
     };
   }
@@ -485,10 +490,23 @@ export function createTilAutoLoader({
     }
     for (const entry of entries) {
       if (!entry || !entry.slot) continue;
-      const slots = tilPackManager.getMountedSlots();
-      const slotInfo = slots ? slots[entry.slot] : null;
-      if (slotInfo && slotInfo.packId === entry.packId && slotInfo.lastAccess === entry.lastAccess) {
+      let shouldUnmount = false;
+      try {
+        const slots = tilPackManager.getMountedSlots();
+        const slotInfo = slots ? slots[entry.slot] : null;
+        shouldUnmount = Boolean(slotInfo && slotInfo.packId === entry.packId && slotInfo.lastAccess === entry.lastAccess);
+      } catch {
+        continue;
+      }
+      if (!shouldUnmount) continue;
+      try {
         tilPackManager.unmountSlot(entry.slot, { releaseTidBase: true });
+      } catch {
+        try {
+          tilPackManager.releasePackTidBase?.(entry.packId);
+        } catch {
+          // Best-effort TID base reclamation on unmount failure.
+        }
       }
     }
   }
@@ -579,12 +597,12 @@ export function createTilAutoLoader({
       if (typeof fetchManifest === 'function') {
         rawManifest = await fetchManifest(manifestUrl, { signal, isCommunityMirror });
       } else if (typeof tilPackManager.fetchManifest === 'function') {
-        rawManifest = await tilPackManager.fetchManifest(manifestUrl, { isCommunityMirror });
+        rawManifest = await tilPackManager.fetchManifest(manifestUrl, { signal, isCommunityMirror });
       } else {
         throw new Error('No manifest fetcher available');
       }
     } catch (err) {
-      if (signal?.aborted) {
+      if (signal?.aborted || err?.name === 'AbortError') {
         safeInvokeCallback(onProgress, {
           phase: 'til',
           status: AUTO_ANALYSIS_STATUS.ABORTED,
@@ -725,6 +743,7 @@ export function createTilAutoLoader({
           isCommunityMirror,
           expectedSha256: resolved.expectedSha256,
           expectedRawSha256: resolved.expectedRawSha256,
+          signal,
           meta: {
             name: pack.name || pack.id,
             version: pack.version || '',
@@ -734,7 +753,7 @@ export function createTilAutoLoader({
           },
         });
       } catch (err) {
-        if (signal?.aborted) {
+        if (signal?.aborted || err?.name === 'AbortError') {
           rollbackMounted(mountedSlots);
           safeInvokeCallback(onProgress, {
             phase: 'til',
@@ -764,7 +783,11 @@ export function createTilAutoLoader({
 
       // Always release evicted pack's TID base immediately, even if aborted (including cache-fallback path)
       if (res?.evictedPackId) {
-        tilPackManager.releasePackTidBase?.(res.evictedPackId);
+        try {
+          tilPackManager.releasePackTidBase?.(res.evictedPackId);
+        } catch {
+          // Best-effort TID base reclamation.
+        }
       }
 
       let currentMountEntry = null;

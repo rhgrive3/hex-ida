@@ -224,6 +224,11 @@ export class NotesIdbBackend {
             if (this._db === db) this._db = null;
           };
         }
+        try {
+          db.onclose = () => {
+            if (this._db === db) this._db = null;
+          };
+        } catch { /* ignore */ }
         resolve(db);
       };
 
@@ -408,8 +413,9 @@ export class NotesIdbBackend {
         const localDirty = toRecordMap(snapshot?.localDirty);
 
         if (replace) {
-          // Read existing meta & entry keys, then delete stale keys in chunks,
-          // write new records in chunks, and commit meta last.
+          // Read existing meta & entry keys, write new records in chunks first
+          // (so a mid-write QuotaExceededError never wipes existing data),
+          // then delete stale keys in chunks, and commit meta last.
           const readTx = db.transaction([NOTES_STORE_META, NOTES_STORE_ENTRIES], 'readonly');
           const readDone = txDone(readTx);
           const [existingMeta, existingRows] = await Promise.all([
@@ -463,22 +469,23 @@ export class NotesIdbBackend {
             }
           }
 
-          // Delete stale records in chunks.
-          for (let i = 0; i < staleKeys.length; i += batchSize) {
-            const slice = staleKeys.slice(i, i + batchSize);
-            const delTx = db.transaction([NOTES_STORE_ENTRIES], 'readwrite');
-            const store = delTx.objectStore(NOTES_STORE_ENTRIES);
-            for (const keyTuple of slice) store.delete(keyTuple);
-            await txDone(delTx);
-          }
-
-          // Write replacement records in chunks.
+          // Write replacement records in chunks first so existing data stays intact
+          // if a QuotaExceededError aborts mid-write.
           for (let i = 0; i < toWrite.length; i += batchSize) {
             const slice = toWrite.slice(i, i + batchSize);
             const putTx = db.transaction([NOTES_STORE_ENTRIES], 'readwrite');
             const store = putTx.objectStore(NOTES_STORE_ENTRIES);
             for (const rec of slice) store.put(rec);
             await txDone(putTx);
+          }
+
+          // Delete stale records in chunks only after replacement writes succeed.
+          for (let i = 0; i < staleKeys.length; i += batchSize) {
+            const slice = staleKeys.slice(i, i + batchSize);
+            const delTx = db.transaction([NOTES_STORE_ENTRIES], 'readwrite');
+            const store = delTx.objectStore(NOTES_STORE_ENTRIES);
+            for (const keyTuple of slice) store.delete(keyTuple);
+            await txDone(delTx);
           }
 
           // Commit metadata after all entry chunks succeed.
@@ -513,6 +520,7 @@ export class NotesIdbBackend {
             ? snapshot.baseRevision
             : (Number.isFinite(snapshot?.revision) ? snapshot.revision : currentRev);
           const nextRevision = Math.max(currentRev + 1, requestedRev);
+          const remotelyCleared = existingMeta?.cleared === true && currentRev > baseRev;
 
           const existingByComp = new Map();
           for (const row of Array.isArray(existingRows) ? existingRows : []) {
@@ -540,72 +548,81 @@ export class NotesIdbBackend {
             });
           }
 
-          // 2. Apply incoming tombstones not already handled via localDirty.
-          for (const [compKey, tomb] of incomingTombstones.entries()) {
-            if (handled.has(compKey)) continue;
-            const parsed = parseCompositeKey(compKey);
-            if (!parsed) continue;
-            const existing = existingByComp.get(compKey);
-            const existingRev = Number.isFinite(existing?.rev) ? existing.rev : 0;
-            const tombRev = Number.isFinite(tomb?.rev) ? tomb.rev : 0;
-            const tombTs = Number.isFinite(tomb?.updatedAt) ? tomb.updatedAt : ts;
-            // Keep newer remote live entry if remote rev > baseRev and remote is strictly newer.
-            if (existing && !existing.deleted && existingRev > baseRev && existingRev > tombRev && (existing.updatedAt ?? 0) > tombTs) {
+          if (!remotelyCleared) {
+            // 2. Apply incoming tombstones not already handled via localDirty.
+            for (const [compKey, tomb] of incomingTombstones.entries()) {
+              if (handled.has(compKey)) continue;
+              const parsed = parseCompositeKey(compKey);
+              if (!parsed) continue;
+              const existing = existingByComp.get(compKey);
+              const existingRev = Number.isFinite(existing?.rev) ? existing.rev : 0;
+              const tombRev = Number.isFinite(tomb?.rev) ? tomb.rev : 0;
+              const tombTs = Number.isFinite(tomb?.updatedAt) ? tomb.updatedAt : ts;
+              // Keep newer remote live entry if remote rev > baseRev and remote is strictly newer.
+              if (existing && !existing.deleted && existingRev > baseRev && existingRev > tombRev && (existing.updatedAt ?? 0) > tombTs) {
+                handled.add(compKey);
+                continue;
+              }
               handled.add(compKey);
-              continue;
+              recordsToPut.push({
+                storeId: id,
+                kind: parsed.kind,
+                key: parsed.key,
+                value: null,
+                deleted: true,
+                updatedAt: tombTs,
+                rev: nextRevision,
+              });
             }
-            handled.add(compKey);
-            recordsToPut.push({
-              storeId: id,
-              kind: parsed.kind,
-              key: parsed.key,
-              value: null,
-              deleted: true,
-              updatedAt: tombTs,
-              rev: nextRevision,
-            });
-          }
 
-          // 3. Apply incoming live entries, respecting newer concurrent remote entries/tombstones.
-          for (const [compKey, item] of incomingLive.entries()) {
-            if (handled.has(compKey)) continue;
-            const existing = existingByComp.get(compKey);
-            if (existing) {
-              const existingRev = Number.isFinite(existing.rev) ? existing.rev : 0;
-              // Another tab updated or deleted this key after our baseRevision: keep remote.
-              if (existingRev > baseRev) {
-                handled.add(compKey);
-                continue;
+            // 3. Apply incoming live entries, respecting newer concurrent remote entries/tombstones.
+            for (const [compKey, item] of incomingLive.entries()) {
+              if (handled.has(compKey)) continue;
+              const existing = existingByComp.get(compKey);
+              if (existing) {
+                const existingRev = Number.isFinite(existing.rev) ? existing.rev : 0;
+                // Another tab updated or deleted this key after our baseRevision: keep remote.
+                if (existingRev > baseRev) {
+                  handled.add(compKey);
+                  continue;
+                }
+                // Unchanged value already persisted: skip redundant write.
+                if (!existing.deleted && existing.value === item.value) {
+                  handled.add(compKey);
+                  continue;
+                }
               }
-              // Unchanged value already persisted: skip redundant write.
-              if (!existing.deleted && existing.value === item.value) {
-                handled.add(compKey);
-                continue;
-              }
+              handled.add(compKey);
+              recordsToPut.push({
+                storeId: id,
+                kind: item.kind,
+                key: item.key,
+                value: item.value,
+                deleted: false,
+                updatedAt: ts,
+                rev: nextRevision,
+              });
             }
-            handled.add(compKey);
-            recordsToPut.push({
-              storeId: id,
-              kind: item.kind,
-              key: item.key,
-              value: item.value,
-              deleted: false,
-              updatedAt: ts,
-              rev: nextRevision,
-            });
           }
 
           // Note: Any existing records in IDB not in incomingLive / incomingTombstones / localDirty
           // are untouched entries from another tab and are deliberately preserved!
 
+          const hasLiveWrite = recordsToPut.some((rec) => !rec.deleted);
+          const nextCleared = snapshot?.cleared === true
+            ? true
+            : (remotelyCleared && !hasLiveWrite);
+
           const nextMeta = {
             storeId: id,
             revision: nextRevision,
             generation: snapshot?.generation ?? existingMeta?.generation ?? '',
-            structs: Array.isArray(snapshot?.structs)
-              ? snapshot.structs
-              : (Array.isArray(existingMeta?.structs) ? existingMeta.structs : []),
-            cleared: Boolean(snapshot?.cleared),
+            structs: remotelyCleared
+              ? (Array.isArray(existingMeta?.structs) ? existingMeta.structs : [])
+              : (Array.isArray(snapshot?.structs)
+                ? snapshot.structs
+                : (Array.isArray(existingMeta?.structs) ? existingMeta.structs : [])),
+            cleared: nextCleared,
             updatedAt: ts,
             migratedFromLocalStorage: snapshot?.migratedFromLocalStorage != null
               ? Boolean(snapshot.migratedFromLocalStorage)

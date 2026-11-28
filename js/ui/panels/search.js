@@ -4,6 +4,7 @@ import { numberPattern } from '../numeric-pattern.js';
 import { t, pick } from '../../i18n.js';
 import { showCandidates } from './investigation.js';
 import { showField } from './field-access.js';
+import { showClassTree } from './class-tree.js';
 import {
   scoreSearchMatch,
   compareSearchResults,
@@ -118,7 +119,20 @@ function collectStrings(app) {
   return out;
 }
 
+function syncAutoReportWasm(app) {
+  const report = app?.autoReport?.report;
+  if (!report) return;
+  try {
+    if (typeof app._syncAutoReportWasmAnalysis === 'function') {
+      app._syncAutoReportWasmAnalysis(report);
+    } else if (report.wasmAnalysis && !app.v6Workbench?._wasmAnalysis && typeof app.v6Workbench?.ingestWasmAnalysis === 'function') {
+      app.v6Workbench.ingestWasmAnalysis(report.wasmAnalysis);
+    }
+  } catch { /* non-fatal */ }
+}
+
 function collectClassesAndFields(app, inferredClasses) {
+  syncAutoReportWasm(app);
   const classes = [];
   const fields = [];
   const seenClassNames = new Set();
@@ -224,6 +238,28 @@ function collectClassesAndFields(app, inferredClasses) {
     }
   }
 
+  // Restored C++ RTTI classes from V6Workbench
+  try {
+    const cxxRtti = typeof app?.v6Workbench?.getCxxRtti === 'function'
+      ? app.v6Workbench.getCxxRtti()
+      : null;
+    if (Array.isArray(cxxRtti?.classes)) {
+      for (const cls of cxxRtti.classes) {
+        if (!cls || typeof cls !== 'object') continue;
+        const name = typeof cls.className === 'string' && cls.className
+          ? cls.className
+          : (typeof cls.name === 'string' && cls.name ? cls.name : null);
+        if (!name) continue;
+        const repAddr = cls.vtableVas?.[0]?.va ?? cls.rttiVa ?? cls.methods?.[0]?.fnVa ?? null;
+        const methodCount = typeof cls.methodCount === 'number'
+          ? cls.methodCount
+          : (Array.isArray(cls.methods) ? cls.methods.length : 0);
+        const sub = methodCount > 0 ? `C++ RTTI · ${methodCount} methods` : 'C++ RTTI';
+        pushClass(name, repAddr, sub);
+      }
+    }
+  } catch { /* graceful fallback */ }
+
   // C++ classes inferred from qualified symbol names
   for (const [name, info] of inferredClasses.entries()) {
     pushClass(name, info.addr, info.sub);
@@ -328,8 +364,12 @@ export function createSearchRunLifecycle() {
 }
 
 export function showSearch(app) {
+  syncAutoReportWasm(app);
   const region = app.store?.get?.('currentRegion');
-  if (!region && !app.symbols && !app.fields && !app.stringIndex) return;
+  const virtualTree = typeof app?.v6Workbench?.getVirtualTree === 'function'
+    ? app.v6Workbench.getVirtualTree()
+    : null;
+  if (!region && !app.symbols && !app.fields && !app.stringIndex && !virtualTree) return;
   const runs = createSearchRunLifecycle();
   const sheet = new Sheet(t('search.title'), { onClose:() => runs.cancel('search-sheet-closed') });
   let kind = app.store?.get?.('searchKind') || 'unified';
@@ -344,6 +384,14 @@ export function showSearch(app) {
   ];
   const chipEls = new Map();
   for (const [key,label] of defs) { const chip = button(label, 'chip', () => setKind(key)); chip.setAttribute('aria-pressed', String(key === kind)); chipEls.set(key, chip); chips.append(chip); }
+  if (virtualTree) {
+    const classTreeBtn = button(pick('クラスツリー', 'Class Tree'), 'chip', () => {
+      sheet.close();
+      showClassTree(app, { tree: virtualTree });
+    });
+    classTreeBtn.dataset.action = 'open-class-tree';
+    chips.append(classTreeBtn);
+  }
   const field = el('div', 'field'); const input = el('input'); input.type='search'; input.autocapitalize='off'; input.autocomplete='off'; input.spellcheck=false; input.value=app.store?.get?.('searchQuery') || '';
   const goBtn = button(t('btn.find'), 'chip', () => (runs.active ? stop() : run())); field.append(input, goBtn);
   const bar = el('div','progress'); const fill = el('i'); bar.append(fill); const status = el('div','hint',''); const results=list();

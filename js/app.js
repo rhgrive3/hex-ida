@@ -283,6 +283,7 @@ export class App {
     this._lastSaveErrorToastAt = 0;
     this._saveErrorActive = false;
     this._lastSaveErrorMessage = '';
+    this._saveErrorBadgeText = '';
     this._deltaSaveTimer = null;
     this._applyingDelta = false;
     this.lastDeltaRestore = null;
@@ -720,9 +721,20 @@ export class App {
       stRight.classList?.add('status-save-error');
       stRight.title = msg;
       const badge = t('status.saveFailed');
-      if (!String(stRight.textContent || '').includes(badge)) {
-        stRight.textContent = stRight.textContent ? `${stRight.textContent} · ${badge}` : badge;
+      const prevBadge = this._saveErrorBadgeText;
+      let currentText = String(stRight.textContent || '');
+      if (prevBadge && prevBadge !== badge) {
+        if (currentText === prevBadge) currentText = '';
+        else if (currentText.endsWith(` · ${prevBadge}`)) {
+          currentText = currentText.slice(0, -(` · ${prevBadge}`).length);
+        }
       }
+      if (!currentText.includes(badge)) {
+        stRight.textContent = currentText ? `${currentText} · ${badge}` : badge;
+      } else {
+        stRight.textContent = currentText;
+      }
+      this._saveErrorBadgeText = badge;
     }
     const now = Date.now();
     if (now - this._lastSaveErrorToastAt >= 10000) {
@@ -735,15 +747,27 @@ export class App {
     if (!this._saveErrorActive) return;
     this._saveErrorActive = false;
     this._lastSaveErrorMessage = '';
+    const badges = [];
+    if (this._saveErrorBadgeText) badges.push(this._saveErrorBadgeText);
+    const currentBadge = t('status.saveFailed');
+    if (currentBadge && !badges.includes(currentBadge)) badges.push(currentBadge);
+    this._saveErrorBadgeText = '';
     const stRight = this.dom?.stRight;
     if (stRight) {
       stRight.classList?.remove('status-save-error');
       stRight.title = '';
-      const badge = t('status.saveFailed');
-      if (stRight.textContent === badge) stRight.textContent = '';
-      else if (String(stRight.textContent || '').endsWith(` · ${badge}`)) {
-        stRight.textContent = stRight.textContent.slice(0, -(` · ${badge}`).length);
+      let text = String(stRight.textContent || '');
+      for (const badge of badges) {
+        if (text === badge) {
+          text = '';
+          break;
+        }
+        if (text.endsWith(` · ${badge}`)) {
+          text = text.slice(0, -(` · ${badge}`).length);
+          break;
+        }
       }
+      stRight.textContent = text;
     }
   }
 
@@ -862,9 +886,13 @@ export class App {
     const rowStatus = total
       ? t('status.rowOf', { cur: (typeof row === 'bigint' ? row + 1n : row + 1).toLocaleString(), total: total.toLocaleString() })
       : '';
-    this.dom.stRight.textContent = this._saveErrorActive
-      ? (rowStatus ? `${rowStatus} · ${t('status.saveFailed')}` : t('status.saveFailed'))
-      : rowStatus;
+    if (this._saveErrorActive) {
+      const badge = t('status.saveFailed');
+      this._saveErrorBadgeText = badge;
+      this.dom.stRight.textContent = rowStatus ? `${rowStatus} · ${badge}` : badge;
+    } else {
+      this.dom.stRight.textContent = rowStatus;
+    }
     this.store.set({ currentAddress: addr });
   }
 
@@ -2742,15 +2770,15 @@ export class App {
     const restoredOpen = !!(opts && opts.restored);
     this.workspace?.autosave({ immediate: true });
     const openSeq = ++this._openSequence;
-    this.store.set({ fileLoading: true });
-    this.dom.app?.classList?.add('is-file-loading');
-    if (typeof document !== 'undefined') document.body?.classList?.add('is-file-loading');
-    this.setBusy(true, t('status.reading', { name:file.name }));
-    this.updateChrome();
     let info;
     let sliceIndex = -1;
     let resolvedOpenEpoch;
     try {
+      this.store.set({ fileLoading: true });
+      this.dom.app?.classList?.add('is-file-loading');
+      if (typeof document !== 'undefined') document.body?.classList?.add('is-file-loading');
+      this.setBusy(true, t('status.reading', { name:file.name }));
+      this.updateChrome();
       try { info = await this.backend.open(file); }
       catch (err) {
         if (err && err.stale) return;
@@ -2761,6 +2789,7 @@ export class App {
       resolvedOpenEpoch = openEpoch;
       this.analysisResumeReady = Promise.resolve(false);
       this.workspace?.invalidate();
+      this._clearSaveError();
       this.activeProject=null;
       closeAllSheets();
       this.sampleOpen=sampleOpen;

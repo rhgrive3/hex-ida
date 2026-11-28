@@ -964,28 +964,39 @@ function renderDetail(app, sheet, root, d, row, region) {
       if (a == null) return null;
       let key;
       try { key = BigInt(a).toString(); } catch { return null; }
-      const hit = app.viewer?._relocMap?.get?.(key);
-      if (hit) return hit;
+      const relocMap = app.viewer?._relocMap;
+      if (relocMap) {
+        const hit = relocMap.get?.(key) || null;
+        return hit && !hit.isAddend ? hit : null;
+      }
       if (Array.isArray(sliceRelocs)) {
         const priorityOf = (item) => {
-          if (!item) return -1;
-          const isAddend = Boolean(item.isAddend || (item.type === 10 && !item.extern));
-          if (isAddend) return 0;
+          if (!item || item.isAddend) return -1;
           return item.symbol != null ? (item.extern ? 3 : 2) : 1;
         };
         let best = null;
         let bestPri = -1;
+        let addend = 0;
         for (const r of sliceRelocs) {
           if (r?.address != null) {
             try {
               if (BigInt(r.address).toString() === key) {
+                if (r.isAddend) {
+                  const val = Number(r.addend);
+                  if (Number.isFinite(val) && val !== 0) addend = val;
+                  continue;
+                }
                 const pri = priorityOf(r);
                 if (pri > bestPri) { best = r; bestPri = pri; }
               }
             } catch { /* ignore */ }
           }
         }
-        if (best) return best;
+        if (best) {
+          return addend !== 0 && (best.addend == null || best.addend === 0)
+            ? { ...best, addend }
+            : best;
+        }
       }
       return null;
     },
@@ -1717,6 +1728,7 @@ export function showOverview(app) {
     const publishedCxx = cxxMemberIndexForApp(app);
     if (cached && region && cached.key === region.id && cached.gen === app.symbols.gen &&
         (cached.cxxFields || null) === publishedCxx && (cached.cxxRevision || 0) === (publishedCxx?.revision || 0)) {
+      app._syncAutoReportWasmAnalysis?.(cached.report);
       renderAutoReport(app, sheet, later, cached.report, region);
       return;
     }
@@ -1739,10 +1751,22 @@ export function showOverview(app) {
       if (isStale()) return;
       const cxxFields = cxxMemberIndexForApp(app);
       const cxxRevision = cxxFields?.revision || 0;
+      const sliceInfo = app.currentSlice?.()?.info || null;
       const report = await autoAnalyze({
         cxxFields,
         strings, program, symbols: app.symbols, region, fields: app.fields,
         shapes, cryptoScan, recognition,
+        image: app.image ?? app.backend?.image ?? null,
+        dataSections: Array.isArray(app.dataSections) ? app.dataSections : null,
+        objcModel: app.objcModel ?? null,
+        swiftModel: app.swiftModel ?? null,
+        codeBytes: app.codeBytes ?? null,
+        dataBytes: app.dataBytes ?? null,
+        textConstBytes: app.textConstBytes ?? null,
+        textConstVa: app.textConstVa ?? null,
+        dataVa: app.dataVa ?? null,
+        imageBase: app.imageBase ?? app.image?.imageBase ?? sliceInfo?.textVM ?? null,
+        architecture: app.store?.get?.('architecture') || app.currentSlice?.()?.capability?.architecture || sliceInfo?.architecture || null,
         analyze: makeAnalyzer(app, region, runController.signal),
         scanAccess: makeAccessScanner(app, region, runController.signal),
         isCancelled: () => isStale(),
@@ -1760,6 +1784,7 @@ export function showOverview(app) {
       box.done();
       if (isStale()) return;
       app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen, cxxFields, cxxRevision };
+      app._syncAutoReportWasmAnalysis?.(report);
       void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
       renderAutoReport(app, sheet, later, report, region);
     }).catch((err) => {

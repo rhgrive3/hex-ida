@@ -459,5 +459,126 @@ describe('Track 5: ProductWorkspace resilience & SHA-256 identity', () => {
       (err) => err?.code === 'HEX_PROJECT_VAR_TOO_LONG',
     );
   });
+
+  it('constructs safely with storage=null when globalThis.localStorage throws SecurityError', () => {
+    const app = createMockApp();
+    const originalDesc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      get() {
+        const err = new Error('Access is denied.');
+        err.name = 'SecurityError';
+        throw err;
+      },
+    });
+    try {
+      const ws = new ProductWorkspace(app);
+      assert.equal(ws.storage, null);
+    } finally {
+      if (originalDesc) Object.defineProperty(globalThis, 'localStorage', originalDesc);
+      else delete globalThis.localStorage;
+    }
+  });
+
+  it('flushes pending debounced autosave on file switch/invalidate and does not misattribute stale errors or successes to the next file', async () => {
+    const app = createMockApp();
+    const storage = createMemoryStorage();
+    let releaseFirstSave;
+    const firstSaveGate = new Promise((resolve) => { releaseFirstSave = resolve; });
+    const baseIdb = createMockIdb();
+    let failFirstSave = false;
+    const savedKeys = [];
+    const gatedIdb = {
+      ...baseIdb,
+      async saveProject(key, payload, meta) {
+        savedKeys.push(key);
+        if (savedKeys.length === 1) {
+          await firstSaveGate;
+          if (failFirstSave) {
+            const err = new Error('File A quota error');
+            err.code = 'QUOTA_EXCEEDED';
+            throw err;
+          }
+        }
+        return baseIdb.saveProject(key, payload, meta);
+      },
+      loadProject: (key) => baseIdb.loadProject(key),
+      flush: () => baseIdb.flush(),
+    };
+
+    const errors = [];
+    let successes = 0;
+    const ws = new ProductWorkspace(app, {
+      storage,
+      idb: gatedIdb,
+      autosaveDebounceMs: 200,
+      onAutosaveError: (e) => errors.push(e),
+      onAutosaveSuccess: () => { successes += 1; },
+    });
+    await ws.bind();
+    const keyA = ws._localKey(ws.identity);
+
+    // Schedule debounced autosave for File A, then immediately switch/invalidate before debounce fires.
+    app.notes.names.set('4096', 'unsaved_file_a_edit');
+    assert.equal(ws.autosave(), true);
+    assert.equal(savedKeys.length, 0, 'debounced save not yet executed');
+
+    // File A's flushed save will fail after File B is bound; it must NOT pollute File B.
+    failFirstSave = true;
+    ws.invalidate();
+
+    // Bind File B.
+    const nextSha = 'bin_sha256_' + 'c'.repeat(64);
+    app.backend.binaryId = nextSha;
+    app.backend.ensureBinaryId = async () => nextSha;
+    app.notes.names.clear();
+    await ws.bind();
+
+    // Now let File A's flushed IDB write finish with an error.
+    releaseFirstSave();
+    await ws.flushAutosave();
+
+    assert.equal(savedKeys[0], keyA, 'pending debounced autosave must be flushed for previous file before reset');
+    assert.equal(ws.lastAutosaveError, null, 'previous file autosave error must not be attributed to current file');
+    assert.equal(errors.length, 0, 'onAutosaveError must not fire for superseded bindingRevision');
+    assert.equal(successes, 0, 'onAutosaveSuccess must not fire for superseded bindingRevision');
+
+    // Also verify a pending debounced autosave succeeds and persists File A data on invalidate().
+    const app2 = createMockApp();
+    const idb2 = createMockIdb();
+    const ws2 = new ProductWorkspace(app2, { storage, idb: idb2, autosaveDebounceMs: 200 });
+    await ws2.bind();
+    const keyA2 = ws2._localKey(ws2.identity);
+    app2.notes.names.set('4096', 'flushed_on_switch');
+    assert.equal(ws2.autosave(), true);
+    ws2.invalidate();
+    await ws2.flushAutosave();
+    assert.ok(idb2.projects.has(keyA2), 'debounced autosave must be persisted to IDB when invalidate() runs');
+    assert.match(idb2.projects.get(keyA2).payload, /flushed_on_switch/);
+  });
+
+  it('rejects empty/mismatched patches with same non-zero length message and malformed session binaryId before mutation', () => {
+    const app = createMockApp({ fileSize: 4096 });
+    app.notes.names.set('4096', 'keep_me');
+
+    const emptyPatchProject = createHexProject({ binary: binaryIdentity(app) });
+    emptyPatchProject.user.patches = [{ offset: 0n, before: [], after: [] }];
+    assert.throws(
+      () => applyWorkspaceProject(app, emptyPatchProject),
+      (err) => err?.code === 'HEX_PROJECT_INVALID_PATCH' && /same non-zero length/.test(err.message),
+    );
+    assert.equal(app.notes.names.get('4096'), 'keep_me');
+
+    app.aiRuntime = { sessionStore: { sessions: new Map(), register() {} } };
+    for (const badId of [{}, [], 123, '   ']) {
+      const badSessionProject = createHexProject({ binary: binaryIdentity(app) });
+      badSessionProject.findings.investigationSessions = [{ id: 'sess-bad', binaryId: badId, turns: [] }];
+      assert.throws(
+        () => applyWorkspaceProject(app, badSessionProject),
+        (err) => err?.code === 'HEX_PROJECT_INVALID' && /binaryId/.test(err.message) && /must be/.test(err.message),
+      );
+      assert.equal(app.notes.names.get('4096'), 'keep_me');
+    }
+  });
 });
 

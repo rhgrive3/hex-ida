@@ -4830,6 +4830,7 @@ export function installProductUI(app) {
     };
   }
   const shortcut = (event) => {
+    if (isFileLoading(app)) { event.preventDefault(); return; }
     const target = event.target;
     const tag = target?.tagName || '';
     const typing = !!(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target.isContentEditable));

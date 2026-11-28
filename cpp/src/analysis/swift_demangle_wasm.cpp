@@ -28,9 +28,18 @@ inline void reset_arena() {
 }
 
 inline void* arena_alloc(size_t sz, size_t align = 8u) {
+  if (g_swift_arena_oom) return nullptr;
   if (sz == 0u) sz = 1u;
   if (align < 8u) align = 8u;
+  if ((align & (align - 1u)) != 0u) {
+    g_swift_arena_oom = true;
+    return nullptr;
+  }
   const size_t mask = align - 1u;
+  if (g_swift_heap_cursor > kSwiftHeapArenaCap || mask > kSwiftHeapArenaCap - g_swift_heap_cursor) {
+    g_swift_arena_oom = true;
+    return nullptr;
+  }
   const size_t aligned = (g_swift_heap_cursor + mask) & ~mask;
   if (aligned > kSwiftHeapArenaCap || sz > kSwiftHeapArenaCap - aligned) {
     g_swift_arena_oom = true;
@@ -127,10 +136,27 @@ __attribute__((weak)) void  operator delete[](void*, size_t) noexcept {}
 
 static void* const stderr = nullptr;
 static inline int fprintf(void*, const char*, ...) { return 0; }
+static inline bool swift_fmt_is_hex(const char* fmt, bool& upper) {
+  upper = false;
+  if (!fmt || fmt[0] != '%') return false;
+  size_t i = 1u;
+  while (fmt[i] == 'l') ++i;
+  if (fmt[i] == 'X') {
+    upper = true;
+    return true;
+  }
+  return fmt[i] == 'x';
+}
+static inline bool swift_fmt_is_unsigned(const char* fmt) {
+  if (!fmt || fmt[0] != '%') return false;
+  size_t i = 1u;
+  while (fmt[i] == 'l') ++i;
+  return fmt[i] == 'u';
+}
 static inline int snprintf(char* buf, size_t cap, const char* fmt, unsigned long long v) {
   if (!buf || cap == 0u) return 0;
-  bool is_hex = (fmt && fmt[0] == '%' && fmt[1] == 'l' && fmt[2] == 'l' && (fmt[3] == 'X' || fmt[3] == 'x'));
-  bool upper = (fmt && fmt[3] == 'X');
+  bool upper = false;
+  const bool is_hex = swift_fmt_is_hex(fmt, upper);
   const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
   unsigned long long base = is_hex ? 16ULL : 10ULL;
   char tmp[24];
@@ -143,6 +169,10 @@ static inline int snprintf(char* buf, size_t cap, const char* fmt, unsigned long
 }
 static inline int snprintf(char* buf, size_t cap, const char* fmt, long long v) {
   if (!buf || cap == 0u) return 0;
+  bool upper = false;
+  if (swift_fmt_is_hex(fmt, upper) || swift_fmt_is_unsigned(fmt)) {
+    return snprintf(buf, cap, fmt, static_cast<unsigned long long>(v));
+  }
   size_t pos = 0u;
   unsigned long long uv;
   if (v < 0) {
@@ -369,16 +399,33 @@ class string {
     return &z;
   }
 
-  void ensure(size_t need) {
-    if (need + 1u <= cap_) return;
-    size_t new_cap = cap_ ? cap_ * 2u : 32u;
-    while (new_cap < need + 1u) new_cap *= 2u;
+  bool ensure_cap(size_t need) {
+    constexpr size_t kMaxStr = hex_swift_demangle_detail::kSwiftHeapArenaCap;
+    if (need >= kMaxStr) {
+      hex_swift_demangle_detail::g_swift_arena_oom = true;
+      return false;
+    }
+    const size_t req = need + 1u;
+    if (data_ && req <= cap_) return true;
+    size_t new_cap = cap_ ? cap_ : 32u;
+    while (new_cap < req) {
+      if (new_cap > kMaxStr / 2u) {
+        new_cap = kMaxStr;
+        break;
+      }
+      new_cap *= 2u;
+    }
+    if (new_cap < req) {
+      hex_swift_demangle_detail::g_swift_arena_oom = true;
+      return false;
+    }
     char* nb = static_cast<char*>(hex_swift_demangle_detail::arena_alloc(new_cap, 8u));
-    if (!nb) return;
+    if (!nb) return false;
     if (data_ && size_ > 0u) hex::mem_copy(nb, data_, size_);
     nb[size_] = '\0';
     data_ = nb;
     cap_ = new_cap;
+    return true;
   }
 
  public:
@@ -392,12 +439,10 @@ class string {
   string(const char* s, size_t n) { if (s && n) append(s, n); }
   string(size_t n, char c) {
     if (n) {
-      ensure(n);
-      if (data_ && cap_ > n) {
-        hex::mem_set(data_, static_cast<uint8_t>(c), n);
-        size_ = n;
-        data_[size_] = '\0';
-      }
+      if (!ensure_cap(n)) return;
+      hex::mem_set(data_, static_cast<uint8_t>(c), n);
+      size_ = n;
+      data_[size_] = '\0';
     }
   }
   string(const string& o) { if (o.size_) append(o.data_, o.size_); }
@@ -421,53 +466,61 @@ class string {
   size_t length() const noexcept { return size_; }
   bool empty() const noexcept { return size_ == 0u; }
   void clear() noexcept { size_ = 0u; if (data_) data_[0] = '\0'; }
-  void reserve(size_t n) { ensure(n); }
+  void reserve(size_t n) { (void)ensure_cap(n); }
   void resize(size_t n, char c = '\0') {
     if (n > size_) {
-      ensure(n);
-      if (data_ && cap_ > n) {
-        hex::mem_set(data_ + size_, static_cast<uint8_t>(c), n - size_);
-        size_ = n;
-        data_[size_] = '\0';
-      }
+      if (!ensure_cap(n)) return;
+      hex::mem_set(data_ + size_, static_cast<uint8_t>(c), n - size_);
+      size_ = n;
+      data_[size_] = '\0';
     } else {
       size_ = n;
       if (data_) data_[size_] = '\0';
     }
   }
   void pop_back() noexcept { if (size_ > 0u) { --size_; data_[size_] = '\0'; } }
-  char& back() noexcept { return data_[size_ - 1u]; }
-  char back() const noexcept { return data_[size_ - 1u]; }
-  char& front() noexcept { return data_[0]; }
-  char front() const noexcept { return data_[0]; }
-  char& operator[](size_t i) noexcept { return data_[i]; }
-  char operator[](size_t i) const noexcept { return data_[i]; }
+  char& back() noexcept { return size_ > 0u ? data_[size_ - 1u] : *empty_cstr(); }
+  char back() const noexcept { return size_ > 0u ? data_[size_ - 1u] : *empty_cstr(); }
+  char& front() noexcept { return data()[0]; }
+  char front() const noexcept { return data()[0]; }
+  char& operator[](size_t i) noexcept { return data()[i]; }
+  char operator[](size_t i) const noexcept { return data()[i]; }
   iterator begin() noexcept { return data_; }
   iterator end() noexcept { return data_ ? data_ + size_ : nullptr; }
   const_iterator begin() const noexcept { return data_; }
   const_iterator end() const noexcept { return data_ ? data_ + size_ : nullptr; }
 
   void push_back(char c) {
-    ensure(size_ + 1u);
-    if (data_ && size_ + 1u < cap_) {
-      data_[size_++] = c;
-      data_[size_] = '\0';
-    }
+    if (!ensure_cap(size_ + 1u)) return;
+    data_[size_++] = c;
+    data_[size_] = '\0';
   }
   string& append(const char* s, size_t n) {
     if (!s || n == 0u) return *this;
-    ensure(size_ + n);
-    if (data_ && size_ + n < cap_) {
-      hex::mem_copy(data_ + size_, s, n);
-      size_ += n;
-      data_[size_] = '\0';
+    if (n > hex_swift_demangle_detail::kSwiftHeapArenaCap ||
+        size_ > hex_swift_demangle_detail::kSwiftHeapArenaCap - n) {
+      hex_swift_demangle_detail::g_swift_arena_oom = true;
+      return *this;
     }
+    if (!ensure_cap(size_ + n)) return *this;
+    hex::mem_copy(data_ + size_, s, n);
+    size_ += n;
+    data_[size_] = '\0';
     return *this;
   }
   string& append(const char* s) { return append(s, hex_swift_demangle_detail::c_strlen(s)); }
   string& append(const string& o) { return append(o.data(), o.size()); }
   string& append(size_t n, char c) {
-    for (size_t i = 0u; i < n; ++i) push_back(c);
+    if (n == 0u) return *this;
+    if (n > hex_swift_demangle_detail::kSwiftHeapArenaCap ||
+        size_ > hex_swift_demangle_detail::kSwiftHeapArenaCap - n) {
+      hex_swift_demangle_detail::g_swift_arena_oom = true;
+      return *this;
+    }
+    if (!ensure_cap(size_ + n)) return *this;
+    hex::mem_set(data_ + size_, static_cast<uint8_t>(c), n);
+    size_ += n;
+    data_[size_] = '\0';
     return *this;
   }
   string& operator+=(char c) { push_back(c); return *this; }
@@ -541,14 +594,31 @@ class vector {
   size_t size_ = 0u;
   size_t cap_  = 0u;
 
-  void grow(size_t min_cap) {
-    size_t nc = cap_ ? cap_ * 2u : 8u;
-    while (nc < min_cap) nc *= 2u;
+  bool grow(size_t min_cap) {
+    if (data_ && min_cap <= cap_) return true;
+    constexpr size_t kMaxElems = hex_swift_demangle_detail::kSwiftHeapArenaCap / sizeof(T);
+    if (min_cap > kMaxElems) {
+      hex_swift_demangle_detail::g_swift_arena_oom = true;
+      return false;
+    }
+    size_t nc = cap_ ? cap_ : 8u;
+    while (nc < min_cap) {
+      if (nc > kMaxElems / 2u) {
+        nc = kMaxElems;
+        break;
+      }
+      nc *= 2u;
+    }
+    if (nc < min_cap || nc > kMaxElems) {
+      hex_swift_demangle_detail::g_swift_arena_oom = true;
+      return false;
+    }
     T* nb = static_cast<T*>(hex_swift_demangle_detail::arena_alloc(nc * sizeof(T), alignof(T)));
-    if (!nb) return;
+    if (!nb) return false;
     for (size_t i = 0u; i < size_; ++i) new (nb + i) T(move(data_[i]));
     data_ = nb;
     cap_ = nc;
+    return true;
   }
 
  public:
@@ -559,19 +629,15 @@ class vector {
   vector() noexcept = default;
   vector(initializer_list<T> il) {
     if (il.size()) {
-      grow(il.size());
-      if (data_ && cap_ >= il.size()) {
-        for (const auto& item : il) new (data_ + size_++) T(item);
-      }
+      if (!grow(il.size())) return;
+      for (const auto& item : il) new (data_ + size_++) T(item);
     }
   }
   vector(const vector& o) {
     if (o.size_) {
-      grow(o.size_);
-      if (data_ && cap_ >= o.size_) {
-        for (size_t i = 0u; i < o.size_; ++i) new (data_ + i) T(o.data_[i]);
-        size_ = o.size_;
-      }
+      if (!grow(o.size_)) return;
+      for (size_t i = 0u; i < o.size_; ++i) new (data_ + i) T(o.data_[i]);
+      size_ = o.size_;
     }
   }
   vector(vector&& o) noexcept : data_(o.data_), size_(o.size_), cap_(o.cap_) {
@@ -581,11 +647,9 @@ class vector {
     if (this != &o) {
       clear();
       if (o.size_) {
-        if (cap_ < o.size_) grow(o.size_);
-        if (data_ && cap_ >= o.size_) {
-          for (size_t i = 0u; i < o.size_; ++i) new (data_ + i) T(o.data_[i]);
-          size_ = o.size_;
-        }
+        if (cap_ < o.size_ && !grow(o.size_)) return *this;
+        for (size_t i = 0u; i < o.size_; ++i) new (data_ + i) T(o.data_[i]);
+        size_ = o.size_;
       }
     }
     return *this;
@@ -597,36 +661,35 @@ class vector {
   void clear() noexcept { size_ = 0u; }
   bool empty() const noexcept { return size_ == 0u; }
   size_t size() const noexcept { return size_; }
-  void reserve(size_t n) { if (n > cap_) grow(n); }
+  void reserve(size_t n) { if (n > cap_) (void)grow(n); }
   void push_back(const T& v) {
-    if (size_ >= cap_) grow(size_ + 1u);
-    if (data_ && size_ < cap_) new (data_ + size_++) T(v);
+    if (size_ >= cap_ && !grow(size_ + 1u)) return;
+    new (data_ + size_++) T(v);
   }
   void push_back(T&& v) {
-    if (size_ >= cap_) grow(size_ + 1u);
-    if (data_ && size_ < cap_) new (data_ + size_++) T(move(v));
+    if (size_ >= cap_ && !grow(size_ + 1u)) return;
+    new (data_ + size_++) T(move(v));
   }
   template <class... Args>
   void emplace_back(Args&&... args) {
-    if (size_ >= cap_) grow(size_ + 1u);
-    if (data_ && size_ < cap_) new (data_ + size_++) T(forward<Args>(args)...);
+    if (size_ >= cap_ && !grow(size_ + 1u)) return;
+    new (data_ + size_++) T(forward<Args>(args)...);
   }
   void pop_back() noexcept { if (size_ > 0u) --size_; }
   iterator insert(iterator pos, const T& v) {
+    T val = v;
     size_t idx = data_ ? static_cast<size_t>(pos - data_) : 0u;
     if (idx > size_) idx = size_;
-    if (size_ >= cap_) grow(size_ + 1u);
-    if (!data_ || size_ >= cap_) return end();
+    if (size_ >= cap_ && !grow(size_ + 1u)) return end();
     for (size_t i = size_; i > idx; --i) {
       new (data_ + i) T(move(data_[i - 1u]));
     }
-    new (data_ + idx) T(v);
+    new (data_ + idx) T(move(val));
     ++size_;
     return data_ + idx;
   }
   void resize(size_t n) {
-    if (n > cap_) grow(n);
-    if (!data_ || n > cap_) return;
+    if (n > cap_ && !grow(n)) return;
     for (size_t i = size_; i < n; ++i) new (data_ + i) T();
     size_ = n;
   }

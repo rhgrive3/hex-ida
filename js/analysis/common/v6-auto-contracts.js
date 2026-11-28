@@ -173,6 +173,48 @@ export const GLOSSARY_KEY_SET = Object.freeze({
   },
 });
 
+function createReadOnlyKeySet(keys) {
+  const keySet = new Set(keys);
+  return Object.freeze({
+    size: keySet.size,
+    has(key) {
+      return keySet.has(key);
+    },
+    [Symbol.iterator]() {
+      return keySet[Symbol.iterator]();
+    },
+    values() {
+      return keySet.values();
+    },
+    keys() {
+      return keySet.keys();
+    },
+    entries() {
+      return keySet.entries();
+    },
+    forEach(callback, thisArg) {
+      keySet.forEach(callback, thisArg);
+    },
+  });
+}
+
+export const EXTENDED_GLOSSARY_KEYS = Object.freeze([
+  'rtti',
+  'typeinfo',
+  'virtual_tree',
+  'semantic_name',
+  'primary_owner',
+]);
+
+export const EXTENDED_GLOSSARY_KEY_SET = createReadOnlyKeySet(EXTENDED_GLOSSARY_KEYS);
+
+export const ALL_GLOSSARY_KEYS = Object.freeze([
+  ...GLOSSARY_KEYS,
+  ...EXTENDED_GLOSSARY_KEYS,
+]);
+
+export const ALL_GLOSSARY_KEY_SET = createReadOnlyKeySet(ALL_GLOSSARY_KEYS);
+
 /**
  * Invoke an optional callback while isolating any thrown error.
  * @param {Function|null|undefined} fn

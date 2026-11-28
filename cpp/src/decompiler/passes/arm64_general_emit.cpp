@@ -9197,7 +9197,9 @@ static uint32_t scan_arm64_jumptables(
       const bool do_sext = elem_signed || (add_is_ext && add_option >= 4u);
       all_ok = true;
       for (uint32_t c = 0u; c < limit; ++c) {
-        const uint64_t eva = table_va + static_cast<uint64_t>(c) * static_cast<uint64_t>(elem_width);
+        const uint64_t byte_off = static_cast<uint64_t>(c) * static_cast<uint64_t>(elem_width);
+        if (byte_off > UINT64_MAX - table_va) { all_ok = false; break; }
+        const uint64_t eva = table_va + byte_off;
         int64_t sval = 0;
         uint64_t uval = 0ULL;
         bool ok = false;
@@ -9233,7 +9235,9 @@ static uint32_t scan_arm64_jumptables(
         bool all_internal = true;
         bool all_external_code = true;
         for (uint32_t c = 0u; c < entry_count; ++c) {
-          const uint64_t eva = table_va + static_cast<uint64_t>(c) * 8ULL;
+          const uint64_t byte_off = static_cast<uint64_t>(c) * 8ULL;
+          if (byte_off > UINT64_MAX - table_va) { read_ok = false; break; }
+          const uint64_t eva = table_va + byte_off;
           uint64_t tgt = 0ULL;
           if (!read_rodata_u64(eva, words, word_count, base_addr, &tgt)) {
             read_ok = false;
@@ -9253,7 +9257,13 @@ static uint32_t scan_arm64_jumptables(
       } else {
         all_ok = true;
         for (uint32_t c = 0u; c < 64u; ++c) {
-          const uint64_t eva = table_va + static_cast<uint64_t>(c) * 8ULL;
+          const uint64_t byte_off = static_cast<uint64_t>(c) * 8ULL;
+          if (byte_off > UINT64_MAX - table_va) {
+            if (resolved_n >= 2u) { all_ok = true; break; }
+            all_ok = false;
+            break;
+          }
+          const uint64_t eva = table_va + byte_off;
           uint64_t tgt = 0ULL;
           if (!read_rodata_u64(eva, words, word_count, base_addr, &tgt) ||
               !is_internal_target(tgt, base_addr, word_count, nullptr)) {
@@ -9761,9 +9771,9 @@ HexStatus try_emit_arm64_general(
 
   // Pass 0b: Resolve internal ARM64 jump tables (Patterns A/B/C) and mark all case/default targets as labels.
   JumpTableInfo* jts = work_arena.alloc<JumpTableInfo>(kMaxJumpTables);
-  const uint32_t jt_count = jts
-      ? scan_arm64_jumptables(words, word_count, base_addr, is_label, has_back_edge, work_arena, jts, kMaxJumpTables)
-      : 0u;
+  if (!jts) return HEX_ERR_OOM;
+  const uint32_t jt_count =
+      scan_arm64_jumptables(words, word_count, base_addr, is_label, has_back_edge, work_arena, jts, kMaxJumpTables);
   ctx.jts = jts;
   ctx.jt_count = jt_count;
 
@@ -9771,9 +9781,10 @@ HexStatus try_emit_arm64_general(
   uint8_t* raw_arg_mask = work_arena.alloc<uint8_t>(word_count);
   uint8_t* pre_call_flag = work_arena.alloc<uint8_t>(word_count);
   uint8_t* call_argc = work_arena.alloc<uint8_t>(word_count);
-  if (raw_arg_mask) __builtin_memset(raw_arg_mask, 0, word_count);
-  if (pre_call_flag) __builtin_memset(pre_call_flag, 0, word_count);
-  if (call_argc) __builtin_memset(call_argc, 0, word_count);
+  if (!raw_arg_mask || !pre_call_flag || !call_argc) return HEX_ERR_OOM;
+  __builtin_memset(raw_arg_mask, 0, word_count);
+  __builtin_memset(pre_call_flag, 0, word_count);
+  __builtin_memset(call_argc, 0, word_count);
   uint32_t running_arg_mask = 0u;
   bool seen_any_call = false;
   CmpState cmp{};
@@ -9823,13 +9834,14 @@ HexStatus try_emit_arm64_general(
   uint32_t live_in_gpr0 = ctx.gpr_read_before_write & 0xFFu;
   uint32_t live_in_fp0 = ctx.fp_read_before_write & 0xFFu;
   uint8_t* fuse_cmp_dist = work_arena.alloc<uint8_t>(word_count);
-  if (fuse_cmp_dist) __builtin_memset(fuse_cmp_dist, 0, word_count);
   uint8_t* fuse_ccmp = work_arena.alloc<uint8_t>(word_count);
-  if (fuse_ccmp) __builtin_memset(fuse_ccmp, 0, word_count);
+  uint32_t* blk_id = work_arena.alloc<uint32_t>(word_count);
+  if (!fuse_cmp_dist || !fuse_ccmp || !blk_id) return HEX_ERR_OOM;
+  __builtin_memset(fuse_cmp_dist, 0, word_count);
+  __builtin_memset(fuse_ccmp, 0, word_count);
   {
-    uint32_t* blk_id = work_arena.alloc<uint32_t>(word_count);
     uint32_t num_blks = 0u;
-    if (blk_id) {
+    {
       for (uint32_t i = 0u; i < word_count; ++i) {
         if (i == 0u || is_label[i] != 0u) ++num_blks;
         blk_id[i] = num_blks - 1u;
@@ -9865,6 +9877,7 @@ HexStatus try_emit_arm64_general(
           b_s0[b] = b_s1[b] = -1;
         }
         uint32_t i = 0u;
+        __builtin_memset(bctx_ptr, 0, sizeof(AnalysisCtx));
         for (uint32_t b = 0u; b < num_blks && i < word_count; ++b) {
           __builtin_memset(bctx_ptr, 0, offsetof(AnalysisCtx, globals));
           bctx_ptr->global_count = 0u;
@@ -10497,9 +10510,6 @@ HexStatus try_emit_arm64_general(
     tb.put_str("    (void)0;\n");
   }
 
-  if (&work_arena != &emit_arena) {
-    work_arena.restore(work_entry_mark);
-  }
   const char* fallback_ret = nullptr;
   if (ctx.returns_float) {
     fallback_ret = ((ctx.fp_used & 1u) != 0u) ? "    return (float)d0;\n" : "    return 0.0f;\n";
@@ -10509,6 +10519,9 @@ HexStatus try_emit_arm64_general(
     fallback_ret = ((ctx.gpr_used & 1u) != 0u) ? "    return (int32_t)x0;\n" : "    return 0;\n";
   } else if (ctx.returns_value) {
     fallback_ret = ((ctx.gpr_used & 1u) != 0u) ? "    return x0;\n" : "    return 0;\n";
+  }
+  if (&work_arena != &emit_arena) {
+    work_arena.restore(work_entry_mark);
   }
   structurize_c_body(tb, body_start_off, body_start_line, base_addr, fallback_ret, work_arena, emit_arena);
 

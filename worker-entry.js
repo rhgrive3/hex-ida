@@ -154,6 +154,7 @@ export default {
 
 const OPENJEV_MAX_BODY_BYTES = 512 * 1024;
 const OPENJEV_DEFAULT_TIMEOUT_MS = 15_000;
+const OPENJEV_NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 async function readBoundedOpenJevText(message, limit = OPENJEV_MAX_BODY_BYTES, { signal = null } = {}) {
   const contentLength = message?.headers?.get?.('content-length');
@@ -211,7 +212,7 @@ async function handleOpenJevSystemOne(request, { fetchImpl = (...args) => fetch(
   const workerOrigin = new URL(request.url).origin;
   if (request.method === 'OPTIONS') return openJevPreflight(origin, workerOrigin);
   if (origin !== null && !isAllowedOpenJevOrigin(origin, workerOrigin)) {
-    return json({ error: { code: 'origin_not_allowed', message: 'Origin not allowed.' } }, 403);
+    return withOpenJevCors(json({ error: { code: 'origin_not_allowed', message: 'Origin not allowed.' } }, 403), origin, workerOrigin);
   }
   if (request.method !== 'POST') return withOpenJevCors(methodNotAllowed('POST, OPTIONS'), origin, workerOrigin);
   const auth = request.headers.get('authorization') || '';
@@ -237,6 +238,13 @@ async function handleOpenJevSystemOne(request, { fetchImpl = (...args) => fetch(
       body: rawBody,
       signal: controller.signal,
     });
+    if (OPENJEV_NULL_BODY_STATUSES.has(upstream.status)) {
+      try { await upstream.body?.cancel?.(); } catch { /* ignore */ }
+      return withOpenJevCors(new Response(null, {
+        status: upstream.status,
+        headers: { ...securityHeaders(), 'cache-control': 'no-store' },
+      }), origin, workerOrigin);
+    }
     const text = await readBoundedOpenJevText(upstream, OPENJEV_MAX_BODY_BYTES, { signal: controller.signal });
     return withOpenJevCors(new Response(text, {
       status: upstream.status,
@@ -471,7 +479,14 @@ function runtimeAssetPreflight(origin, workerOrigin) {
 }
 function openJevPreflight(origin, workerOrigin) {
   if (origin === null || !isAllowedOpenJevOrigin(origin, workerOrigin)) {
-    return new Response(null, { status: 403, headers: securityHeaders() });
+    return new Response(null, {
+      status: 403,
+      headers: {
+        ...securityHeaders(),
+        vary: 'Origin',
+        'cache-control': 'no-store',
+      },
+    });
   }
   return new Response(null, {
     status: 204,
@@ -482,20 +497,24 @@ function openJevPreflight(origin, workerOrigin) {
       'access-control-allow-headers': 'Content-Type, Authorization',
       'access-control-max-age': '86400',
       vary: 'Origin',
+      'cache-control': 'no-store',
       'cross-origin-resource-policy': 'cross-origin',
     },
   });
 }
 function withOpenJevCors(response, origin, workerOrigin) {
-  if (!isAllowedOpenJevOrigin(origin, workerOrigin)) return response;
   const headers = new Headers(response.headers);
-  headers.set('access-control-allow-origin', origin);
-  headers.set('access-control-allow-methods', 'POST, OPTIONS');
-  headers.set('access-control-allow-headers', 'Content-Type, Authorization');
   headers.set('vary', appendVary(headers.get('vary'), 'Origin'));
-  headers.set('cross-origin-resource-policy', 'cross-origin');
-  headers.delete('access-control-allow-credentials');
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  headers.set('cache-control', 'no-store');
+  if (isAllowedOpenJevOrigin(origin, workerOrigin)) {
+    headers.set('access-control-allow-origin', origin);
+    headers.set('access-control-allow-methods', 'POST, OPTIONS');
+    headers.set('access-control-allow-headers', 'Content-Type, Authorization');
+    headers.set('cross-origin-resource-policy', 'cross-origin');
+    headers.delete('access-control-allow-credentials');
+  }
+  const body = OPENJEV_NULL_BODY_STATUSES.has(response.status) ? null : response.body;
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, Authorization, X-Hex-Session, X-Hex-AI-Capability', 'access-control-max-age': '86400', vary: 'Origin' } }); }
 function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, Authorization, X-Hex-Session, X-Hex-AI-Capability'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }

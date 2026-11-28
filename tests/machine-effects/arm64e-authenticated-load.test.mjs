@@ -42,7 +42,7 @@ function readsOf(bundle) {
 assert.ok(isArm64eAuthenticatedLoadInstruction({ mnemonic: 'ldraa' }));
 assert.ok(isArm64eAuthenticatedLoadInstruction({ mnemonic: 'ldrab' }));
 
-for (const [mnemonic, keyId] of [['ldraa', 'APIAKey'], ['ldrab', 'APIBKey']]) {
+for (const [mnemonic, keyId] of [['ldraa', 'APDAKey'], ['ldrab', 'APDBKey']]) {
   const bundle = lift(mnemonic, 'x0, [x1]');
   assert.equal(bundle.completeness, 'exact-with-intrinsic', `${mnemonic}: ${bundle.unknownEffects?.reason}`);
   assert.ok(readsOf(bundle).includes('x1'), `${mnemonic}: base register read required`);
@@ -62,7 +62,7 @@ for (const [mnemonic, keyId] of [['ldraa', 'APIAKey'], ['ldrab', 'APIBKey']]) {
 }
 
 // Key separation.
-assert.equal(intrinsicOf(lift('ldrab', 'x0, [x1]')).metadata.keyIdentity, 'APIBKey');
+assert.equal(intrinsicOf(lift('ldrab', 'x0, [x1]')).metadata.keyIdentity, 'APDBKey');
 
 // Pre-index writes back the authenticated address to the base.
 {

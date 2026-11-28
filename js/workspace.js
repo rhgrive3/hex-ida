@@ -27,6 +27,9 @@ const MAX_DIFF_FUNCTIONS=350000;
 const PROJECT_LANGUAGES=new Set(['ja','en']);
 const PROJECT_TEXT_SIZES=new Set(['s','m','l','xl']);
 
+function safeLocalStorage(){
+  try{return globalThis.localStorage??null;}catch{return null;}
+}
 const IDENTITY_INTEGER_FIELDS=new Set(['sliceIndex','sliceOffset','sliceSize']);
 const IDENTITY_STRING_FIELDS=new Set(['uuid','architecture']);
 function canonicalizeIdentityField(field,value){
@@ -187,7 +190,7 @@ function aiTurns(){
 // `content:<hash>[:<slice>]` binary identity. Project round-trips must match
 // both spellings, or valid sessions are dropped on export/import (#5652).
 function sessionMatchesBinaryHash(sessionBinaryId, hash) {
-  if (!sessionBinaryId || !hash) return false;
+  if (typeof sessionBinaryId !== 'string' || !sessionBinaryId || !hash) return false;
   if (sessionBinaryId === hash) return true;
   if (sessionBinaryId === `content:${hash}`) return true;
   return sessionBinaryId.startsWith(`content:${hash}:`);
@@ -290,7 +293,7 @@ export function applyWorkspaceProject(app, project){
     const before = p.before;
     const after = p.after;
     if(!before || !after || typeof before.length!=='number' || typeof after.length!=='number' || before.length===0 || before.length!==after.length){
-      throw new ProjectFormatError('patch before/after bytes are invalid','HEX_PROJECT_INVALID_PATCH');
+      throw new ProjectFormatError('patch before/after bytes must have the same non-zero length','HEX_PROJECT_INVALID_PATCH');
     }
     if(fileSize!=null && offset + BigInt(after.length) > fileSize){
       throw new ProjectFormatError(
@@ -349,6 +352,9 @@ export function applyWorkspaceProject(app, project){
   if(canRegisterSessions && Array.isArray(project.findings?.investigationSessions)){
     for(const session of project.findings.investigationSessions){
       if(!session || typeof session !== 'object' || !session.id) continue;
+      if(session.binaryId != null && (typeof session.binaryId !== 'string' || !session.binaryId.trim())){
+        throw new ProjectFormatError('session binaryId must be a non-empty string', 'HEX_PROJECT_INVALID');
+      }
       const sessionBinaryId = session.binaryId || null;
       if(sessionBinaryId && (primaryHash || legacyHash) && !sessionMatchesAnyHash(sessionBinaryId, primaryHash, legacyHash)) continue;
       if(!isValidSessionId(session.id)) continue; // `register` would no-op; do not validate a record it will drop.
@@ -606,7 +612,7 @@ function chooseSlice(info,architecture){
 export class ProductWorkspace{
   constructor(app,{
     backendFactory=()=>new Backend(),
-    storage=globalThis.localStorage,
+    storage=safeLocalStorage(),
     idb=null,
     onAutosaveError=null,
     onAutosaveSuccess=null,
@@ -634,14 +640,19 @@ export class ProductWorkspace{
     }
   }
   _resetBoundState(){
-    this._cancelAutosaveTimer();
-    const previous=this.baseline;this.bindingRevision++;this.baselineSequence++;this.project=null;if(this.app)this.app.project=null;this.baseline=null;this.diffState=null;this.busy=null;if(previous?.ownedBackend)previous.backend?.dispose?.();
+    if(this._autosaveTimer!=null){
+      this._cancelAutosaveTimer();
+      if(this.identity&&this.idb&&typeof this.idb.saveProject==='function'){
+        this.autosave({immediate:true});
+      }
+    }
+    const previous=this.baseline;this.bindingRevision++;this.baselineSequence++;this.lastAutosaveError=null;this.project=null;if(this.app)this.app.project=null;this.baseline=null;this.diffState=null;this.busy=null;if(previous?.ownedBackend)previous.backend?.dispose?.();
   }
   _assertBinding(revision){if(revision!==this.bindingRevision)throw staleWorkspaceError();}
   async bind(){
     const sequence=++this.bindSequence;
     const sourceInfo=this.app?.store?.get?.('fileInfo')||null;
-    if(!sourceInfo){this.identity=null;this._resetBoundState();return null;}
+    if(!sourceInfo){this._resetBoundState();this.identity=null;return null;}
     const sourceSlice=this.app?.store?.get?.('sliceIndex')??-1;
     const sourceBackendGen=this.app?.backend?.gen;
     const backend=this.app?.backend;
@@ -667,35 +678,40 @@ export class ProductWorkspace{
     const isSuperseded=()=>sequence!==this.bindSequence || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
       (this.app?.store?.get?.('sliceIndex')??-1)!==sourceSlice ||
       (sourceBackendGen!=null&&this.app?.backend?.gen!==sourceBackendGen);
-    if(isSuperseded()){if(sequence===this.bindSequence){this.identity=null;this._resetBoundState();}return null;}
+    if(isSuperseded()){if(sequence===this.bindSequence){this._resetBoundState();this.identity=null;}return null;}
     const nextIdentity=binaryIdentity(this.app,primaryHash,legacyHash);
     if(this.identity&&identityKey(this.identity)!==identityKey(nextIdentity))this._resetBoundState();
     this.identity=nextIdentity;
     const saved=await this._loadLocal(this.identity);
-    if(isSuperseded()){if(sequence===this.bindSequence){this.identity=null;this._resetBoundState();}return null;}
+    if(isSuperseded()){if(sequence===this.bindSequence){this._resetBoundState();this.identity=null;}return null;}
     if(saved){const ok=sameProjectIdentity(saved,this.identity);if(ok.ok){try{applyWorkspaceProject(this.app,saved);this.project=saved;this.app.project=saved;}catch{/* local restore is best effort */}}}
     if(!this.project)this.project=snapshotWorkspace(this.app,this.identity);
     this.app.project=this.project;
     return this.project;
   }
   snapshot(){if(!this.identity)return null;this.project=snapshotWorkspace(this.app,this.identity);this.app.project=this.project;return this.project;}
-  async _writeIdbPayload(key,serialized){
+  async _writeIdbPayload(key,serialized,bindingRevision=this.bindingRevision){
     if(!this.idb||typeof this.idb.saveProject!=='function')return false;
     const revision=++this._autosaveRevision;
     try{
       await this.idb.saveProject(key,serialized,{revision});
-      this.lastAutosaveError=null;
-      this.onAutosaveSuccess?.();
+      if(bindingRevision===this.bindingRevision){
+        this.lastAutosaveError=null;
+        this.onAutosaveSuccess?.();
+      }
       return true;
     }catch(error){
-      this.lastAutosaveError=error;
-      this.onAutosaveError?.(error);
+      if(bindingRevision===this.bindingRevision){
+        this.lastAutosaveError=error;
+        this.onAutosaveError?.(error);
+      }
       return false;
     }
   }
   async _performIdbAutosave(expectedRevision=null){
     if(expectedRevision!=null&&this.bindingRevision!==expectedRevision)return false;
     if(!this.identity||!this.idb||typeof this.idb.saveProject!=='function')return false;
+    const bindingRevision=expectedRevision??this.bindingRevision;
     let key;
     let serialized;
     try{
@@ -704,11 +720,13 @@ export class ProductWorkspace{
       key=this._localKey(this.identity);
       serialized=serializeHexProject(project,{compact:true});
     }catch(error){
-      this.lastAutosaveError=error;
-      this.onAutosaveError?.(error);
+      if(bindingRevision===this.bindingRevision){
+        this.lastAutosaveError=error;
+        this.onAutosaveError?.(error);
+      }
       return false;
     }
-    return this._writeIdbPayload(key,serialized);
+    return this._writeIdbPayload(key,serialized,bindingRevision);
   }
   autosave({immediate=false}={}){
     if(!this.identity)return false;
@@ -729,8 +747,8 @@ export class ProductWorkspace{
           return false;
         }
         this._autosavePromise=this._autosavePromise.then(
-          ()=>this._writeIdbPayload(key,serialized),
-          ()=>this._writeIdbPayload(key,serialized),
+          ()=>this._writeIdbPayload(key,serialized,expectedRevision),
+          ()=>this._writeIdbPayload(key,serialized,expectedRevision),
         );
       }else{
         this._autosaveTimer=setTimeout(()=>{
@@ -893,7 +911,7 @@ export class ProductWorkspace{
     this.busy=task;this._busyKey=optionsKey;return task;
   }
   getBinaryDiff(){return this.diffState;}
-  invalidate(){this.bindSequence++;this.identity=null;this._resetBoundState();}
+  invalidate(){this.bindSequence++;this._resetBoundState();this.identity=null;}
   dispose(){this.invalidate();}
 }
 

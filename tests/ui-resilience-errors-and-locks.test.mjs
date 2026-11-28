@@ -384,3 +384,144 @@ test('product-base.js guards fileLoading, truncated-zero-function goals, and use
   assert.doesNotMatch(jaQuota, /QUOTA_EXCEEDED/);
   assert.match(jaQuota, /保存容量|書き出し/);
 });
+
+test('runtime: openFile unlocks fileLoading in finally even when setBusy or updateChrome throws before backend.open', async () => {
+  const prevDoc = globalThis.document;
+  const bodyClassList = makeClassList();
+  globalThis.document = {
+    body: { classList: bodyClassList },
+    dispatchEvent: () => {},
+    getElementById: () => null,
+  };
+  try {
+    const app = Object.create(App.prototype);
+    app._openSequence = 0;
+    app.store = makeMockStore({ fileLoading: false });
+    app.dom = {
+      app: { classList: makeClassList() },
+      loading: { hidden: true },
+      loadingText: { textContent: '' },
+    };
+    app.workspace = { autosave: () => {} };
+    app.flushDeltaSave = () => {};
+    app.persistAnalysisSession = () => {};
+    let busyCalls = 0;
+    app.setBusy = (on) => {
+      busyCalls++;
+      if (on) throw new Error('setBusy-boom');
+    };
+    app.updateChrome = () => {};
+
+    await assert.rejects(() => app.openFile({ name: 'bad.bin', size: 10 }), /setBusy-boom/);
+    assert.equal(busyCalls, 2, 'finally must still call setBusy(false)');
+    assert.equal(app.store.get('fileLoading'), false, 'fileLoading must be unlocked when setup throws');
+    assert.equal(app.dom.app.classList.contains('is-file-loading'), false);
+    assert.equal(bodyClassList.contains('is-file-loading'), false);
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});
+
+test('runtime: _clearSaveError removes previously attached badge after language switch and openFile clears save error on new file', async () => {
+  setLang('ja');
+  const prevDoc = globalThis.document;
+  const makeNode = (tag) => ({
+    tagName: tag,
+    className: '',
+    textContent: '',
+    classList: makeClassList(),
+    setAttribute: () => {},
+    append: () => {},
+    remove: () => {},
+    querySelector: () => null,
+  });
+  const overlays = makeNode('div');
+  const bodyClassList = makeClassList();
+  globalThis.document = {
+    createElement: (tag) => makeNode(tag),
+    getElementById: (id) => (id === 'overlays' ? overlays : null),
+    body: { ...overlays, classList: bodyClassList },
+    dispatchEvent: () => {},
+  };
+  try {
+    const app = Object.create(App.prototype);
+    app._lastSaveErrorToastAt = 0;
+    app._saveErrorActive = false;
+    app._lastSaveErrorMessage = '';
+    app._saveErrorBadgeText = '';
+    const stClass = makeClassList();
+    app.dom = {
+      stRight: { textContent: '1 / 100', title: '', classList: stClass },
+      app: { classList: makeClassList() },
+      loading: { hidden: true },
+      loadingText: { textContent: '' },
+      integrityBanner: { hidden: true, textContent: '' },
+    };
+
+    // 1. Report error in ja, switch language to en, then clear -> ja badge must still be stripped
+    app._reportSaveError({ code: 'QUOTA_EXCEEDED' });
+    assert.equal(app.dom.stRight.textContent, `1 / 100 · ${t('status.saveFailed')}`);
+    setLang('en');
+    app._clearSaveError();
+    assert.equal(app._saveErrorActive, false);
+    assert.equal(app._saveErrorBadgeText, '');
+    assert.equal(stClass.contains('status-save-error'), false);
+    assert.equal(app.dom.stRight.textContent, '1 / 100');
+    assert.equal(app.dom.stRight.title, '');
+
+    // 2. Report error, then open a new file -> save error must be cleared during new file init
+    app._reportSaveError({ code: 'IDB_ERROR' });
+    assert.equal(app._saveErrorActive, true);
+    assert.equal(stClass.contains('status-save-error'), true);
+
+    app._openSequence = 0;
+    app.store = makeMockStore({ fileLoading: false });
+    app.workspace = { autosave: () => {}, invalidate: () => {}, bind: async () => null };
+    app.flushDeltaSave = () => {};
+    app.persistAnalysisSession = () => {};
+    app.updateChrome = () => {};
+    app.forgetSemantics = () => {};
+    app.viewer = { setSymbols: () => {}, setRelocations: () => {}, invalidate: () => {} };
+    app._resetDeltaReadiness = () => {};
+    app._undoStack = [];
+    app._redoStack = [];
+    app.notes = { dispose: () => {} };
+    app.bookmarks = { clear: () => {} };
+    app._createPatchSet = () => ({});
+    app.applySlice = () => {};
+    app.attachNotes = async () => null;
+    app.analysisResume = { saveLastFile: async () => {}, updateLastFileMeta: async () => {} };
+    app.restoreAnalysisSession = async () => false;
+    app.restoreDeltaSession = async () => {};
+    app._startV6AutoAnalysis = () => {};
+    app.backend = {
+      gen: 1,
+      binaryId: 'bin_sha256_' + 'c'.repeat(64),
+      open: async () => ({ name: 'next.bin', size: 64, slices: [] }),
+    };
+
+    await app.openFile({ name: 'next.bin', size: 64 });
+    assert.equal(app._saveErrorActive, false, 'openFile must clear previous file save error');
+    assert.equal(stClass.contains('status-save-error'), false);
+    assert.equal(app.dom.stRight.textContent, '1 / 100');
+    assert.equal(app.dom.stRight.title, '');
+  } finally {
+    setLang('ja');
+    globalThis.document = prevDoc;
+  }
+});
+
+test('product-base.js capture-phase shortcut guards fileLoading and tools-base.js guards EMPTY_INDEX on notes import/clear', () => {
+  assert.match(
+    productBaseSrc,
+    /const shortcut = \(event\) => \{\s*if \(isFileLoading\(app\)\) \{ event\.preventDefault\(\); return; \}/,
+    'capture-phase shortcut handler must block shortcuts during fileLoading',
+  );
+
+  const toolsBaseSrc = fs.readFileSync(new URL('../js/tools-base.js', import.meta.url), 'utf8');
+  assert.match(toolsBaseSrc, /import\s*\{\s*EMPTY_INDEX\s*\}\s*from\s*'\.\/symbols\.js';/);
+  const applyCalls = toolsBaseSrc.match(/app\._applySymbolRenames\(/g) || [];
+  assert.ok(applyCalls.length >= 2, `expected _applySymbolRenames in both notes import and clear-all, got ${applyCalls.length}`);
+  const emptyGuards = toolsBaseSrc.match(/app\.symbols\s*&&\s*app\.symbols\s*!==\s*EMPTY_INDEX/g) || [];
+  assert.ok(emptyGuards.length >= 2, `expected EMPTY_INDEX guard in both fallback paths, got ${emptyGuards.length}`);
+});

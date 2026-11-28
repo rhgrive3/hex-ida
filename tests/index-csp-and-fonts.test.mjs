@@ -51,8 +51,20 @@ test('index.html defines strict CSP matching js/sandbox.js FRAME script SHA-256 
   const workerSrc = directives.get('worker-src') || [];
   assert.ok(workerSrc.includes("'self'") && workerSrc.includes('blob:'), 'worker-src must allow self and blob:');
 
+  const styleSrc = directives.get('style-src') || [];
+  assert.deepEqual(styleSrc, ["'self'", "'unsafe-inline'"], 'style-src must not allow external style origins');
+
   const fontSrc = directives.get('font-src') || [];
   assert.deepEqual(fontSrc, ["'self'", 'data:'], 'font-src must not allow external font origins');
+
+  const connectSrc = directives.get('connect-src') || [];
+  assert.ok(connectSrc.includes("'self'"), "connect-src must include 'self'");
+  assert.ok(connectSrc.includes('blob:'), 'connect-src must include blob:');
+  assert.ok(connectSrc.includes('data:'), 'connect-src must include data:');
+  assert.ok(connectSrc.includes('https:'), 'connect-src must include https: so external HTTPS plugins can be fetched');
+  assert.ok(!connectSrc.includes('http:'), 'connect-src must not allow insecure http:');
+  assert.ok(!connectSrc.includes('*'), 'connect-src must not use wildcard *');
+  assert.ok(!scriptSrc.includes('https:'), 'script-src must remain strict without https:');
 });
 
 test('index.html and js/ux.js contain zero Google Fonts references', () => {

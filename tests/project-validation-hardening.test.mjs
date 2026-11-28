@@ -137,12 +137,14 @@ test('malformed annotation and key-value entries are rejected instead of silentl
   );
 });
 
-test('validatePatchEntries accepts valid BigInt and safe-integer patches and rejects malformed or overlapping patches', () => {
+test('validatePatchEntries accepts valid BigInt, safe-integer, and canonical string/hex patches and rejects malformed or overlapping patches', () => {
   const valid = validatePatchEntries([
     { offset: 0, before: [0x1f, 0x20, 0x03, 0xd5], after: [0x00, 0x00, 0x80, 0x52] },
     { offset: 4n, before: new Uint8Array([1, 2]), after: new Uint8Array([3, 4]) },
+    { offset: '16', before: '00', after: '01' },
+    { offset: '0x20', before: '0x0a1b', after: '0x0c1d' },
   ]);
-  assert.equal(valid.length, 2);
+  assert.equal(valid.length, 4);
 
   const invalidCases = [
     'not-an-array',
@@ -152,8 +154,15 @@ test('validatePatchEntries accepts valid BigInt and safe-integer patches and rej
     [{ offset: -1, before: [1], after: [2] }],
     [{ offset: -1n, before: [1], after: [2] }],
     [{ offset: 1.5, before: [1], after: [2] }],
-    [{ offset: '0', before: [1], after: [2] }],
+    [{ offset: 'not-an-offset', before: [1], after: [2] }],
+    [{ offset: '-1', before: [1], after: [2] }],
+    [{ offset: '01', before: [1], after: [2] }],
+    [{ offset: '0x', before: [1], after: [2] }],
     [{ offset: 0, before: [], after: [] }],
+    [{ offset: 0, before: '', after: '' }],
+    [{ offset: 0, before: '0', after: '1' }],
+    [{ offset: 0, before: 'zz', after: '00' }],
+    [{ offset: 0, before: '00', after: '0102' }],
     [{ offset: 0, before: [1, 2], after: [1] }],
     [{ offset: 0, before: [256], after: [0] }],
     [{ offset: 0, before: [-1], after: [0] }],
@@ -162,7 +171,19 @@ test('validatePatchEntries accepts valid BigInt and safe-integer patches and rej
       { offset: 10, before: [1, 2, 3, 4], after: [5, 6, 7, 8] },
       { offset: 12n, before: [3, 4], after: [9, 10] },
     ], // overlap
+    [
+      { offset: '0x10', before: '0001', after: '0203' },
+      { offset: '17', before: '04', after: '05' },
+    ], // hex-string overlap
   ];
+
+  // Oversized canonical offset strings hit resource-limit before BigInt()
+  for (const overOffset of ['0x' + 'f'.repeat(129), '9'.repeat(161)]) {
+    assert.throws(
+      () => validatePatchEntries([{ offset: overOffset, before: '00', after: '01' }]),
+      (err) => err instanceof ProjectFormatError && err.code === 'resource-limit',
+    );
+  }
 
   for (const bad of invalidCases) {
     assert.throws(
@@ -252,4 +273,116 @@ test('formatProjectError translates all known codes in ja/en and hides raw inter
   assert.equal(unknownJa.includes('INTERNAL_WEIRD_CODE_999'), false);
   assert.equal(unknownEn.includes('INTERNAL_WEIRD_CODE_999'), false);
   assert.ok(unknownJa.length > 0 && unknownEn.length > 0);
+});
+
+test('string addresses in annotations and navigation.currentFunction enforce hex (128) and decimal (160) digit limits', () => {
+  const maxHex = '0x' + 'f'.repeat(128);
+  const overHex = '0x' + 'f'.repeat(129);
+  const maxDec = '9'.repeat(160);
+  const overDec = '9'.repeat(161);
+
+  // Exact boundaries pass
+  const atLimit = parseHexProject(JSON.stringify({
+    format: 'hexproj',
+    version: 2,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    binary: { hash: 'bin_sha256_' + 'a'.repeat(64), metadata: null, embedded: false },
+    navigation: { currentFunction: maxHex, history: [], bookmarks: [] },
+    user: {
+      names: [{ address: maxHex, value: 'hex_ok' }, { address: maxDec, value: 'dec_ok' }],
+      comments: [],
+      types: [],
+      vars: [],
+      structs: [],
+      bookmarks: [],
+      patches: [],
+    },
+  }));
+  assert.equal(atLimit.user.names.length, 2);
+  assert.equal(atLimit.navigation.currentFunction, BigInt(maxHex));
+
+  const atDecFn = parseHexProject(JSON.stringify({
+    format: 'hexproj',
+    version: 2,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    binary: { hash: 'bin_sha256_' + 'a'.repeat(64), metadata: null, embedded: false },
+    navigation: { currentFunction: maxDec, history: [], bookmarks: [] },
+    user: { names: [], comments: [], types: [], vars: [], structs: [], bookmarks: [], patches: [] },
+  }));
+  assert.equal(atDecFn.navigation.currentFunction, BigInt(maxDec));
+
+  // Over-limit annotation addresses throw resource-limit before BigInt()
+  for (const addr of [overHex, overDec, '0x' + 'a'.repeat(5000), '1' + '0'.repeat(5000)]) {
+    assert.throws(
+      () => parseHexProject(rawDoc({ names: [{ address: addr, value: 'x' }] })),
+      (err) => err instanceof ProjectFormatError && err.code === 'resource-limit',
+      `expected resource-limit for annotation address length ${addr.length}`,
+    );
+    assert.throws(
+      () => projectAnnotationCommitList([{ address: addr, value: 'x' }], 'user.names'),
+      (err) => err instanceof ProjectFormatError && err.code === 'resource-limit',
+    );
+  }
+
+  // Over-limit navigation.currentFunction throws resource-limit before BigInt()
+  for (const fnAddr of [overHex, overDec, '0x' + 'b'.repeat(5000), '2' + '0'.repeat(5000)]) {
+    assert.throws(
+      () => parseHexProject(JSON.stringify({
+        format: 'hexproj',
+        version: 2,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        binary: { hash: 'bin_sha256_' + 'a'.repeat(64), metadata: null, embedded: false },
+        navigation: { currentFunction: fnAddr, history: [], bookmarks: [] },
+        user: { names: [], comments: [], types: [], vars: [], structs: [], bookmarks: [], patches: [] },
+      })),
+      (err) => err instanceof ProjectFormatError && err.code === 'resource-limit',
+      `expected resource-limit for currentFunction length ${fnAddr.length}`,
+    );
+  }
+});
+
+test('validatePatchEntries detects overlaps involving legacy { addr, bytes } entries and enforces address digit limits', () => {
+  // Non-overlapping legacy entries pass
+  const ok = validatePatchEntries([
+    { addr: '0x10', bytes: [1, 2, 3, 4] },
+    { addr: 0x14, bytes: [5, 6] },
+    { offset: 0x20, before: [7, 8], after: [9, 10] },
+  ]);
+  assert.equal(ok.length, 3);
+
+  // Legacy vs legacy overlap
+  assert.throws(
+    () => validatePatchEntries([
+      { addr: '0x10', bytes: [1, 2, 3, 4] },
+      { addr: '0x12', bytes: [5, 6] },
+    ]),
+    (err) => err instanceof ProjectFormatError && err.code === 'HEX_PROJECT_INVALID_PATCH',
+  );
+
+  // Legacy vs legacy exact duplicate
+  assert.throws(
+    () => validatePatchEntries([
+      { addr: 16, bytes: [1, 2] },
+      { addr: '0x10', bytes: [3, 4] },
+    ]),
+    (err) => err instanceof ProjectFormatError && err.code === 'HEX_PROJECT_INVALID_PATCH',
+  );
+
+  // Legacy vs canonical overlap
+  assert.throws(
+    () => validatePatchEntries([
+      { addr: '0x10', bytes: [1, 2, 3, 4] },
+      { offset: 0x13n, before: [4, 5], after: [6, 7] },
+    ]),
+    (err) => err instanceof ProjectFormatError && err.code === 'HEX_PROJECT_INVALID_PATCH',
+  );
+
+  // Legacy oversized address string throws resource-limit
+  assert.throws(
+    () => validatePatchEntries([{ addr: '0x' + 'f'.repeat(129), bytes: [1] }]),
+    (err) => err instanceof ProjectFormatError && err.code === 'resource-limit',
+  );
 });
