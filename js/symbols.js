@@ -157,6 +157,22 @@ export class SymbolIndex {
        overlays an *effective* ownership bound (the new split start) on top of
        the declared/source extent retained in `funcEnds`; the raw loader
        evidence is never overwritten. */
+    this.funcPrototypes = new Map();
+    if (r.funcPrototypes instanceof Map) {
+      for (const [k, proto] of r.funcPrototypes.entries()) {
+        const big = canonicalMetadataAddress(k);
+        if (big != null && proto && typeof proto === 'object') {
+          this.funcPrototypes.set(big.toString(), proto);
+        }
+      }
+    } else if (r.funcPrototypes && typeof r.funcPrototypes === 'object') {
+      for (const [k, proto] of Object.entries(r.funcPrototypes)) {
+        const big = canonicalMetadataAddress(k);
+        if (big != null && proto && typeof proto === 'object') {
+          this.funcPrototypes.set(big.toString(), proto);
+        }
+      }
+    }
     this.functionTopologyRevision = 0;
     this.functionTopologyEnds = new Map();
     this.gen = ++SymbolIndex.gen;  // 解説のキャッシュ鍵に使う
@@ -267,6 +283,13 @@ export class SymbolIndex {
   functionEvidence(addr) {
     const k = canonicalAddressKey(addr);
     return k == null ? null : (this.functionProvenance.get(k) || null);
+  }
+
+  /** DWARF 等から取得した関数プロトタイプをアドレスで引く。なければ null。 */
+  functionPrototypeAt(addr) {
+    const big = canonicalMetadataAddress(addr);
+    if (big == null) return null;
+    return this.funcPrototypes.get(big.toString()) || null;
   }
 
   get symbolCount() { return this.addrs.length; }

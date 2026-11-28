@@ -12,7 +12,7 @@
  * Node の足場ではここが見えない。だからブラウザで押す。
  *
  * 使い方:
- *   node tests/browser.mjs                    # tests/battlecats で通す
+ *   node tests/browser.mjs                    # tests/.real-fixtures/battlecats（または tests/battlecats）で通す
  *   node tests/browser.mjs path/to/binary
  *   KEEP=1 node tests/browser.mjs             # 画面の写しを残す
  *
@@ -28,8 +28,60 @@ import { vendorInText } from '../js/vendors.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const BINARY_ARG = process.argv[2] || null;
-const BINARY = BINARY_ARG ? path.resolve(ROOT, BINARY_ARG) : path.join(HERE, '.real-fixtures', 'battlecats');
 const SHOTS = process.env.KEEP ? path.join(HERE, '.shots') : null;
+
+const FIXTURE_ALIASES = new Map([
+  ['battlecats', ['battlecats']],
+  ['TsumTsum', ['TsumTsum', 'bainary-test']],
+  ['bainary-test', ['bainary-test', 'TsumTsum']],
+  ['YWP', ['YWP']],
+]);
+
+function isFixturePlaceholder(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return true;
+    if (stat.size >= 256) return false;
+    return fs.readFileSync(filePath, 'utf8').startsWith('HEX_LARGE_FIXTURE_PLACEHOLDER');
+  } catch {
+    return true;
+  }
+}
+
+function resolveBrowserBinary(arg, {
+  testsRoot = HERE,
+  repoRoot = ROOT,
+  fixturesDir = process.env.HEX_REAL_FIXTURES_DIR || null,
+} = {}) {
+  if (arg) {
+    const direct = path.resolve(repoRoot, arg);
+    if (fs.existsSync(direct)) return direct;
+    const aliases = FIXTURE_ALIASES.get(arg) || [arg];
+    const candidates = fixturesDir
+      ? aliases.map((name) => path.resolve(fixturesDir, name))
+      : [
+          ...aliases.map((name) => path.join(testsRoot, '.real-fixtures', name)),
+          ...aliases.map((name) => path.join(testsRoot, name)),
+        ];
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate) && !isFixturePlaceholder(candidate)) return candidate;
+    }
+    return direct;
+  }
+  const names = FIXTURE_ALIASES.get('battlecats');
+  const candidates = fixturesDir
+    ? names.map((name) => path.resolve(fixturesDir, name))
+    : [
+        ...names.map((name) => path.join(testsRoot, '.real-fixtures', name)),
+        ...names.map((name) => path.join(testsRoot, name)),
+      ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && !isFixturePlaceholder(candidate)) return candidate;
+  }
+  return candidates[0];
+}
+
+const BINARY = resolveBrowserBinary(BINARY_ARG);
 
 /* ゲームの数値を探しているのに、組み込んだ SDK が首位に来てはいけない目的。 */
 const GOALS = [
@@ -124,18 +176,21 @@ const check = (name, ok, detail) => {
 };
 
 async function main() {
-  if (!fs.existsSync(BINARY)) {
-    if (!BINARY_ARG) {
-      console.log('検証済み実バイナリがないため、BattleCats の heavyweight browser regression を省きます。');
-      console.log('  実行するなら: npm run fixtures:large');
+  if (!BINARY || !fs.existsSync(BINARY)) {
+    if (!BINARY_ARG && process.env.HEX_ALLOW_EMPTY_REAL_FIXTURES === '1') {
+      console.log('検証済み実バイナリがないため、BattleCats の heavyweight browser regression を省きます（HEX_ALLOW_EMPTY_REAL_FIXTURES=1）。');
+      console.log('  実行するなら: npm run fixtures:fetch');
       return 0;
     }
-    console.error('バイナリがありません: ' + BINARY);
+    console.error('バイナリがありません: ' + (BINARY || '(unset)'));
+    if (!BINARY_ARG) {
+      console.error('  実フィクスチャを取得するには `npm run fixtures:fetch` を実行するか、synthetic CI では HEX_ALLOW_EMPTY_REAL_FIXTURES=1 を指定してください。');
+    }
     return 1;
   }
-  if (fs.statSync(BINARY).size < 256 && fs.readFileSync(BINARY, 'utf8').startsWith('HEX_LARGE_FIXTURE_PLACEHOLDER')) {
+  if (isFixturePlaceholder(BINARY)) {
     console.error('互換ポインタは実行ファイルではありません: ' + BINARY);
-    console.error('  検証済み実fixtureを取得するなら: npm run fixtures:large');
+    console.error('  検証済み実fixtureを取得するなら: npm run fixtures:fetch');
     return 1;
   }
   const pw = await loadPlaywright();

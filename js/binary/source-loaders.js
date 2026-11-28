@@ -9,6 +9,21 @@ import { parseSourceRanges } from './source-reader.js';
 import { scanSourceStrings } from '../bytesource/strings.js';
 import { sliceArchName, selectDefaultFatSlice, validateFatSlice, validateFatContainer, probePastEndArm64SliceAsync, parseInnerMachOHeader } from './macho-fat.js';
 import { parseDyldSharedCacheSource } from './dyld-shared-cache.js';
+import { openManagedImage } from '../managed/index.js';
+import { adaptManagedImage } from '../managed/adapter.js';
+
+const MAX_MANAGED_SOURCE_BYTES = 256 * 1024 * 1024;
+
+function detectManagedMagic(prefix) {
+  if (!prefix || prefix.byteLength < 4) return null;
+  if (prefix[0] === 0x00 && prefix[1] === 0x61 && prefix[2] === 0x73 && prefix[3] === 0x6d) {
+    return 'wasm';
+  }
+  if (prefix[0] === 0x64 && prefix[1] === 0x65 && prefix[2] === 0x78 && prefix[3] === 0x0a) {
+    return 'dex';
+  }
+  return null;
+}
 
 const FAT_KINDS = new Map([
   ['cafebabe', { bits: 32, littleEndian: false }],
@@ -60,7 +75,20 @@ export async function openBinarySource(input, opts = {}) {
     return parsePESourceWithPrefix(source, opts, prefix, rangeOptions);
   }
   if (detected.format === 'macho') return parseMachOSourceWithPrefix(source, opts, prefix, rangeOptions);
-  throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE を判定できませんでした）。');
+  const managedId = detectManagedMagic(prefix);
+  if (managedId) {
+    const maxBytes = Number.isSafeInteger(opts.maxManagedBytes) && opts.maxManagedBytes > 0
+      ? opts.maxManagedBytes
+      : MAX_MANAGED_SOURCE_BYTES;
+    if (source.size > BigInt(maxBytes)) {
+      throw new RangeError(`Managed binary size (${source.size} bytes) exceeds ${maxBytes}-byte limit.`);
+    }
+    const bytes = await readBoundedRange(source, 0n, Number(source.size), opts.signal);
+    const managed = await openManagedImage(bytes, opts);
+    const image = adaptManagedImage(managed, { frontendId: managedId, bytes, source, fileSize: source.size });
+    return withStrings(image, source, opts);
+  }
+  throw new Error('対応していない実行ファイル形式です（Mach-O / ELF / PE / WebAssembly / DEX を判定できませんでした）。');
 }
 
 export async function parseELFSource(input, opts = {}, _prefix = null, rangeOptions = opts.ranges || {}) {

@@ -1,5 +1,6 @@
 import { functionSeedConfidence, isExactFunctionSeed } from './worker-validation.js';
 import { elfLoaderEntrySectionAnalysisWindow } from '../binary/elf-mapping.js';
+import { DEBUG_DEFAULT_BUDGET, extractFunctionPrototypes, parseDebugInfo } from '../analysis/debug/dwarf.js';
 
 function provenance(source, confidence = 1) {
   return { source: source || 'binary-metadata', confidence, confirmed: true };
@@ -240,7 +241,84 @@ function canonicalNameIsStronger(candidate, incumbent) {
   return a.source < b.source;
 }
 
-export function analysisFromBinaryImage(image) {
+
+const DWARF_NORMALIZED_KEYS = new Set([
+  'debug_info',
+  'debug_abbrev',
+  'debug_str',
+  'debug_str_offsets',
+  'debug_addr',
+  'debug_line_str',
+]);
+
+function normalizeDwarfKeyName(name, segment = null) {
+  if (typeof name !== 'string') return null;
+  if (DWARF_NORMALIZED_KEYS.has(name)) return name;
+  if (name.startsWith('.debug_')) {
+    const k = name.slice(1);
+    return DWARF_NORMALIZED_KEYS.has(k) ? k : null;
+  }
+  if (name.startsWith('__debug_')) {
+    if (segment && segment !== '__DWARF') return null;
+    const k = name.slice(2);
+    return DWARF_NORMALIZED_KEYS.has(k) ? k : null;
+  }
+  if (name.startsWith('__DWARF,__debug_')) {
+    const k = name.slice('__DWARF,__'.length);
+    return DWARF_NORMALIZED_KEYS.has(k) ? k : null;
+  }
+  return null;
+}
+
+function collectDwarfSections(image, dwarfSections) {
+  const out = {};
+  if (dwarfSections && typeof dwarfSections === 'object') {
+    for (const [rawKey, value] of Object.entries(dwarfSections)) {
+      const key = normalizeDwarfKeyName(rawKey);
+      if (key && value instanceof Uint8Array && value.byteLength > 0) {
+        out[key] = value;
+      }
+    }
+  }
+  if (!out.debug_info && image?.debugSections && typeof image.debugSections === 'object') {
+    for (const [rawKey, value] of Object.entries(image.debugSections)) {
+      const key = normalizeDwarfKeyName(rawKey);
+      if (key && value instanceof Uint8Array && value.byteLength > 0 && !out[key]) {
+        out[key] = value;
+      }
+    }
+  }
+  if (!out.debug_info && Array.isArray(image?.sections)) {
+    for (const sec of image.sections) {
+      const key = normalizeDwarfKeyName(sec?.name, sec?.segment ?? null);
+      if (key && sec?.bytes instanceof Uint8Array && sec.bytes.byteLength > 0 && !out[key]) {
+        out[key] = sec.bytes;
+      }
+    }
+  }
+  return out.debug_info ? out : null;
+}
+
+function resolveDwarfEndian(image) {
+  const raw = String(image?.endian ?? image?.metadata?.endian ?? '').trim().toLowerCase();
+  if (raw === 'big' || raw === 'be' || raw === 'msb' || raw === 'big-endian') return 'big';
+  if (raw === 'little' || raw === 'le' || raw === 'lsb' || raw === 'little-endian') return 'little';
+  return 'little';
+}
+
+function extractDwarfPrototypesForImage(image, dwarfSections) {
+  const sections = collectDwarfSections(image, dwarfSections);
+  if (!sections) return {};
+  try {
+    const endian = resolveDwarfEndian(image);
+    const parsed = parseDebugInfo(sections, DEBUG_DEFAULT_BUDGET, { endian });
+    return extractFunctionPrototypes(parsed);
+  } catch {
+    return {};
+  }
+}
+
+export function analysisFromBinaryImage(image, { dwarfSections = null } = {}) {
   if (!image) return emptyAnalysis();
   const entries = new Map();
   const add = (address, name, kind, exported, prov, priority, record) => {
@@ -421,6 +499,7 @@ export function analysisFromBinaryImage(image) {
     symbolCount: addrs.length, funcCount: funcs.length, capped: false,
     allSeedsExact, discoveryComplete, functionStartsExact: discoveryComplete && allSeedsExact,
     functionDiscovery: { complete: discoveryComplete, capped: false, reasons: discoveryComplete ? [] : ['platform-function-seeds-not-exhaustive'] },
+    funcPrototypes: extractDwarfPrototypesForImage(image, dwarfSections),
     symbolTruth: machoSymbolTruth(image),
     __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer, funcEnds.buffer],
   };
@@ -432,6 +511,7 @@ export function emptyAnalysis() {
     addrs, kinds, flags, names: [], funcs, funcEnds, symbolCount: 0, funcCount: 0, capped: false,
     allSeedsExact: false, discoveryComplete: false, functionStartsExact: false,
     functionDiscovery: { complete:false, capped:false, reasons:['platform-function-seeds-not-exhaustive'] },
+    funcPrototypes: {},
     symbolTruth: null,
     __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer, funcEnds.buffer],
   };

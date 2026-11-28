@@ -352,6 +352,88 @@ function normalizeAddressBigInt(value) {
   return null;
 }
 
+function collectPinpointAddresses(pin) {
+  const out = [];
+  if (!pin || typeof pin !== 'object') return out;
+  const push = (v) => {
+    const bi = normalizeAddressBigInt(v);
+    if (bi != null) out.push(bi);
+  };
+  const top = pin.top && typeof pin.top === 'object' ? pin.top : null;
+  if (top) {
+    push(top.addr);
+    push(top.function);
+    push(top.address);
+    if (Array.isArray(top.accessors)) {
+      for (const acc of top.accessors) {
+        if (acc && typeof acc === 'object') {
+          push(acc.addr);
+          push(acc.function);
+          push(acc.address);
+        } else {
+          push(acc);
+        }
+      }
+    }
+    if (Array.isArray(top.functions)) {
+      for (const fn of top.functions) {
+        if (fn && typeof fn === 'object') {
+          push(fn.addr);
+          push(fn.function);
+          push(fn.address);
+        } else {
+          push(fn);
+        }
+      }
+    }
+  }
+  if (Array.isArray(pin.changeSites)) {
+    for (const site of pin.changeSites) {
+      if (site && typeof site === 'object') {
+        push(site.addr);
+        push(site.function);
+        push(site.address);
+      } else {
+        push(site);
+      }
+    }
+  }
+  push(pin.addr);
+  push(pin.function);
+  push(pin.address);
+  return out;
+}
+
+export function pinpointMatchesAddress(pin, targetAddr) {
+  if (!pin || typeof pin !== 'object' || targetAddr == null) return false;
+  const target = normalizeAddressBigInt(targetAddr);
+  if (target == null) return false;
+  const addrs = collectPinpointAddresses(pin);
+  return addrs.some((a) => a === target);
+}
+
+function isAddresslessFieldOrLocationPinpoint(pin) {
+  if (!pin || typeof pin !== 'object') return false;
+  const top = pin.top && typeof pin.top === 'object' ? pin.top : null;
+  if (pin.kind === 'location' || top?.kind === 'location') return true;
+  if (pin.kind === 'field' || top?.kind === 'field') return true;
+  if (top && top.field && top.className) return true;
+  if (pin.field && pin.className) return true;
+  return false;
+}
+
+function filterPinpointForFunction(pinpoint, functionAddr) {
+  if (!pinpoint || typeof pinpoint !== 'object') return null;
+  if (functionAddr == null) return pinpoint;
+  const target = normalizeAddressBigInt(functionAddr);
+  if (target == null) return pinpoint;
+  if (pinpointMatchesAddress(pinpoint, target)) return pinpoint;
+  const addrs = collectPinpointAddresses(pinpoint);
+  if (addrs.length > 0) return null;
+  if (isAddresslessFieldOrLocationPinpoint(pinpoint)) return null;
+  return pinpoint;
+}
+
 function formatOffsetHex(offset) {
   const n = normalizeOffsetNumber(offset);
   if (n == null) return null;
@@ -906,25 +988,27 @@ export function buildGoalCandidateSummary({
   fields = null,
   pseudocode = null,
   disasm = null,
+  functionAddr = null,
 } = {}) {
+  const scopedPinpoint = filterPinpointForFunction(pinpoint, functionAddr);
   const goalText = resolveGoalLabel(goal);
   const goalKeywords = extractGoalKeywords(goal);
 
-  const explicitFields = collectExplicitFieldDescriptors(fields, pinpoint, candidate);
+  const explicitFields = collectExplicitFieldDescriptors(fields, scopedPinpoint, candidate);
   const inferredFromDisasm = extractFieldOpsFromDisasm(disasm);
   const inferredFromPseudo = extractFieldOpsFromPseudocode(pseudocode);
   const fieldOperations = mergeFieldOperations(explicitFields, [...inferredFromDisasm, ...inferredFromPseudo]);
 
-  const matchedStrings = collectMatchedStrings({ candidate, pinpoint, pseudocode, disasm, goalKeywords });
-  const matchedSymbols = collectMatchedSymbols({ candidate, pinpoint, pseudocode, goalKeywords });
+  const matchedStrings = collectMatchedStrings({ candidate, pinpoint: scopedPinpoint, pseudocode, disasm, goalKeywords });
+  const matchedSymbols = collectMatchedSymbols({ candidate, pinpoint: scopedPinpoint, pseudocode, goalKeywords });
 
-  const verdict = pinpoint?.verdict ? String(pinpoint.verdict).toLowerCase() : null;
+  const verdict = scopedPinpoint?.verdict ? String(scopedPinpoint.verdict).toLowerCase() : null;
   const verdictLabel = verdictDisplayLabel(verdict);
 
   const hasAnySignal = Boolean(
     goalText
     || candidate
-    || pinpoint
+    || scopedPinpoint
     || fieldOperations.length
     || matchedStrings.length
     || matchedSymbols.length
@@ -950,8 +1034,8 @@ export function buildGoalCandidateSummary({
     ));
   }
   if (verdictLabel) {
-    const targetName = pinpoint?.top?.name
-      ? ` (${shortName(String(pinpoint.top.name))})`
+    const targetName = scopedPinpoint?.top?.name
+      ? ` (${shortName(String(scopedPinpoint.top.name))})`
       : '';
     bullets.push(pick(
       `特定判定: ${verdictLabel}${targetName}`,
@@ -1046,14 +1130,16 @@ export function findGoalHighlightLines(pseudocode, context = {}) {
   const {
     goal = null,
     candidate = null,
-    pinpoint = null,
+    pinpoint: rawPinpoint = null,
     fields = null,
     addresses = null,
     offsets = null,
     registers = null,
     strings = null,
     symbols = null,
+    functionAddr = null,
   } = context;
+  const pinpoint = filterPinpointForFunction(rawPinpoint, functionAddr);
 
   const targetAddrs = new Set();
   const addAddr = (v) => {

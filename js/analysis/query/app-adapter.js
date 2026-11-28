@@ -14,6 +14,7 @@ import { resolveABIPlugin } from '../../targets/abi/index.js';
 import { riscvAbiFromElfFlags } from '../../targets/abi/riscv-lp64.js';
 import { X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES } from '../../targets/architecture/x86_64/semantic-function-contract.js';
 import { ANALYSIS_COMPLETENESS, weakestCompleteness } from '../status.js';
+import { proveFunctionEnd, trimModelToProvenEnd } from '../function-end-proof.js';
 
 const QUERY_ROUTED_FETCH = Symbol('analysis-query-routed-fetch');
 const QUERY_ROUTED_ANALYZE = Symbol('analysis-query-routed-analyze');
@@ -1253,12 +1254,41 @@ export function createAppAnalysisQueryAdapter(app) {
       const endRow = Math.min(Number(endRowExact), maxRow);
       if (startRow < 0 || endRow < startRow) return unsupported(id, 'function-range-empty');
       const value = await analyzeFunctionCached(app.backend, range.region, startRow, endRow, symbols, options.onProgress, { ...options, architecture });
-      const completeness = value?.truncated ? 'truncated' : range.complete === false ? 'partial' : 'complete';
-      const queryValue = value?.model ? { ...value, model:cloneableLegacyModel(value.model) } : value;
+      let effectiveModel = value?.model ?? null;
+      let effectiveEndAddress = range.end;
+      let effectiveComplete = range.complete !== false;
+      let effectiveReason = value?.truncated ? 'analysis-budget' : range.reason || null;
+      let effectiveProvenance = range.provenance;
+      let provenEnd = undefined;
+      if (!value?.truncated && range.complete === false && range.reason === 'function-end-unproven' && effectiveModel) {
+        const proof = proveFunctionEnd(effectiveModel, range, symbols);
+        if (proof.proven) {
+          effectiveModel = trimModelToProvenEnd(effectiveModel, proof.provenEnd);
+          effectiveEndAddress = proof.provenEnd;
+          effectiveComplete = true;
+          effectiveReason = null;
+          effectiveProvenance = proof.provenance;
+          provenEnd = proof.provenEnd;
+        }
+      }
+      const completeness = value?.truncated ? 'truncated' : !effectiveComplete ? 'partial' : 'complete';
+      const queryValue = effectiveModel
+        ? {
+            ...value,
+            ...(provenEnd != null ? { endRow: effectiveModel.endRow, endAddr: provenEnd - 4n } : {}),
+            model: cloneableLegacyModel(effectiveModel),
+          }
+        : value;
       const enriched = {
         ...queryValue, functionId:functionId(range.start), architectureId:architecture,
-        startAddress:range.start, endAddress:range.end, name,
-        completeness:{ complete:completeness === 'complete', reason:value?.truncated ? 'analysis-budget' : range.reason || null, provenance:range.provenance, regionId:range.region.id },
+        startAddress:range.start, endAddress:effectiveEndAddress, name,
+        completeness:{
+          complete:completeness === 'complete',
+          reason:effectiveReason,
+          provenance:effectiveProvenance,
+          ...(provenEnd != null ? { provenEnd } : {}),
+          regionId:range.region.id,
+        },
       };
       return wrap(enriched, completeness, { reason:enriched.completeness.reason, architecture, producer:'legacy-arm64-compatibility' });
     }
@@ -1809,6 +1839,7 @@ export function createAppAnalysisQueryAdapter(app) {
         cachedFileBytes ? { ...options, fileBytes:options.fileBytes ?? cachedFileBytes } : options,
       );
       const archOptions = architectureDecompilerOptions(app, result.value.model, result.value, options);
+      const functionPrototype = address == null ? null : (app?.symbols?.functionPrototypeAt?.(address) ?? null);
       const projection = decompile(result.value.model, {
         ...imageOptions,
         ...archOptions,
@@ -1817,6 +1848,8 @@ export function createAppAnalysisQueryAdapter(app) {
         name:address == null ? null : app?.symbols?.nameAt?.(address),
         addr:address,
         symbolFor:(a)=>app?.symbols?.nameAt?.(a)??null,
+        allowGeneralObjcWasm: true,
+        ...(functionPrototype ? { functionPrototype } : {}),
         ...(returnsValue ? { returnsValue } : {}),
         ...(cxxEvidence && projectionIr ? { ir:projectionIr } : {}),
         ...(cxxEvidence ? { cxxEvidence } : {}),
@@ -1910,6 +1943,7 @@ export function createAppAnalysisQueryAdapter(app) {
             cachedFileBytes ? { ...options, fileBytes:options.fileBytes ?? cachedFileBytes } : options,
           );
           const archOptions = architectureDecompilerOptions(app, result.value.model, result.value, options);
+          const functionPrototype = address == null ? null : (app?.symbols?.functionPrototypeAt?.(address) ?? null);
           producer = decompile(result.value.model, {
             ...imageOptions,
             ...archOptions,
@@ -1918,6 +1952,8 @@ export function createAppAnalysisQueryAdapter(app) {
             name,
             addr:address,
             symbolFor,
+            allowGeneralObjcWasm: true,
+            ...(functionPrototype ? { functionPrototype } : {}),
             ...(returnsValue ? { returnsValue } : {}),
             ...(projectionIr ? { ir:projectionIr } : {}),
             ...(cxxEvidence ? { cxxEvidence } : {}),

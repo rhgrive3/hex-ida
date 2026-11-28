@@ -2182,7 +2182,7 @@ static bool optimize_ssa(PipelineCtx& ctx) {
         continue;
       }
 
-      // Unary ops: constant folding
+      // Unary ops: constant folding & idempotent cast/extension elimination
       if (ins.op >= OP_NEG && ins.op <= OP_ZEXT) {
         const IrInst& s0 = ctx.insts[ins.src0];
         if (s0.op == OP_CONST) {
@@ -2190,6 +2190,14 @@ static bool optimize_ssa(PipelineCtx& ctx) {
           ins.op = OP_CONST;
           ins.imm = fold_unop(orig_op, ins.width, s0.imm, ins.imm);
           ins.src0 = kNoVal;
+          changed = true;
+          continue;
+        }
+        if ((ins.op == OP_SEXT || ins.op == OP_ZEXT) &&
+            s0.width == ins.width &&
+            ((s0.op == ins.op && s0.imm <= ins.imm) ||
+             (ins.op == OP_SEXT && s0.op == OP_ZEXT && s0.imm < ins.imm))) {
+          ins.op = OP_COPY;
           changed = true;
           continue;
         }

@@ -15,7 +15,7 @@ import {
   stackPointerProvenanceOf as legacyStackPointerProvenanceOf,
 } from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
 import { buildCfg, EDGE } from './cfg.js';
-import { stableDigest } from './core/identity/index.js';
+import { isLightweightIdentityActive, nextLightweightId, stableDigest } from './core/identity/index.js';
 import {
   SEMANTIC_V2_MIGRATION_MODES,
   buildSemanticV2CompatibilityPipeline,
@@ -650,6 +650,7 @@ function edgeKind(edge) {
 }
 
 function ephemeralBinaryId(model) {
+  if (isLightweightIdentityActive()) return nextLightweightId('migration-model');
   const identity = (model?.instructions ?? []).map((instruction) => ({
     address: instruction?.address ?? null,
     mnemonic: instruction?.mnemonic ?? null,
@@ -2159,7 +2160,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       .map((successor) => ({ to: `legacy-block-${successor.to}`, kind: edgeKind(successor) })),
   }));
   const binaryId = String(opts.binaryId ?? model.binaryId ?? ephemeralBinaryId(model));
-  const sliceId = String(opts.sliceId ?? model.sliceId ?? `migration-slice-${stableDigest({ binaryId, architecture: 'arm64' })}`);
+  const sliceId = String(opts.sliceId ?? model.sliceId ?? (isLightweightIdentityActive() ? nextLightweightId('migration-slice') : `migration-slice-${stableDigest({ binaryId, architecture: 'arm64' })}`));
   const abiAdapter = opts.abiAdapter ?? canonicalCompatibilityAbiAdapter(opts, binaryId, sliceId);
   const result = buildSemanticV2CompatibilityPipeline({
     architecturePlugin: ARM64_ARCHITECTURE,

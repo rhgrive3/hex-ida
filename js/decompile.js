@@ -208,7 +208,7 @@ function tryWasmDecompile(model, opts) {
     recordFallback('decompile:beginner_mode');
     return null;
   }
-  if (opts?.functionPrototype || opts?.cxxEvidence || opts?.ir || opts?.abiAdapter) {
+  if (opts?.cxxEvidence || opts?.ir || opts?.abiAdapter) {
     recordFallback('decompile:rich_semantic_context');
     return null;
   }
@@ -274,6 +274,8 @@ function tryWasmDecompile(model, opts) {
     readBytes: opts?.readBytes ?? model?.readBytes ?? null,
     fileBytes: opts?.fileBytes ?? model?.fileBytes ?? null,
     sections: opts?.sections ?? model?.sections ?? null,
+    functionPrototype: opts?.functionPrototype ?? model?.functionPrototype ?? null,
+    allowGeneralObjcWasm: opts?.allowGeneralObjcWasm === true,
   });
   if (!wasmRes) return null;
   const lossReasons = Array.isArray(wasmRes.lossReasons) ? wasmRes.lossReasons.slice() : [];

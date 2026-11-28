@@ -16,6 +16,7 @@ import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
 import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached, supportsArm64SemanticAnalysis } from './analyze.js';
+import { proveFunctionEnd, trimModelToProvenEnd } from './analysis/function-end-proof.js';
 import { buildOverlay } from './narrate.js';
 import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from './objc.js';
 import { buildSwiftMetadataModel, buildSwiftRuntimeIndex, resolveSwiftDispatch } from './swift.js';
@@ -1457,12 +1458,37 @@ export class App {
     try {
       const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym);
       if(this.store.get('sliceIndex')<0 || this.executableRegionFor(range.start)!==region)return null;
-      res.completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
-      if(this._presentationMatchesFunction(range.start)){
-        this.semantic={regionId:region.id,model:res.model,result:res};
-        if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
+      let out=res;
+      let completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
+      if(!res?.truncated && range.complete===false && range.reason==='function-end-unproven' && res?.model){
+        const proof=proveFunctionEnd(res.model,range,sym);
+        if(proof.proven){
+          const trimmedModel=trimModelToProvenEnd(res.model,proof.provenEnd);
+          completeness={
+            complete:true,
+            reason:null,
+            provenance:proof.provenance,
+            provenEnd:proof.provenEnd,
+            regionId:region.id,
+          };
+          out={
+            ...res,
+            model:trimmedModel,
+            endRow:trimmedModel.endRow,
+            endAddr:proof.provenEnd-width,
+            endAddress:proof.provenEnd,
+            completeness,
+          };
+        }
       }
-      return res;
+      if(out===res){
+        out={...res,completeness};
+      }
+      if(this._presentationMatchesFunction(range.start)){
+        this.semantic={regionId:region.id,model:out.model,result:out};
+        if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(out.model));
+      }
+      return out;
     } catch { return null; }
   }
 
@@ -1924,13 +1950,20 @@ export class App {
         return { strings: [], constants: [] };
       }
     };
+    const isDevRoot = typeof document !== 'undefined'
+      && typeof document.querySelector === 'function'
+      && !!document.querySelector('script[src="./js/app.js"]');
+    const isEmbedRoute = typeof location !== 'undefined'
+      && typeof location.pathname === 'string'
+      && location.pathname.startsWith('/embed/');
+    const hubPrefix = isEmbedRoute ? '/' : (isDevRoot ? 'dist/' : '');
     return {
       isCurrent,
       cachedStagedAnalysis,
-      tilManifestUrl: cfg.tilManifestUrl ?? 'til-hub/manifest.json',
-      tilBaseUrl: cfg.tilBaseUrl ?? 'til-hub',
-      hexsigManifestUrl: cfg.hexsigManifestUrl ?? 'hexsig-hub/manifest.json',
-      hexsigBaseUrl: cfg.hexsigBaseUrl ?? 'hexsig-hub',
+      tilManifestUrl: cfg.tilManifestUrl ?? `${hubPrefix}til-hub/manifest.json`,
+      tilBaseUrl: cfg.tilBaseUrl ?? `${hubPrefix}til-hub`,
+      hexsigManifestUrl: cfg.hexsigManifestUrl ?? `${hubPrefix}hexsig-hub/manifest.json`,
+      hexsigBaseUrl: cfg.hexsigBaseUrl ?? `${hubPrefix}hexsig-hub`,
       getBinaryMeta: () => {
         const slice = this.currentSlice?.();
         const info = slice?.info || this.store.get('fileInfo') || {};

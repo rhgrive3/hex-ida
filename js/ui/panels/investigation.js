@@ -8,6 +8,7 @@ import { reasonText, statusNotice } from '../primitives.js';
 import { showField } from './field-access.js';
 import { appendJevAlternativeAction } from '../jev-advisory.js';
 import { showPatchEditor } from '../../tools.js';
+import { pinpointMatchesAddress } from '../function-analysis-presentation.js';
 
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 function functionLabel(app, address) {
@@ -171,6 +172,26 @@ export function formatCandidateReasons(reasons, maxCount = 2) {
 
 export function describeStrongestAnswer(app, goal, pin, rankedCandidates = []) {
   const rawAddr = pin?.top?.addr ?? pin?.top?.function ?? pin?.top?.address ?? null;
+  const isAddresslessLocationOrField = rawAddr == null && (
+    pin?.kind === 'location'
+    || pin?.top?.kind === 'location'
+    || pin?.kind === 'field'
+    || pin?.top?.kind === 'field'
+  );
+  const topField = rawAddr == null ? fieldOf(pin?.top) : null;
+  if (topField || isAddresslessLocationOrField) {
+    const title = pin?.top?.name
+      || (topField ? fieldLabel(topField) : null)
+      || pin?.top?.field?.name
+      || pin?.top?.label
+      || goalLabel(goal);
+    const reasonsSource = pin?.top?.reasons?.length
+      ? pin.top.reasons
+      : (pin?.reasons?.length ? pin.reasons : []);
+    const strongestReason = formatCandidateReasons(reasonsSource, 1)[0]
+      || (topField ? pick(`${fieldLabel(topField)} のフィールド参照`, `Field access on ${fieldLabel(topField)}`) : '');
+    return { address: null, title: String(title), addrText: '', strongestReason, answerField: topField };
+  }
   let matchedCandidate = null;
   if (rawAddr != null && Array.isArray(rankedCandidates)) {
     try {
@@ -178,7 +199,7 @@ export function describeStrongestAnswer(app, goal, pin, rankedCandidates = []) {
       matchedCandidate = rankedCandidates.find((c) => c?.addr != null && BigInt(c.addr) === target) || null;
     } catch { /* ignore */ }
   }
-  if (!matchedCandidate && Array.isArray(rankedCandidates) && rankedCandidates.length > 0) {
+  if (!matchedCandidate && rawAddr == null && Array.isArray(rankedCandidates) && rankedCandidates.length > 0) {
     matchedCandidate = rankedCandidates[0];
   }
   const address = rawAddr ?? matchedCandidate?.addr ?? null;
@@ -197,7 +218,7 @@ export function describeStrongestAnswer(app, goal, pin, rankedCandidates = []) {
 }
 function progressView(body, onCancel = null) {
   const wrap = el('div', 'analysis-progress');
-  const head = el('div', 'row');
+  const head = el('div', 'inv-row');
   const label = el('div', 'hint', pick('解析の準備をしています…', 'Preparing analysis…'));
   head.append(label);
   if (typeof onCancel === 'function') {
@@ -226,9 +247,23 @@ function progressView(body, onCancel = null) {
     done() { wrap.remove(); },
   };
 }
-export function appendCompleteness(body, result, { onContinue = null } = {}) {
+function isAutoDiscoveryComplete(app) {
+  if (!app) return false;
+  const v6State = app.v6Workbench?.getAutoAnalysisState?.() ?? null;
+  const v6Done = v6State?.status === 'done' || v6State?.staged?.status === 'done';
+  if (v6Done && app.store?.get?.('symbolsReady') !== false) return true;
+  if (app.store?.get?.('symbolsReady') === true && Number(app.symbols?.functionCount ?? 0) > 0 && app.symbols?.guessed === false) return true;
+  return false;
+}
+
+export function appendCompleteness(body, result, { onContinue = null, app = null } = {}) {
   if (result?.completeness?.complete) return null;
-  const rawReasons = (result?.completeness?.reasons || []).map((r) => String(r || '').trim()).filter(Boolean);
+  const initialReasons = (result?.completeness?.reasons || []).map((r) => String(r || '').trim()).filter(Boolean);
+  const discoveryDone = isAutoDiscoveryComplete(app);
+  const rawReasons = discoveryDone
+    ? initialReasons.filter((r) => !r.includes('function-discovery-incomplete') && r !== 'functions-partial')
+    : initialReasons;
+  if (discoveryDone && initialReasons.length > 0 && rawReasons.length === 0) return null;
   const hasIncompleteDiscovery = rawReasons.some((r) => r.includes('function-discovery-incomplete') || r === 'functions-partial');
   const lead = rawReasons.length
     ? ''
@@ -296,6 +331,7 @@ export function showCandidates(app, goal) {
     if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
     const candidates = result.ranked?.candidates || [];
     appendCompleteness(host, result, {
+      app,
       onContinue: () => { sheet.close(); showCandidates(app, goal); },
     });
     const pin = result.pin;
@@ -312,11 +348,12 @@ export function showCandidates(app, goal) {
     const openCandidateFunction = (targetAddr, candidate = null, tab = 'pseudocode') => {
       if (targetAddr == null) return;
       const resolvedCandidate = candidate || findCandidateByAddr(targetAddr);
+      const matchedPin = pinpointMatchesAddress(pin, targetAddr) ? pin : null;
       app.lastGoalContext = {
         targetAddr: BigInt(targetAddr),
         goal,
         candidate: resolvedCandidate,
-        pinpoint: pin,
+        pinpoint: matchedPin,
         fields: result.context?.fields || null,
         setAt: Date.now(),
       };
@@ -339,7 +376,7 @@ export function showCandidates(app, goal) {
         answer.append(fieldRow);
       }
       if (address != null) {
-        const quick = el('div', 'row');
+        const quick = el('div', 'inv-actions-row');
         const pseudoBtn = el('button', 'btn sm', pick('疑似C', 'Pseudo-C'));
         pseudoBtn.type = 'button';
         pseudoBtn.addEventListener('click', () => openCandidateFunction(address, null, 'pseudocode'));
@@ -400,7 +437,7 @@ export function showOverview(app) {
   const initialFile = app?.store?.get?.('fileInfo');
   const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   const controller = new AbortController();
-  const sheet = new Sheet(pick('このアプリを解析しました', 'Application overview'), { onClose:() => controller.abort('overview-sheet-closed') });
+  const sheet = new Sheet(pick('このアプリを解析しています…', 'Analysing application…'), { onClose:() => controller.abort('overview-sheet-closed') });
   const progress = progressView(sheet.body, () => { controller.abort('user-cancelled'); sheet.close(); });
   const host = el('div'); sheet.body.append(host);
 
@@ -410,14 +447,17 @@ export function showOverview(app) {
   }).then((result) => {
     progress.done();
     if (controller.signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
+    sheet.setTitle(pick('このアプリを解析しました', 'Application overview'));
     app.autoReport = { report:result.report, key:result.context.region?.id ?? null, gen:app.symbols?.gen, snapshotId:result.snapshotId };
     void app.persistAnalysisSession?.(['autoReport', 'lastGoal']);
     appendCompleteness(host, result, {
+      app,
       onContinue: () => { sheet.close(); showOverview(app); },
     });
     const report = result.report;
     const summary = list();
-    summary.append(tapRow(pick('関数', 'Functions'), { right:String(report?.stats?.functions ?? 0), disabled:true }));
+    const functionTotal = Number(app?.symbols?.functionCount ?? report?.stats?.functions ?? 0);
+    summary.append(tapRow(pick('関数', 'Functions'), { right:functionTotal.toLocaleString(), disabled:true }));
     summary.append(tapRow(pick('文字列', 'Strings'), { right:String(report?.stats?.strings ?? 0), disabled:true }));
     summary.append(tapRow(pick('呼び出し', 'Calls'), { right:String(report?.stats?.calls ?? 0), disabled:true }));
     summary.append(tapRow(pick('参照', 'References'), { right:String(report?.stats?.refs ?? 0), disabled:true }));

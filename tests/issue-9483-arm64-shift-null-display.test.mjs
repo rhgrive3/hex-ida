@@ -12,7 +12,7 @@ setLang('ja');
   const res = explain('ldr', 'x0, [x1, x2, lsl]', 0x1000n);
   assert.equal(
     res.summary,
-    'x1 と x2 を足したアドレスから 8 バイト（64 ビット） 読み込み、x0 に入れる。'
+    'x1 と x2 を足したアドレスから 8 バイト（64 ビット）を読み込み、x0 に入れる。'
   );
   assert.equal(res.pseudo, 'x0 = *(uint64*)(x1 + x2)');
   assert.doesNotMatch(res.summary, /null/);
@@ -23,7 +23,7 @@ setLang('ja');
   const res = explain('ldr', 'x0, [x1, x2, lsr]', 0x1000n);
   assert.equal(
     res.summary,
-    'x1 と x2 を足したアドレスから 8 バイト（64 ビット） 読み込み、x0 に入れる。'
+    'x1 と x2 を足したアドレスから 8 バイト（64 ビット）を読み込み、x0 に入れる。'
   );
   assert.doesNotMatch(res.summary, /null/);
 }
@@ -32,7 +32,7 @@ setLang('ja');
   const res = explain('ldr', 'x0, [x1, x2, asr]', 0x1000n);
   assert.equal(
     res.summary,
-    'x1 と x2 を足したアドレスから 8 バイト（64 ビット） 読み込み、x0 に入れる。'
+    'x1 と x2 を足したアドレスから 8 バイト（64 ビット）を読み込み、x0 に入れる。'
   );
   assert.doesNotMatch(res.summary, /null/);
 }
@@ -41,7 +41,7 @@ setLang('ja');
   const res = explain('ldr', 'x0, [x1, x2, ror]', 0x1000n);
   assert.equal(
     res.summary,
-    'x1 と x2 を足したアドレスから 8 バイト（64 ビット） 読み込み、x0 に入れる。'
+    'x1 と x2 を足したアドレスから 8 バイト（64 ビット）を読み込み、x0 に入れる。'
   );
   assert.doesNotMatch(res.summary, /null/);
 }
@@ -51,7 +51,7 @@ setLang('ja');
   const res = explain('ldr', 'x0, [x1, x2, lsl #2]', 0x1000n);
   assert.equal(
     res.summary,
-    'x1 と x2（左へ 2 ビットずらす＝ 4 倍してから） を足したアドレスから 8 バイト（64 ビット） 読み込み、x0 に入れる。'
+    'x1 と x2（左へ 2 ビットずらす＝ 4 倍してから） を足したアドレスから 8 バイト（64 ビット）を読み込み、x0 に入れる。'
   );
 }
 

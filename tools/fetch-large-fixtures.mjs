@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REAL_FIXTURES_DIR = path.join(ROOT, 'tests', '.real-fixtures');
 const manifest = JSON.parse(await readFile(path.join(ROOT, 'tests/large-fixtures.json'), 'utf8'));
 const requested = process.argv.slice(2);
 const names = requested.length ? requested : Object.keys(manifest.fixtures);
@@ -19,10 +20,12 @@ for (const name of names) {
 }
 
 async function fetchFixture(name, fixture) {
-  const target = path.join(ROOT, fixture.path);
+  const fileName = path.basename(fixture.path);
+  const target = path.join(REAL_FIXTURES_DIR, fileName);
+  const relTarget = path.relative(ROOT, target);
   const existing = await verifyFile(target, fixture).catch(() => false);
   if (existing) {
-    console.log(`${name}: verified existing ${fixture.path}`);
+    console.log(`${name}: verified existing ${relTarget}`);
     return;
   }
 
@@ -52,7 +55,7 @@ async function fetchFixture(name, fixture) {
     const digest = hash.digest('hex');
     if (digest !== fixture.gitBlobSha1) throw new Error(`${name}: Git blob hash mismatch (${digest})`);
     await rename(temp, target);
-    console.log(`${name}: fetched and verified ${fixture.path} (${received} bytes)`);
+    console.log(`${name}: fetched and verified ${relTarget} (${received} bytes)`);
   } catch (error) {
     await rm(temp, { force: true });
     throw error;

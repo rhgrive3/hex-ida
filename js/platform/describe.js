@@ -7,6 +7,10 @@ function displayFormat(image) {
   if (image.format === 'elf') return `ELF ${image.bits || '?'}-bit`;
   if (image.format === 'pe') return image.bits === 64 ? 'PE32+' : 'PE32';
   if (image.format === 'macho') return `Mach-O ${image.bits || '?'}-bit`;
+  if (image.format === 'wasm') return 'WebAssembly';
+  if (image.format === 'dex') return 'DEX';
+  if (image.format === 'cil') return 'CIL (.NET)';
+  if (image.format === 'jvm') return 'JVM Class';
   return String(image.format || 'Raw binary');
 }
 
@@ -125,8 +129,9 @@ export function describeBinaryImage(image, options = {}) {
     ...requestedEngine,
     verified: requestedEngine.verified === true,
   };
+  const managedFrontend = image.managedFrontend ?? options.managedFrontend ?? null;
   const capability = architectureCapability(image, engine);
-  const support = supportTruthForImage(image, { engine });
+  const support = supportTruthForImage(image, { engine, managedFrontend });
   const supportDisplay = supportDisplayForTruth(support);
   const regions = regionsForImage(image);
   const dataInCode = Array.isArray(image.dataInCode) ? image.dataInCode : [];
@@ -162,6 +167,7 @@ export function describeBinaryImage(image, options = {}) {
     endian: image.endian,
   };
   if (image.platform != null) formatMetadata.platform = image.platform;
+  if (managedFrontend != null) formatMetadata.managedFrontend = managedFrontend;
   if (image.metadata?.encryption != null) formatMetadata.encryption = { ...image.metadata.encryption };
   if (image.abi != null) formatMetadata.abi = image.abi;
   if (image.entrypoint != null) formatMetadata.entrypoint = image.entrypoint;

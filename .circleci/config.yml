@@ -710,7 +710,7 @@ jobs:
             node tests/issue-495-elf-relocation-budget.mjs || failures+=(elf-relocation-budget)
             node tests/issue-513-elf-symbol-budget.mjs || failures+=(elf-symbol-budget)
             npm run binary:test || failures+=(binary)
-            npm run binary:gate || failures+=(binary-gate)
+            HEX_ALLOW_EMPTY_REAL_FIXTURES=1 npm run binary:gate || failures+=(binary-gate)
             if [ "${#failures[@]}" -ne 0 ]; then
               printf 'Universal validation failed: %s\n' "${failures[*]}" >&2
               exit 1
@@ -738,6 +738,7 @@ jobs:
             if [ "$RUN_UNIVERSAL_BENCHMARK" != 'true' ]; then exit 0; fi
             npm run fixtures:fetch
             npm run fixtures:check
+            npm run binary:gate
       - run:
           name: Run reproducible binary benchmark
           command: |

@@ -1990,9 +1990,19 @@ export class V6Workbench {
           tilTimer.unref?.();
         }
 
+        const isEmbedRoute = typeof location !== 'undefined'
+          && typeof location.pathname === 'string'
+          && location.pathname.startsWith('/embed/');
+        const isDevRoot = typeof document !== 'undefined' && !!document.querySelector?.('script[src="./js/app.js"]');
         const tilIsCommunityMirror = Boolean(providers.tilIsCommunityMirror ?? cfg.tilIsCommunityMirror);
-        const tilManifestUrl = providers.tilManifestUrl ?? cfg.tilManifestUrl ?? null;
-        const tilBaseUrl = providers.tilBaseUrl ?? cfg.tilBaseUrl ?? '';
+        const rawTilManifestUrl = providers.tilManifestUrl ?? cfg.tilManifestUrl ?? null;
+        const tilManifestUrl = rawTilManifestUrl === 'til-hub/manifest.json'
+          ? (isEmbedRoute ? '/til-hub/manifest.json' : (isDevRoot ? 'dist/til-hub/manifest.json' : rawTilManifestUrl))
+          : rawTilManifestUrl;
+        const rawTilBaseUrl = providers.tilBaseUrl ?? cfg.tilBaseUrl ?? '';
+        const tilBaseUrl = rawTilBaseUrl === 'til-hub'
+          ? (isEmbedRoute ? '/til-hub' : (isDevRoot ? 'dist/til-hub' : rawTilBaseUrl))
+          : (rawTilBaseUrl || (tilManifestUrl === '/til-hub/manifest.json' ? '/til-hub' : (tilManifestUrl === 'dist/til-hub/manifest.json' ? 'dist/til-hub' : '')));
         let tilFetchManifest = typeof providers.tilFetchManifest === 'function'
           ? providers.tilFetchManifest
           : (typeof cfg.tilFetchManifest === 'function' ? cfg.tilFetchManifest : null);
@@ -2101,9 +2111,19 @@ export class V6Workbench {
     if (!(hasStagedHooks && namesAlreadyDone))
     try {
       let hubLoader = providers.hexsigHubLoader ?? cfg.hexsigHubLoader ?? null;
+      const isEmbedRoute = typeof location !== 'undefined'
+        && typeof location.pathname === 'string'
+        && location.pathname.startsWith('/embed/');
+      const isDevRoot = typeof document !== 'undefined' && !!document.querySelector?.('script[src="./js/app.js"]');
       const hexsigManifest = providers.hexsigManifest ?? cfg.hexsigManifest ?? null;
-      const hexsigManifestUrl = providers.hexsigManifestUrl ?? cfg.hexsigManifestUrl ?? null;
-      const hexsigBaseUrl = providers.hexsigBaseUrl ?? cfg.hexsigBaseUrl ?? '';
+      const rawHexsigManifestUrl = providers.hexsigManifestUrl ?? cfg.hexsigManifestUrl ?? null;
+      const hexsigManifestUrl = rawHexsigManifestUrl === 'hexsig-hub/manifest.json'
+        ? (isEmbedRoute ? '/hexsig-hub/manifest.json' : (isDevRoot ? 'dist/hexsig-hub/manifest.json' : rawHexsigManifestUrl))
+        : rawHexsigManifestUrl;
+      const rawHexsigBaseUrl = providers.hexsigBaseUrl ?? cfg.hexsigBaseUrl ?? '';
+      const hexsigBaseUrl = rawHexsigBaseUrl === 'hexsig-hub'
+        ? (isEmbedRoute ? '/hexsig-hub' : (isDevRoot ? 'dist/hexsig-hub' : rawHexsigBaseUrl))
+        : (rawHexsigBaseUrl || (hexsigManifestUrl === '/hexsig-hub/manifest.json' ? '/hexsig-hub' : (hexsigManifestUrl === 'dist/hexsig-hub/manifest.json' ? 'dist/hexsig-hub' : '')));
       const hexsigFetchManifest = typeof providers.hexsigFetchManifest === 'function'
         ? providers.hexsigFetchManifest
         : (typeof cfg.hexsigFetchManifest === 'function' ? cfg.hexsigFetchManifest : null);
@@ -2808,6 +2828,20 @@ export class V6Workbench {
     this._mountedWorkflowPanels.clear();
     this._autoAnalysisListeners.clear();
   }
+}
+
+export function defaultHubUrls() {
+  const isEmbedRoute = typeof location !== 'undefined'
+    && typeof location.pathname === 'string'
+    && location.pathname.startsWith('/embed/');
+  const isDevRoot = typeof document !== 'undefined' && !!document.querySelector?.('script[src="./js/app.js"]');
+  const prefix = isEmbedRoute ? '/' : (isDevRoot ? 'dist/' : '');
+  return {
+    tilManifestUrl: `${prefix}til-hub/manifest.json`,
+    tilBaseUrl: `${prefix}til-hub`,
+    hexsigManifestUrl: `${prefix}hexsig-hub/manifest.json`,
+    hexsigBaseUrl: `${prefix}hexsig-hub`,
+  };
 }
 
 export function attachV6Workbench(app, options = {}) {

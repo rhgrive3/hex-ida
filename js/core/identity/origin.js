@@ -1,9 +1,11 @@
-import { canonicalAddress, deepFreeze, jsonSafe, stableStringify, validateCanonicalIdentityNumbers } from './index.js';
+import { canonicalAddress, deepFreeze, isLightweightIdentityActive, jsonSafe, stableStringify, validateCanonicalIdentityNumbers } from './index.js';
 
 export const ORIGIN_SCHEMA_VERSION = 1;
 const CANONICAL_ORIGIN_SETS = new WeakSet();
 const CANONICAL_TRANSFORM_RECORDS = new WeakSet();
 const REUSABLE_ORIGIN_SETS = new WeakSet();
+const LIGHTWEIGHT_ORIGIN_SETS = new WeakSet();
+const LIGHTWEIGHT_TRANSFORM_RECORDS = new WeakSet();
 const REPLAY_SAFE_JSON = new WeakSet();
 const ORIGIN_FIELDS = ['byteRanges', 'virtualRanges', 'instructionIds', 'operationIds',
   'sourceLocations', 'parentEntityIds', 'transforms'];
@@ -230,6 +232,17 @@ function sortedList(byKey, cacheable = true) {
   return values;
 }
 function uniqueSorted(values) {
+  if (isLightweightIdentityActive()) {
+    const len = values.length;
+    if (len === 0) return EMPTY_LIST;
+    if (len === 1) return [values[0]];
+    const byKey = new Map();
+    for (let i = 0; i < len; i += 1) {
+      const value = values[i];
+      byKey.set(stableStringify(value), value);
+    }
+    return sortedList(byKey, false);
+  }
   const cacheable = ordinaryJsonPrototypes();
   const byKey = new Map(values.map((value) => [stableStringify(value), value]));
   return sortedList(byKey, cacheable && ordinaryJsonPrototypes());
@@ -245,6 +258,7 @@ function mergeCanonicalLists(origins, field) {
   return sortedList(byKey);
 }
 function captureOriginSet(out) {
+  if (isLightweightIdentityActive()) return out;
   let frozen = deepFreeze(out);
   if (ordinaryJsonPrototypes() && ORIGIN_FIELDS.every((field) => CANONICAL_LIST_ENTRIES.has(frozen[field]))
       && frozen.sourceLocations.every((value) => replaySafeJson(value))
@@ -293,14 +307,115 @@ function virtualRange(range) {
   };
 }
 
+function fastUniqueStrings(values) {
+  if (!Array.isArray(values) || values.length === 0) return EMPTY_LIST;
+  if (values.length === 1) return [values[0]];
+  return [...new Set(values)];
+}
+
+function fastMergeStrings(origins, field) {
+  let first = null;
+  let count = 0;
+  for (let i = 0; i < origins.length; i += 1) {
+    const list = origins[i][field];
+    if (list && list.length > 0) {
+      if (count === 0) first = list;
+      count += 1;
+    }
+  }
+  if (count === 0) return EMPTY_LIST;
+  if (count === 1) return first;
+  const set = new Set();
+  for (let i = 0; i < origins.length; i += 1) {
+    const list = origins[i][field];
+    for (let j = 0; j < list.length; j += 1) set.add(list[j]);
+  }
+  return [...set];
+}
+
+function fastUniqueRanges(ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) return EMPTY_LIST;
+  if (ranges.length === 1) return ranges;
+  const byKey = new Map();
+  for (let i = 0; i < ranges.length; i += 1) {
+    const r = ranges[i];
+    const key = `${r.binaryId ?? ''}|${r.imageId ?? ''}|${r.sliceId ?? ''}|${r.start}|${r.end}`;
+    byKey.set(key, r);
+  }
+  const out = [...byKey.values()];
+  if (out.length > 1) out.sort((a, b) => compareCanonicalText(a.start, b.start) || compareCanonicalText(a.end, b.end));
+  return out;
+}
+
+function fastMergeRanges(origins, field) {
+  let first = null;
+  let count = 0;
+  for (let i = 0; i < origins.length; i += 1) {
+    const list = origins[i][field];
+    if (list && list.length > 0) {
+      if (count === 0) first = list;
+      count += 1;
+    }
+  }
+  if (count === 0) return EMPTY_LIST;
+  if (count === 1) return first;
+  const byKey = new Map();
+  for (let i = 0; i < origins.length; i += 1) {
+    const list = origins[i][field];
+    for (let j = 0; j < list.length; j += 1) {
+      const r = list[j];
+      const key = `${r.binaryId ?? ''}|${r.imageId ?? ''}|${r.sliceId ?? ''}|${r.start}|${r.end}`;
+      byKey.set(key, r);
+    }
+  }
+  const out = [...byKey.values()];
+  if (out.length > 1) out.sort((a, b) => compareCanonicalText(a.start, b.start) || compareCanonicalText(a.end, b.end));
+  return out;
+}
+
+function fastMergeRefs(origins, field) {
+  let first = null;
+  let count = 0;
+  for (let i = 0; i < origins.length; i += 1) {
+    const list = origins[i][field];
+    if (list && list.length > 0) {
+      if (count === 0) first = list;
+      count += 1;
+    }
+  }
+  if (count === 0) return EMPTY_LIST;
+  if (count === 1) return first;
+  const set = new Set();
+  for (let i = 0; i < origins.length; i += 1) {
+    const list = origins[i][field];
+    for (let j = 0; j < list.length; j += 1) set.add(list[j]);
+  }
+  return [...set];
+}
+
 export function createTransformRecord(input = {}) {
   if (CANONICAL_TRANSFORM_RECORDS.has(input)) return input;
+  if (isLightweightIdentityActive() && LIGHTWEIGHT_TRANSFORM_RECORDS.has(input)) return input;
   if (!input || typeof input !== 'object') fail('origin-invalid-transform');
   const passId = requiredString(input.passId, 'origin-invalid-transform');
   const passVersion = requiredString(input.passVersion, 'origin-invalid-transform');
   const ruleId = requiredString(input.ruleId, 'origin-invalid-transform');
   const proofKind = requiredString(input.proofKind, 'origin-invalid-transform');
-  let frozen = deepFreeze({
+  if (isLightweightIdentityActive()) {
+    const record = {
+      passId,
+      passVersion,
+      ruleId,
+      consumedEntityIds: EMPTY_LIST,
+      producedEntityIds: fastUniqueStrings(input.producedEntityIds),
+      preconditions: EMPTY_LIST,
+      proofKind,
+      timestampOrBuildId: input.timestampOrBuildId == null ? null : String(input.timestampOrBuildId),
+    };
+    LIGHTWEIGHT_TRANSFORM_RECORDS.add(record);
+    return record;
+  }
+  const record = {
     passId,
     passVersion,
     ruleId,
@@ -309,7 +424,8 @@ export function createTransformRecord(input = {}) {
     preconditions: exactJson(input.preconditions ?? []),
     proofKind,
     timestampOrBuildId: input.timestampOrBuildId == null ? null : stringValue(input.timestampOrBuildId, 'origin-invalid-transform'),
-  });
+  };
+  let frozen = deepFreeze(record);
   if (replaySafeJson(frozen.preconditions)) {
     const preconditions = sharePreconditionData(frozen.preconditions);
     const consumedEntityIds = shareCanonicalList(frozen.consumedEntityIds);
@@ -323,6 +439,31 @@ export function createTransformRecord(input = {}) {
 
 export function createOriginSet(input = {}) {
   if (input && typeof input === 'object' && CANONICAL_ORIGIN_SETS.has(input)) return input;
+  if (isLightweightIdentityActive()) {
+    if (input && typeof input === 'object' && LIGHTWEIGHT_ORIGIN_SETS.has(input)) return input;
+    if (input == null) input = {};
+    if (typeof input !== 'object' || Array.isArray(input)) fail('origin-invalid-set');
+    const rawByteRanges = input.byteRanges;
+    const byteRanges = rawByteRanges && rawByteRanges.length ? fastUniqueRanges(rawByteRanges.map(byteRange)) : EMPTY_LIST;
+    const rawVirtualRanges = input.virtualRanges;
+    const virtualRanges = rawVirtualRanges && rawVirtualRanges.length ? fastUniqueRanges(rawVirtualRanges.map(virtualRange)) : EMPTY_LIST;
+    const rawTransforms = input.transforms;
+    const transforms = rawTransforms && rawTransforms.length ? [...new Set(rawTransforms.map(createTransformRecord))] : EMPTY_LIST;
+    const rawSourceLocations = input.sourceLocations;
+    const sourceLocations = rawSourceLocations && rawSourceLocations.length ? rawSourceLocations.slice() : EMPTY_LIST;
+    const out = {
+      schemaVersion: ORIGIN_SCHEMA_VERSION,
+      byteRanges,
+      virtualRanges,
+      instructionIds: fastUniqueStrings(input.instructionIds),
+      operationIds: fastUniqueStrings(input.operationIds ?? input.bytecodeOperationIds),
+      sourceLocations,
+      parentEntityIds: fastUniqueStrings(input.parentEntityIds),
+      transforms,
+    };
+    LIGHTWEIGHT_ORIGIN_SETS.add(out);
+    return out;
+  }
   if (input == null) input = {};
   if (typeof input !== 'object' || Array.isArray(input)) fail('origin-invalid-set');
   const byteRanges = normalizedList(input.byteRanges, 'origin-invalid-byte-ranges', byteRange);
@@ -352,11 +493,28 @@ export function isCanonicalOriginSet(value) {
 
 /** Producer-owned immutable JSON origins can retain identity through IR input capture. */
 export function isReusableOriginSet(value) {
+  if (isLightweightIdentityActive() && LIGHTWEIGHT_ORIGIN_SETS.has(value)) return true;
   return REUSABLE_ORIGIN_SETS.has(value) && ordinaryJsonPrototypes();
 }
 
 export function mergeOriginSets(...sets) {
   const normalized = sets.filter((value) => value != null).map((value) => createOriginSet(value));
+  if (isLightweightIdentityActive()) {
+    if (normalized.length === 0) return createOriginSet({});
+    if (normalized.length === 1) return normalized[0];
+    const out = {
+      schemaVersion: ORIGIN_SCHEMA_VERSION,
+      byteRanges: fastMergeRanges(normalized, 'byteRanges'),
+      virtualRanges: fastMergeRanges(normalized, 'virtualRanges'),
+      instructionIds: fastMergeStrings(normalized, 'instructionIds'),
+      operationIds: fastMergeStrings(normalized, 'operationIds'),
+      sourceLocations: fastMergeRefs(normalized, 'sourceLocations'),
+      parentEntityIds: fastMergeStrings(normalized, 'parentEntityIds'),
+      transforms: fastMergeRefs(normalized, 'transforms'),
+    };
+    LIGHTWEIGHT_ORIGIN_SETS.add(out);
+    return out;
+  }
   // Normalize *all* external inputs before any reuse. A frozen shape, clone or
   // proxy is not the private producer brand and must still validate every field.
   if (!ordinaryJsonPrototypes() || normalized.some((origin) => !REUSABLE_ORIGIN_SETS.has(origin))) {

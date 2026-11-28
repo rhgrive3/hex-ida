@@ -1900,3 +1900,82 @@ function normalizeSections(sections) {
   }
   return out;
 }
+
+export { DEBUG_DEFAULT_BUDGET };
+
+/**
+ * Extracts function prototypes keyed by decimal address string from a parsed
+ * DWARF DIE forest (`parseDebugInfo` output).
+ *
+ * Returns `{ [addrDecimalString]: { name, returnType, params: [{ name, type }], signature } }`.
+ */
+export function extractFunctionPrototypes(parsed) {
+  const out = {};
+  const dies = parsed?.dies;
+  if (!(dies instanceof Map) || dies.size === 0) return out;
+
+  const paramsByParent = new Map();
+  for (const die of dies.values()) {
+    if (die.tag === DW_TAG.formal_parameter && die.parent != null) {
+      let list = paramsByParent.get(die.parent);
+      if (!list) {
+        list = [];
+        paramsByParent.set(die.parent, list);
+      }
+      list.push(die);
+    }
+  }
+
+  for (const die of dies.values()) {
+    if (die.tag !== DW_TAG.subprogram) continue;
+    const lowPc = attributeValue(die, DW_AT.low_pc);
+    const lowPcBig = bigNumeric(lowPc);
+    if (lowPcBig == null || lowPcBig < 0n) continue;
+
+    let returnType = 'void';
+    const typeAttr = effectiveAttribute(die, DW_AT.type, dies);
+    if (typeAttr) {
+      const typeDie = currentDebugInfoReferenceTarget(typeAttr.entry, typeAttr.owner, dies);
+      const described = describeType(typeDie, dies);
+      returnType = (described?.name && described.name !== 'unknown') ? described.name : 'uint64';
+    }
+
+    let paramDies = paramsByParent.get(die.offset) || null;
+    if (!paramDies || paramDies.length === 0) {
+      const spec = resolveSpecificationChain(die, dies);
+      for (let i = 1; i < spec.chain.length; i += 1) {
+        const inherited = paramsByParent.get(spec.chain[i].offset);
+        if (inherited && inherited.length > 0) {
+          paramDies = inherited;
+          break;
+        }
+      }
+    }
+
+    const params = [];
+    if (paramDies) {
+      for (let i = 0; i < paramDies.length; i += 1) {
+        const pDie = paramDies[i];
+        const pName = attributeName(pDie, dies) || `arg${i}`;
+        const pTypeDie = referencedType(pDie, dies);
+        const pDesc = describeType(pTypeDie, dies);
+        const pType = (pDesc?.name && pDesc.name !== 'unknown') ? pDesc.name : 'uint64';
+        params.push({ name: pName, type: pType });
+      }
+    }
+
+    const fnName = attributeName(die, dies) || null;
+    const paramList = params.length > 0
+      ? params.map((param) => `${param.type} ${param.name}`).join(', ')
+      : 'void';
+    const signature = fnName ? `${returnType} ${fnName}(${paramList})` : `${returnType}(${paramList})`;
+
+    out[lowPcBig.toString()] = {
+      name: fnName,
+      returnType,
+      params,
+      signature,
+    };
+  }
+  return out;
+}

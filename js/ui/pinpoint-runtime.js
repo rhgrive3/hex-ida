@@ -527,6 +527,64 @@ export function makePinpointAnalyzer(
         }, budgetMs);
       }
 
+      const shouldUseWorker = !!workerClient
+        && options?.useWorker !== false
+        && (options?.rows != null || typeof app?.backend?.fetchChunk === 'function');
+
+      let resolvedWindow = undefined;
+      const resolveLegacyArm64Window = () => {
+        if (resolvedWindow !== undefined) return resolvedWindow;
+        const owner = analysisRegionFor(app, addr, region);
+        if (!owner) { resolvedWindow = null; return null; }
+        const totalRows = Number(owner.size / 4n);
+        const target = BigInt(addr);
+        const delta = target - owner.vmAddr;
+        if (delta < 0n || delta % 4n !== 0n) { resolvedWindow = null; return null; }
+        const startRow = Number(delta / 4n);
+        if (startRow >= totalRows) { resolvedWindow = null; return null; }
+        /* end が未証明でも隣接関数へは伸びない: 局所的な境界（証明済み end か
+           次の関数開始、#464 ガード付き）で窓を締める。 */
+        const stop = end != null ? BigInt(end) : app.symbols?.functionWindowBound?.(target) ?? null;
+        const ownerEnd = owner.vmAddr + owner.size;
+        const boundedStop = stop != null && stop > ownerEnd ? ownerEnd : stop;
+        if (boundedStop != null && boundedStop <= target) { resolvedWindow = null; return null; }
+        const endRow = boundedStop != null
+          ? Math.min(totalRows - 1, Number((boundedStop - owner.vmAddr) / 4n) - 1)
+          : Math.min(totalRows - 1, startRow + 512);
+        if (endRow < startRow) { resolvedWindow = null; return null; }
+        resolvedWindow = { owner, target, startRow, endRow };
+        return resolvedWindow;
+      };
+
+      // For proven 4-byte ARM64/AArch64 streams with an active Pinpoint Worker,
+      // offload analysis + dataflow to the Worker BEFORE canonicalPinpointModel
+      // so main-thread UI never blocks on heavy IR/SSA construction.
+      if (legacyArm64 && shouldUseWorker) {
+        const win = options?.rows != null ? null : resolveLegacyArm64Window();
+        if (options?.rows != null || win != null) {
+          try {
+            const target = win ? win.target : BigInt(addr);
+            const workerRows = options?.rows != null
+              ? options.rows
+              : await collectWorkerRows(app, win.owner, win.startRow, win.endRow, linked.signal);
+            if (linked.signal?.aborted) throw abortError(linked.signal);
+            const workerRes = await workerClient.run({
+              addr: target,
+              rows: workerRows,
+              options: cloneableAnalyzeOptions(options),
+              signal: linked.signal,
+            });
+            return workerRes?.model || null;
+          } catch (workerErr) {
+            if (isAbortError(workerErr, linked.signal) || !workerErr?.pinpointWorkerFallback) {
+              throw workerErr;
+            }
+            // Fall back gracefully to canonical/in-thread analysis when worker
+            // instantiation, CSP/blob loading, or structured-clone transport fails.
+          }
+        }
+      }
+
       const canonical = await canonicalPinpointModel(app, addr, linked.signal, options);
       if (canonical !== undefined) return canonical;
 
@@ -535,52 +593,10 @@ export function makePinpointAnalyzer(
       // the owning executable region from the candidate address; the caller's UI
       // region is only a presentation hint and must not select another byte range.
       if (!legacyArm64) return null;
-      const owner = analysisRegionFor(app, addr, region);
-      if (!owner) return null;
-      const totalRows = Number(owner.size / 4n);
-      const target = BigInt(addr);
-      const delta = target - owner.vmAddr;
-      if (delta < 0n || delta % 4n !== 0n) return null;
-      const startRow = Number(delta / 4n);
-      if (startRow >= totalRows) return null;
-      /* end が未証明でも隣接関数へは伸びない: 局所的な境界（証明済み end か
-         次の関数開始、#464 ガード付き）で窓を締める。 */
-      const stop = end != null ? BigInt(end) : app.symbols?.functionWindowBound?.(target) ?? null;
-      const ownerEnd = owner.vmAddr + owner.size;
-      const boundedStop = stop != null && stop > ownerEnd ? ownerEnd : stop;
-      if (boundedStop != null && boundedStop <= target) return null;
-      const endRow = boundedStop != null
-        ? Math.min(totalRows - 1, Number((boundedStop - owner.vmAddr) / 4n) - 1)
-        : Math.min(totalRows - 1, startRow + 512);
-      if (endRow < startRow) return null;
+      const win = resolveLegacyArm64Window();
+      if (!win) return null;
 
-      const shouldUseWorker = !!workerClient
-        && options?.useWorker !== false
-        && (options?.rows != null || typeof app?.backend?.fetchChunk === 'function');
-
-      if (shouldUseWorker) {
-        try {
-          const workerRows = options?.rows != null
-            ? options.rows
-            : await collectWorkerRows(app, owner, startRow, endRow, linked.signal);
-          if (linked.signal?.aborted) throw abortError(linked.signal);
-          const workerRes = await workerClient.run({
-            addr: target,
-            rows: workerRows,
-            options: cloneableAnalyzeOptions(options),
-            signal: linked.signal,
-          });
-          return workerRes?.model || null;
-        } catch (workerErr) {
-          if (isAbortError(workerErr, linked.signal) || !workerErr?.pinpointWorkerFallback) {
-            throw workerErr;
-          }
-          // Fall back gracefully to in-thread analyzeFunctionCached when worker
-          // instantiation, CSP/blob loading, or structured-clone transport fails.
-        }
-      }
-
-      const res = await analyze(app.backend, owner, startRow, endRow,
+      const res = await analyze(app.backend, win.owner, win.startRow, win.endRow,
         app.symbols, null, { ...(options || {}), texts: false, signal: linked.signal });
       return res?.model || null;
     } catch (err) {

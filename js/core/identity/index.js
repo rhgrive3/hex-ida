@@ -4,6 +4,38 @@ import { getEngineMode, wasmStableStringify, wasmStableDigest } from '../hex-eng
 const ID_SCHEMA_VERSION = 1;
 const HEX_RE = /^[0-9a-f]+$/i;
 
+let lightweightIdentityDepth = 0;
+let lightweightIdentitySeq = 0;
+let lightweightDigestCache = null;
+let lightweightStringifyCache = null;
+
+export function isLightweightIdentityActive() {
+  return lightweightIdentityDepth > 0;
+}
+
+export function withLightweightIdentity(fn) {
+  const isRoot = lightweightIdentityDepth === 0;
+  lightweightIdentityDepth += 1;
+  if (isRoot) {
+    lightweightDigestCache = new WeakMap();
+    lightweightStringifyCache = new WeakMap();
+  }
+  try {
+    return fn();
+  } finally {
+    lightweightIdentityDepth -= 1;
+    if (isRoot) {
+      lightweightDigestCache = null;
+      lightweightStringifyCache = null;
+    }
+  }
+}
+
+export function nextLightweightId(prefix = 'lw') {
+  lightweightIdentitySeq += 1;
+  return `${prefix}_lw_${lightweightIdentitySeq}`;
+}
+
 function fail(code) {
   throw new TypeError(code);
 }
@@ -285,6 +317,20 @@ function isTrivialInlineDigestValue(value, mode = getEngineMode()) {
 }
 
 export function stableStringify(value) {
+  if (lightweightIdentityDepth > 0) {
+    const isObj = value !== null && typeof value === 'object';
+    if (isObj && lightweightStringifyCache !== null) {
+      const hit = lightweightStringifyCache.get(value);
+      if (hit !== undefined) return hit;
+    }
+    const safe = jsonSafe(value);
+    if (safe === undefined) return undefined;
+    const out = JSON.stringify(safe);
+    if (isObj && lightweightStringifyCache !== null) {
+      lightweightStringifyCache.set(value, out);
+    }
+    return out;
+  }
   const safe = jsonSafe(value);
   if (safe === undefined) return undefined;
   if (!hasCustomToJson() && shouldUseWasmForSafeValue(safe) && isWasmJsonSafe(safe)) {
@@ -298,14 +344,20 @@ const FNV_OFFSET_LOW = 0x84222325;
 const FNV_OFFSET_HIGH = 0xcbf29ce4;
 
 export function stableDigest(value) {
+  const cacheObj = lightweightIdentityDepth > 0 && value !== null && typeof value === 'object' && lightweightDigestCache !== null;
+  if (cacheObj) {
+    const hit = lightweightDigestCache.get(value);
+    if (hit !== undefined) return hit;
+  }
   const customToJson = hasCustomToJson();
   if (value === undefined || (Array.isArray(value) && value.map !== Array.prototype.map) || customToJson) {
     const text = stableStringify(value);
     return fnv64Text(text) + fnv64Text(text, FNV_OFFSET_HIGH, FNV_OFFSET_LOW);
   }
   let target = value;
-  const mode = getEngineMode();
-  if (mode !== 'js' && !isTrivialInlineDigestValue(value, mode)) {
+  if (lightweightIdentityDepth === 0) {
+    const mode = getEngineMode();
+    if (mode !== 'js' && !isTrivialInlineDigestValue(value, mode)) {
     const safe = jsonSafe(value);
     if (safe !== undefined && shouldUseWasmForSafeValue(safe, mode) && isWasmJsonSafe(safe)) {
       const wasmHash = typeof safe === 'string'
@@ -313,7 +365,8 @@ export function stableDigest(value) {
         : wasmStableDigest(safe);
       if (wasmHash !== null) return wasmHash;
     }
-    target = safe;
+      target = safe;
+    }
   }
   let aLow = FNV_OFFSET_LOW; let aHigh = FNV_OFFSET_HIGH;
   let bLow = FNV_OFFSET_HIGH; let bHigh = FNV_OFFSET_LOW;
@@ -344,16 +397,40 @@ export function stableDigest(value) {
   };
   const feedJsonString = (str) => {
     const len = str.length;
+    const savedALow = aLow, savedAHigh = aHigh, savedBLow = bLow, savedBHigh = bHigh;
+    let al = aLow ^ 0x22;
+    let ac = ((al >>> 16) * 0x1b3 + (((al & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    let ah = (Math.imul(aHigh, 0x1b3) + (al << 8) + ac) | 0;
+    al = Math.imul(al, 0x1b3);
+    let bl = bLow ^ 0x22;
+    let bc = ((bl >>> 16) * 0x1b3 + (((bl & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    let bh = (Math.imul(bHigh, 0x1b3) + (bl << 8) + bc) | 0;
+    bl = Math.imul(bl, 0x1b3);
     for (let i = 0; i < len; i += 1) {
       const code = str.charCodeAt(i);
       if (code < 0x20 || code === 0x22 || code === 0x5c || code > 0x7e) {
+        aLow = savedALow; aHigh = savedAHigh; bLow = savedBLow; bHigh = savedBHigh;
         feedStr(JSON.stringify(str));
         return;
       }
+      al ^= code;
+      ac = ((al >>> 16) * 0x1b3 + (((al & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      ah = (Math.imul(ah, 0x1b3) + (al << 8) + ac) | 0;
+      al = Math.imul(al, 0x1b3);
+      bl ^= code;
+      bc = ((bl >>> 16) * 0x1b3 + (((bl & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+      bh = (Math.imul(bh, 0x1b3) + (bl << 8) + bc) | 0;
+      bl = Math.imul(bl, 0x1b3);
     }
-    feedCode(0x22);
-    feedStr(str);
-    feedCode(0x22);
+    al ^= 0x22;
+    ac = ((al >>> 16) * 0x1b3 + (((al & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    ah = (Math.imul(ah, 0x1b3) + (al << 8) + ac) | 0;
+    al = Math.imul(al, 0x1b3);
+    bl ^= 0x22;
+    bc = ((bl >>> 16) * 0x1b3 + (((bl & 0xffff) * 0x1b3) >>> 16)) >>> 16;
+    bh = (Math.imul(bh, 0x1b3) + (bl << 8) + bc) | 0;
+    bl = Math.imul(bl, 0x1b3);
+    aLow = al; aHigh = ah; bLow = bl; bHigh = bh;
   };
   const feedByte = (byte) => {
     if (byte >= 100) {
@@ -375,7 +452,9 @@ export function stableDigest(value) {
     if (t === 'boolean') { feedStr(cur ? 'true' : 'false'); return; }
     if (t === 'number') {
       if (!Number.isFinite(cur)) { feedStr('null'); return; }
-      feedStr(Object.is(cur, -0) ? '0' : String(cur));
+      if (cur === 0) { feedCode(0x30); return; }
+      if (cur > 0 && cur <= 255 && (cur | 0) === cur) { feedByte(cur); return; }
+      feedStr(String(cur));
       return;
     }
     if (t === 'bigint') {
@@ -494,7 +573,9 @@ export function stableDigest(value) {
     }
   };
   streamValue(target);
-  return fnv64Hex(aLow, aHigh) + fnv64Hex(bLow, bHigh);
+  const digest = fnv64Hex(aLow, aHigh) + fnv64Hex(bLow, bHigh);
+  if (cacheObj) lightweightDigestCache.set(value, digest);
+  return digest;
 }
 
 // Byte-native equivalent of `stableDigest(Array.from(bytes))`. It reproduces the
@@ -683,35 +764,46 @@ export function createArtifactId(input = {}) {
   });
 }
 
-export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = []) {
+export function lossyTypeWitness(value, path = '', seen = null, out = null) {
   const type = typeof value;
-  if (type === 'bigint') out.push([path, 'bigint']);
+  if (type === 'string' || type === 'boolean' || value === null) {
+    return path === '' ? (out && out.length ? out : null) : (out ?? []);
+  }
+  const push = (entry) => {
+    if (out === null) out = [];
+    out.push(entry);
+  };
+  if (type === 'bigint') push([path, 'bigint']);
   else if (type === 'number') {
-    if (Number.isNaN(value)) out.push([path, 'number:nan']);
-    else if (value === Infinity) out.push([path, 'number:+infinity']);
-    else if (value === -Infinity) out.push([path, 'number:-infinity']);
-    else if (Object.is(value, -0)) out.push([path, 'number:-0']);
-  } else if (type === 'undefined') out.push([path, 'undefined']);
-  else if (type === 'function') out.push([path, 'function']);
-  else if (type === 'symbol') out.push([path, 'symbol']);
-  else if (value !== null && type === 'object') {
-    if (seen.has(value)) return out.length ? out : null;
+    if (Number.isNaN(value)) push([path, 'number:nan']);
+    else if (value === Infinity) push([path, 'number:+infinity']);
+    else if (value === -Infinity) push([path, 'number:-infinity']);
+    else if (Object.is(value, -0)) push([path, 'number:-0']);
+  } else if (type === 'undefined') push([path, 'undefined']);
+  else if (type === 'function') push([path, 'function']);
+  else if (type === 'symbol') push([path, 'symbol']);
+  else if (type === 'object') {
+    if (seen === null) seen = new WeakSet();
+    if (seen.has(value)) return out && out.length ? out : null;
     seen.add(value);
     if (value instanceof Map) {
+      if (out === null) out = [];
       out.push([path, 'map']);
       canonicalMapEntries(value, seen).forEach((entry, index) => {
         lossyTypeWitness(entry.key, `${path}.$map[${index}].<key>`, seen, out);
         lossyTypeWitness(entry.value, `${path}.$map[${index}].<val>`, seen, out);
       });
     } else if (value instanceof Set) {
+      if (out === null) out = [];
       out.push([path, 'set']);
       canonicalSetEntries(value, seen).forEach((entry, index) => {
         lossyTypeWitness(entry.value, `${path}.$set[${index}]`, seen, out);
       });
-    } else if (ArrayBuffer.isView(value)) out.push([path, 'bytes']);
-    else if (value instanceof ArrayBuffer) out.push([path, 'bytes']);
-    else if (value instanceof Date) out.push([path, 'date']);
+    } else if (ArrayBuffer.isView(value)) push([path, 'bytes']);
+    else if (value instanceof ArrayBuffer) push([path, 'bytes']);
+    else if (value instanceof Date) push([path, 'date']);
     else if (Array.isArray(value)) {
+      if (out === null) out = [];
       for (let index = 0; index < value.length; index++) {
         const itemPath = `${path}[${index}]`;
         if (!Object.hasOwn(value, index)) out.push([itemPath, 'array-hole']);
@@ -720,11 +812,16 @@ export function lossyTypeWitness(value, path = '', seen = new WeakSet(), out = [
     }
     else {
       rejectUnsupportedCanonicalObject(value);
-      for (const key of Object.keys(value).sort()) lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+      if (out === null) out = [];
+      const keys = sortKeysIfNeeded(Object.keys(value));
+      for (let i = 0; i < keys.length; i += 1) {
+        const key = keys[i];
+        lossyTypeWitness(value[key], `${path}.${key}`, seen, out);
+      }
     }
     seen.delete(value);
   }
-  return path === '' ? (out.length ? out : null) : out;
+  return path === '' ? (out && out.length ? out : null) : (out ?? []);
 }
 
 export function createEntityId(input = {}) {
@@ -837,13 +934,14 @@ export function canonicalAddress(value) {
   }
 }
 
-export function validateCanonicalIdentityNumbers(value, seen = new WeakSet()) {
+export function validateCanonicalIdentityNumbers(value, seen = null) {
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail('identity-non-finite-number');
     if (Number.isInteger(value) && !Number.isSafeInteger(value)) fail('identity-unsafe-number');
     return;
   }
   if (value == null || typeof value !== 'object' || ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date) return;
+  if (seen === null) seen = new WeakSet();
   if (seen.has(value)) return;
   seen.add(value);
   if (value instanceof Map) {
@@ -875,6 +973,7 @@ export function normalizeIdentity(value, code) {
 }
 
 export function deepFreeze(value, seen = null) {
+  if (lightweightIdentityDepth > 0) return value;
   if (value == null || typeof value !== 'object') return value;
   if (Object.isFrozen(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
   if (seen && seen.has(value)) return value;

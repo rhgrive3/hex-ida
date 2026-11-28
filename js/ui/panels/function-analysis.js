@@ -218,9 +218,6 @@ function resolveGoalContext(app, target, options) {
     : null;
   if (stored) {
     const ctxAddr = stored.targetAddr ?? stored.addr ?? stored.address ?? stored.candidate?.addr ?? null;
-    if (ctxAddr == null && target == null) {
-      return { ...stored, explicit: true };
-    }
     if (ctxAddr != null && target != null) {
       try {
         if (BigInt(ctxAddr) === BigInt(target)) {
@@ -531,7 +528,7 @@ export function showFunctionSummary(app, row, options = {}) {
       const rawPseudocode = String(decompiled?.pseudocode || '');
       const goalCtx = resolveGoalContext(app, target, options);
       const highlightLines = goalCtx && rawPseudocode
-        ? findGoalHighlightLines(rawPseudocode, goalCtx)
+        ? findGoalHighlightLines(rawPseudocode, { ...goalCtx, functionAddr: target })
         : [];
       const goalSummary = goalCtx
         ? buildGoalCandidateSummary({
@@ -541,6 +538,7 @@ export function showFunctionSummary(app, row, options = {}) {
           fields: goalCtx.fields,
           pseudocode: rawPseudocode || null,
           disasm: goalCtx.disasm ?? value.model?.instructions ?? null,
+          functionAddr: target,
         })
         : null;
 

@@ -67,8 +67,9 @@ export function showFileInfo(app) {
     const sym = app.symbols;
     ul.append(groupRow(t("file.group.symbols")));
     ul.append(kvRow(t("file.symbolCount"), sym.symbolCount.toLocaleString()));
+    const fnCount = Number(sym?.functionCount ?? 0);
     ul.append(kvRow(t("file.functionCount"),
-      sym.functionCount.toLocaleString() + (sym.guessed ? pick("（推測）", " (inferred)") : "")));
+      fnCount.toLocaleString() + (sym?.guessed ? pick("（推測）", " (inferred)") : "")));
     if (!sym.symbolCount) {
       const li = el("li");
       li.append(el("span", "sub", t("functions.hintNoSymbols")));

@@ -4,6 +4,8 @@ import {
   createFunctionId,
   createInstructionId,
   deepFreeze,
+  isLightweightIdentityActive,
+  nextLightweightId,
   stableDigest,
   stableStringify,
 } from '../../core/identity/index.js';
@@ -593,7 +595,7 @@ function bindDeclaredScalarReturns(ir, input, options) {
     if (node.kind !== 'return' || node.inputs.length) { nodes.push(node); continue; }
     const fact = { kind:'abi-return-location', version:1, functionId:ir.functionId,
       returnNodeId:node.id, abiIdentity:identity, location };
-    const key = stableDigest(fact);
+    const key = isLightweightIdentityActive() ? nextLightweightId('abi_ret') : stableDigest(fact);
     const readId = `abi_return_read_${key}`, valueId = `abi_return_value_${key}`;
     const narrow = location.bits !== widthBits;
     const truncId = `abi_return_trunc_${key}`, resultId = narrow ? `abi_return_result_${key}` : valueId;
@@ -659,7 +661,7 @@ function bindDeclaredEntryArguments(ir, input, options) {
     const fact = { kind:'abi-entry-argument', version:1, functionId:ir.functionId,
       abiIdentity:identity, argumentIndex:argument.index, variableKey:variable.key,
       location:{ reg:argument.reg, bits:argument.bits, abiClass:argument.abiClass } };
-    const id = `abi_entry_value_${stableDigest(fact)}`;
+    const id = isLightweightIdentityActive() ? nextLightweightId('abi_entry_value') : `abi_entry_value_${stableDigest(fact)}`;
     const origin = appendTransform(ir.origin, createTransformRecord({
       passId:'semantic-abi-entry-binding', passVersion:'1.0.0', ruleId:'declared-register-argument',
       proofKind:'canonical-abi-location', consumedEntityIds:[ir.functionId], producedEntityIds:[id], preconditions:[fact],
@@ -722,7 +724,7 @@ function bindDeclaredCallValues(ir, input, options) {
     addedNodes += growth;
     const fact = { kind:'abi-call-values', version:1, functionId:ir.functionId, callNodeId:node.id,
       abiIdentity:identity, arguments:raw.explicitArguments, returnLocation:raw.returnLocations[0] };
-    const key = stableDigest(fact), resultId = `abi_call_result_${key}`, writeId = `abi_call_write_${key}`;
+    const key = isLightweightIdentityActive() ? nextLightweightId('abi_call') : stableDigest(fact), resultId = `abi_call_result_${key}`, writeId = `abi_call_write_${key}`;
     const readIds = args.map((_, index) => `abi_call_read_${key}_${index}`);
     const argumentIds = args.map((_, index) => `abi_call_arg_${key}_${index}`);
     const origin = appendTransform(node.origin, createTransformRecord({
@@ -1060,12 +1062,13 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const snapshotId = canonicalSnapshotId(
     options.memorySsaOptions?.snapshotId ?? options.snapshotId ?? 'snapshot-unbound',
   );
+  const lightweightIds = isLightweightIdentityActive();
   const semanticIrId = options.memorySsaOptions?.identity?.semanticIrId
-    ?? `semantic-ir-${stableDigest({ functionId, semanticIrDigest })}`;
+    ?? (lightweightIds ? nextLightweightId('semantic-ir') : `semantic-ir-${stableDigest({ functionId, semanticIrDigest })}`);
   const scalarSsaId = options.memorySsaOptions?.identity?.scalarSsaId
-    ?? `scalar-ssa-${stableDigest({ functionId, scalarSsaDigest })}`;
+    ?? (lightweightIds ? nextLightweightId('scalar-ssa') : `scalar-ssa-${stableDigest({ functionId, scalarSsaDigest })}`);
   const memorySsaId = options.memorySsaOptions?.identity?.memorySsaId
-    ?? `memory-ssa-${stableDigest({ functionId, semanticIrDigest, scalarSsaDigest, buildVersion: MEMORY_SSA_BUILD_VERSION })}`;
+    ?? (lightweightIds ? nextLightweightId('memory-ssa') : `memory-ssa-${stableDigest({ functionId, semanticIrDigest, scalarSsaDigest, buildVersion: MEMORY_SSA_BUILD_VERSION })}`);
 
   const regionOptions = options.regionOptions ?? {};
   const rootDescriptors = input.rootDescriptors ?? regionOptions.rootDescriptors ?? options.rootDescriptors;

@@ -7,7 +7,7 @@ import { GOALS, goalFromPreset } from './goals.js';
 import { rankCandidates } from './rank.js';
 import { vendorsOf } from './vendors.js';
 import { groupByFeature, detectEngine } from './features.js';
-import { findValueUpdates, constantComparisons } from './dataflow.js';
+import { findValueUpdates, constantComparisons, stripHeavyIrRefs } from './dataflow.js';
 import { buildAppMap, buildStringMap } from './appmap.js';
 import { pinpointField, pinpointFunction, pinpointLocation } from './pinpoint.js';
 import { VERDICT, verdictRank } from './evidence.js';
@@ -620,7 +620,22 @@ export async function autoAnalyze(opts) {
   const locationBudget = budgetOption(o.pinpointLocationBudget, 7);
   const functionBudget = budgetOption(o.pinpointFunctionBudget, 12);
   const budget = { left: startBudget };
-  const memo = o.analyze ? memoize(o.analyze) : null;
+  const budgetExceeded = new Set();
+  const baseMemo = o.analyze ? memoize(o.analyze) : null;
+  const memo = baseMemo ? (addr, end, options = undefined) => {
+    if (options === undefined && (typeof addr === 'bigint' || typeof addr === 'number' || typeof addr === 'string')) {
+      const bKey = `${typeof addr}:${String(addr)}`;
+      if (budgetExceeded.has(bKey)) return Promise.resolve(null);
+      return baseMemo(addr, end, options).catch((err) => {
+        if (err?.reason === 'per-function-budget-exceeded') {
+          budgetExceeded.add(bKey);
+          return null;
+        }
+        throw err;
+      });
+    }
+    return baseMemo(addr, end, options);
+  } : null;
   const hasClasses = !!(fields?.classCount || o.cxxFields?.fieldCount);
 
   const pinProbability = (p) => p?.top?.fusion ? p.top.fusion.probability : 0;
@@ -860,7 +875,7 @@ export async function autoAnalyze(opts) {
       report.deep.push({
         addr: t.addr, owner, name: symbols ? symbols.nameAt(t.addr) : null,
         why: t.why, goal: t.goal ? t.goal.id : null, goalLabel: t.goal ? t.goal.text : null,
-        role, updates: updates.slice(0, 4), compares: compares.slice(0, 4),
+        role, updates: updates.slice(0, 4).map(stripHeavyIrRefs), compares: compares.slice(0, 4),
         instructions: f.instructionCount || 0, selectors: selectors.slice(0, 4), strings: stringFacts.slice(0, 3),
       });
       await tick();
@@ -924,7 +939,12 @@ export function memoizeAnalysis(analyze) {
     // opaque sentinel across unrelated cyclic values (#3309).
     if (addrPart == null || endPart == null) return Promise.resolve().then(() => analyze(addr, end, options));
     const key = JSON.stringify([addrPart, endPart]);
-    if (cache.has(key)) return cache.get(key);
+    if (cache.has(key)) {
+      const hit = cache.get(key);
+      cache.delete(key);
+      cache.set(key, hit);
+      return hit;
+    }
     const p = Promise.resolve()
       .then(() => analyze(addr, end, options))
       .then((value) => {
@@ -935,7 +955,7 @@ export function memoizeAnalysis(analyze) {
         throw error;
       });
     cache.set(key, p);
-    if (cache.size > 400) cache.delete(cache.keys().next().value);
+    if (cache.size > 256) cache.delete(cache.keys().next().value);
     return p;
   };
 }

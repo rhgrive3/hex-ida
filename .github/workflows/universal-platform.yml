@@ -64,6 +64,8 @@ jobs:
         id: binary_gate
         if: ${{ !cancelled() }}
         continue-on-error: true
+        env:
+          HEX_ALLOW_EMPTY_REAL_FIXTURES: '1'
         run: npm run binary:gate
       - name: Require all universal verification suites
         if: ${{ !cancelled() }}
@@ -132,6 +134,8 @@ jobs:
         run: |
           npm run fixtures:fetch
           npm run fixtures:check
+      - name: Verify universal binary gate on real fixtures
+        run: npm run binary:gate
       - name: Run reproducible binary benchmark
         shell: bash
         run: |
