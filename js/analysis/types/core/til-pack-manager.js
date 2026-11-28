@@ -39,6 +39,14 @@ function isZipBytes(bytes) {
   return bytes && bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04;
 }
 
+function createAbortError(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  const err = new Error(reason == null ? 'Operation aborted' : String(reason));
+  err.name = 'AbortError';
+  return err;
+}
+
 /**
  * Validates a community mirror URL (§18.1):
  * Requires https:, rejects localhost / loopback / private IPv4/IPv6 ranges.
@@ -443,7 +451,8 @@ export class TilPackManager {
   /**
    * Fetches a remote TIL-Hub manifest with MAX_MANIFEST_BYTES enforcement and mirror defense.
    */
-  async fetchManifest(url, { isCommunityMirror = false } = {}) {
+  async fetchManifest(url, { isCommunityMirror = false, signal = null } = {}) {
+    if (signal?.aborted) throw createAbortError(signal);
     if (isCommunityMirror) {
       const check = validateCommunityMirrorUrl(url);
       if (!check.ok) throw new Error(`Community mirror rejected: ${check.error}`);
@@ -451,11 +460,13 @@ export class TilPackManager {
     if (!this.fetcher) {
       throw new Error('No fetch implementation available');
     }
-    const resp = await this.fetcher(url, { redirect: 'error' });
+    const resp = await this.fetcher(url, { redirect: 'error', ...(signal ? { signal } : {}) });
+    if (signal?.aborted) throw createAbortError(signal);
     if (!resp || !resp.ok) {
       throw new Error(`Manifest fetch failed with status ${resp ? resp.status : 'network-error'}`);
     }
     const buf = new Uint8Array(await resp.arrayBuffer());
+    if (signal?.aborted) throw createAbortError(signal);
     const validated = validateManifestPayload(buf);
     if (!validated.ok) throw new Error(validated.error);
     return validated.manifest;
@@ -472,7 +483,9 @@ export class TilPackManager {
     expectedRawSha256 = null,
     preferredSlot = null,
     meta = {},
+    signal = null,
   } = {}) {
+    if (signal?.aborted) throw createAbortError(signal);
     let remoteError = null;
 
     if (url && this.fetcher) {
@@ -481,11 +494,13 @@ export class TilPackManager {
           const check = validateCommunityMirrorUrl(url);
           if (!check.ok) throw new Error(`Community mirror rejected: ${check.error}`);
         }
-        const resp = await this.fetcher(url, { redirect: 'error' });
+        const resp = await this.fetcher(url, { redirect: 'error', ...(signal ? { signal } : {}) });
+        if (signal?.aborted) throw createAbortError(signal);
         if (!resp || !resp.ok) {
           throw new Error(`HTTP ${resp ? resp.status : 'network-error'}`);
         }
         const rawBytes = new Uint8Array(await resp.arrayBuffer());
+        if (signal?.aborted) throw createAbortError(signal);
         const mounted = await this.mountPack(packId, rawBytes, {
           expectedSha256,
           expectedRawSha256,
@@ -495,9 +510,12 @@ export class TilPackManager {
         });
         return { mounted: true, source: 'remote', ...mounted };
       } catch (err) {
+        if (signal?.aborted || err?.name === 'AbortError') throw err;
         remoteError = err;
       }
     }
+
+    if (signal?.aborted) throw createAbortError(signal);
 
     // Fallback 1: Local persistent cache (OPFS / IDB / Memory)
     try {
@@ -514,6 +532,7 @@ export class TilPackManager {
         };
       }
     } catch (cacheErr) {
+      if (signal?.aborted || cacheErr?.name === 'AbortError') throw cacheErr;
       remoteError = remoteError || cacheErr;
     }
 

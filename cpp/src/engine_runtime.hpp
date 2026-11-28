@@ -23,7 +23,7 @@ static const uint32_t HEX_ENGINE_ABI_VERSION = 0x00010000u;
 static const uint32_t HEX_ENGINE_IMAGE_ARENA_BYTES = 2u * 1024u * 1024u;
 static const uint32_t HEX_ENGINE_IR_ARENA_BYTES = 1536u * 1024u;
 static const uint32_t HEX_ENGINE_SCRATCH_ARENA_BYTES = 2560u * 1024u;
-static const uint32_t HEX_ENGINE_MAX_DECOMP_WORDS = 16384u;
+static const uint32_t HEX_ENGINE_MAX_DECOMP_WORDS = 8192u;
 
 typedef struct HexEngineArenaStats {
   uint32_t image_used;
