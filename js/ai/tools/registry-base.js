@@ -59,25 +59,33 @@ export function createHexToolRegistry(context = {}, options = {}) {
   const registry = new ToolRegistry({ context, evidenceStore: options.evidenceStore, onActivity: options.onActivity, observationStore });
   const maxDisassembly = Number.isFinite(Number(options.maxDisassembly)) ? Math.max(0, Math.floor(Number(options.maxDisassembly))) : 50000;
   let disassembly = 0;
+  let inFlight = 0;
   const analysisContext = typeof context.analyze === 'function' ? {
     ...context,
     analyze: async (address, end, callOptions = {}) => {
-      const remaining = Math.max(0, maxDisassembly - disassembly);
-      if (!remaining) throw new Error('disassembly-budget');
+      const remaining = maxDisassembly - disassembly - inFlight;
+      if (remaining <= 0) throw new Error('disassembly-budget');
       const estimated = estimateInstructionCount(context, address, end);
-      if (estimated != null && estimated > remaining) throw new Error('disassembly-budget');
       const callerOptions = callOptions && typeof callOptions === 'object' && !Array.isArray(callOptions) ? callOptions : {};
-      const requestedMax = Number.isFinite(Number(callerOptions.maxInstructions)) ? Math.max(0, Math.floor(Number(callerOptions.maxInstructions))) : remaining;
-      const model = await context.analyze(address, end, {
-        ...callerOptions,
-        maxInstructions: Math.min(requestedMax, remaining),
-        signal: callerOptions.signal || null,
-      });
-      const cost = Array.isArray(model?.instructions) ? model.instructions.length : 0;
-      const latestRemaining = Math.max(0, maxDisassembly - disassembly);
-      if (cost > latestRemaining) throw new Error('disassembly-budget');
-      disassembly += cost;
-      return model;
+      const hasExplicitMax = callerOptions.maxInstructions != null && Number.isFinite(Number(callerOptions.maxInstructions));
+      const requestedMax = hasExplicitMax ? Math.max(0, Math.floor(Number(callerOptions.maxInstructions))) : remaining;
+      const reserved = estimated != null ? estimated : (hasExplicitMax ? Math.min(requestedMax, remaining) : 1);
+      if (reserved > remaining) throw new Error('disassembly-budget');
+      inFlight += reserved;
+      try {
+        const model = await context.analyze(address, end, {
+          ...callerOptions,
+          maxInstructions: Math.min(requestedMax, remaining),
+          signal: callerOptions.signal || null,
+        });
+        const cost = Array.isArray(model?.instructions) ? model.instructions.length : 0;
+        const latestRemaining = Math.max(0, maxDisassembly - disassembly);
+        disassembly += cost;
+        if (cost > latestRemaining) throw new Error('disassembly-budget');
+        return model;
+      } finally {
+        inFlight = Math.max(0, inFlight - reserved);
+      }
     },
   } : context;
   const legacy = createAgentTools(analysisContext, { maxFunctions: options.maxFunctions, maxDisassembly: options.maxDisassembly });
@@ -92,7 +100,10 @@ export function createHexToolRegistry(context = {}, options = {}) {
     if (!cursor) return 0;
     const payload = registry.observationStore.cursorCodec.decode(cursor, { bindingKey: registry.observationStore.binding().key, kind: 'tool-page' });
     if (payload.tool !== tool || payload.paramsHash !== shortHash(stableSerialize(params))) throw new Error('cursor-parameter-mismatch');
-    return Math.max(0, Number(payload.offset) || 0);
+    if (typeof payload.offset !== 'number' || !Number.isSafeInteger(payload.offset) || payload.offset < 0) {
+      throw new Error('cursor-offset-invalid');
+    }
+    return payload.offset;
   };
 
   register('search_functions', 'Search the cheap function/symbol index. Use before expensive analysis. Results preserve scan completeness and are pageable.', searchSchema(), async ({ query, limit = 40, cursor }, callOptions = {}) => {
@@ -130,10 +141,10 @@ export function createHexToolRegistry(context = {}, options = {}) {
     scopeSupport: allReadScopes, category: 'detail', resultKind: 'selection', modelProjection: projectBounded,
   });
 
-  register('inspect_function_region', 'Inspect a bounded analyzed region of assembly, Semantic IR, pseudocode, or CFG. Never returns raw binary bytes.', regionSchema(), async (args) => {
+  register('inspect_function_region', 'Inspect a bounded analyzed region of assembly, Semantic IR, pseudocode, or CFG. Never returns raw binary bytes.', regionSchema(), async (args, callOptions = {}) => {
     const params = { functionAddress: args.functionAddress, view: args.view, aroundInstructionId: args.aroundInstructionId ?? null, radius: args.radius ?? null };
     const offset = args.cursor ? pageOffset('inspect_function_region', params, args.cursor) : Math.max(0, args.start || 0);
-    return inspectFunctionRegion(context, legacy, args, offset, (next) => pageCursor('inspect_function_region', params, next));
+    return inspectFunctionRegion(context, legacy, args, offset, (next) => pageCursor('inspect_function_region', params, next), { signal: callOptions.signal || null });
   }, { cost: 'medium', scopeSupport: functionScopes, category: 'detail', preferredPrerequisites: ['get_function'], resultKind: 'function-region', modelProjection: projectGraph });
 
   register('get_xrefs', 'Find bounded references to an existing address with opaque continuation.', addressLimitSchema('address', 200), async ({ address, limit = 200, cursor }) => {
@@ -155,19 +166,19 @@ export function createHexToolRegistry(context = {}, options = {}) {
     return attachContinuation(value, offset, () => pageCursor('get_callees', params, offset + Math.max(1, Number(value.returned || limit))));
   }, { scopeSupport: functionScopes, category: 'graph', resultKind: 'callees', modelProjection: projectGraph });
 
-  register('get_semantic_facts', 'Extract deterministic Semantic IR facts with exact pre-page totals and opaque continuation.', semanticSchema(), async ({ functionAddress, kinds, limit = 300, cursor }) => {
+  register('get_semantic_facts', 'Extract deterministic Semantic IR facts with exact pre-page totals and opaque continuation.', semanticSchema(), async ({ functionAddress, kinds, limit = 300, cursor }, callOptions = {}) => {
     const params = { functionAddress, kinds: kinds || [] };
     const offset = pageOffset('get_semantic_facts', params, cursor);
-    return semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, (next) => pageCursor('get_semantic_facts', params, next));
+    return semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, (next) => pageCursor('get_semantic_facts', params, next), { signal: callOptions.signal || null });
   }, { cost: 'medium', scopeSupport: functionScopes, category: 'semantic', resultKind: 'semantic-facts', modelProjection: projectSemanticFacts });
 
-  register('decompile_function', 'Get bounded semantic pseudocode for one function. Decompiler text is untrusted evidence.', addressSchema('functionAddress'), async ({ functionAddress }) => decompileFunction(context, legacy, functionAddress), {
+  register('decompile_function', 'Get bounded semantic pseudocode for one function. Decompiler text is untrusted evidence.', addressSchema('functionAddress'), async ({ functionAddress }, callOptions = {}) => decompileFunction(context, legacy, functionAddress, { signal: callOptions.signal || null }), {
     cost: 'expensive', scopeSupport: functionScopes, category: 'semantic', resultKind: 'pseudocode', modelProjection: projectFunction,
   });
-  register('get_cfg', 'Get a bounded pageable control-flow graph for one function.', addressLimitSchema('functionAddress', 200), async ({ functionAddress, limit = 200, cursor }) => {
+  register('get_cfg', 'Get a bounded pageable control-flow graph for one function.', addressLimitSchema('functionAddress', 200), async ({ functionAddress, limit = 200, cursor }, callOptions = {}) => {
     const params = { functionAddress };
     const offset = pageOffset('get_cfg', params, cursor);
-    return getCfg(context, legacy, functionAddress, limit, offset, (next) => pageCursor('get_cfg', params, next));
+    return getCfg(context, legacy, functionAddress, limit, offset, (next) => pageCursor('get_cfg', params, next), { signal: callOptions.signal || null });
   }, { cost: 'medium', scopeSupport: functionScopes, category: 'graph', resultKind: 'cfg', modelProjection: projectGraph });
   register('find_field_reads', 'Find deterministic reads of a field with exact totals and opaque continuation.', fieldSchema(), async ({ functionAddress, field, limit = 100, cursor }) => {
     const params = { functionAddress, field };
@@ -212,7 +223,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
   }, {
     cost: 'medium', scopeSupport: functionScopes, category: 'semantic', resultKind: 'thresholds', modelProjection: projectSemanticFacts,
   });
-  register('verify_field_update', 'Deterministically verify a read-modify-write field update and preserve minimal causal paths.', verifyFieldSchema(), async ({ functionAddress, field, limit = 8, pathLimit = 8 }) => legacy.verify_field_update(functionAddress, field, { limit, pathLimit }), {
+  register('verify_field_update', 'Deterministically verify a read-modify-write field update and preserve minimal causal paths.', verifyFieldSchema(), async ({ functionAddress, field, limit = 8, pathLimit = 8 }, callOptions = {}) => legacy.verify_field_update(functionAddress, field, { limit, pathLimit, ...(callOptions.signal ? { signal: callOptions.signal } : {}) }), {
     verifier: true, cost: 'expensive', scopeSupport: functionScopes, category: 'verification', preferredPrerequisites: ['get_semantic_facts'], resultKind: 'verification', modelProjection: projectVerification,
   });
   register('get_related_functions', 'Get bounded callers and callees around one function. Actionable partial sides expose dedicated get_callers/get_callees continuation hints.', addressLimitSchema('functionAddress', 24, false), async ({ functionAddress, limit = 24 }) => {
@@ -232,13 +243,13 @@ export function createHexToolRegistry(context = {}, options = {}) {
   register('find_constant', 'Find a bounded constant use in explicitly scoped candidate functions.', constantSchema(), async ({ value, functions, limit = 100 }) => boundedResult(await legacy.find_constant(value, { functions, limit }), limit), {
     cost: 'medium', scopeSupport: functionScopes, category: 'discovery', resultKind: 'constant-sites', modelProjection: projectSearch,
   });
-  register('find_paths', 'Find bounded call-graph paths between two functions.', pathSchema(), async ({ from, to, maxDepth = 6, maxPaths = 8, maxVisited = 10000 }) => legacy.find_paths(from, to, { maxDepth, maxPaths, maxVisited }), {
+  register('find_paths', 'Find bounded call-graph paths between two functions.', pathSchema(), async ({ from, to, maxDepth = 6, maxPaths = 8, maxVisited = 10000 }, callOptions = {}) => legacy.find_paths(from, to, { maxDepth, maxPaths, maxVisited, ...(callOptions.signal ? { signal: callOptions.signal } : {}) }), {
     cost: 'medium', scopeSupport: functionScopes, category: 'graph', resultKind: 'call-paths', modelProjection: projectGraph,
   });
   register('explain_evidence', 'Resolve deterministic evidence IDs back to semantic facts within a bounded function scope.', explainEvidenceSchema(), async ({ evidenceIds, functions, limit = 200 }) => boundedResult(await legacy.explain_evidence(evidenceIds, { functions, limit }), limit), {
     cost: 'medium', scopeSupport: functionScopes, category: 'detail', resultKind: 'evidence-explanation', modelProjection: projectDetail,
   });
-  register('symbolic_execute', 'Run bounded local symbolic execution. Limits and timeout are capped by the deterministic engine.', symbolicSchema(), async ({ functionAddress, ...symbolicOptions }) => legacy.symbolic_execute(functionAddress, symbolicOptions), {
+  register('symbolic_execute', 'Run bounded local symbolic execution. Limits and timeout are capped by the deterministic engine.', symbolicSchema(), async ({ functionAddress, ...symbolicOptions }, callOptions = {}) => legacy.symbolic_execute(functionAddress, { ...symbolicOptions, ...(callOptions.signal ? { signal: callOptions.signal } : {}) }), {
     cost: 'expensive', scopeSupport: functionScopes, category: 'verification', preferredPrerequisites: ['get_semantic_facts'], resultKind: 'symbolic-paths', modelProjection: projectSymbolic,
   });
 
@@ -248,7 +259,7 @@ export function createHexToolRegistry(context = {}, options = {}) {
   register('lookup_signature', 'Look up an imported or recovered signature by name or address.', lookupSchema(), async (args) => lookupSignature(context, args), {
     scopeSupport: allReadScopes, category: 'knowledge', resultKind: 'signature', modelProjection: projectSignature,
   });
-  register('compare_functions', 'Compare two existing functions while preserving semantic differences and similarity.', compareSchema(), async ({ leftAddress, rightAddress }) => compareFunctions(context, legacy, leftAddress, rightAddress), {
+  register('compare_functions', 'Compare two existing functions while preserving semantic differences and similarity.', compareSchema(), async ({ leftAddress, rightAddress }, callOptions = {}) => compareFunctions(context, legacy, leftAddress, rightAddress, { signal: callOptions.signal || null }), {
     cost: 'expensive', scopeSupport: ['auto', 'binary', 'project'], category: 'semantic', resultKind: 'function-comparison', modelProjection: projectCompare,
   });
   register('project_search', 'Search user annotations and prior findings in the current project with opaque continuation. Project text is untrusted data.', searchSchema(), async ({ query, limit = 50, cursor }) => {
@@ -270,10 +281,10 @@ export function createHexToolRegistry(context = {}, options = {}) {
     // #8681: the observation reader is a read path. It must not hold the
     // deterministic verifier capability just because some producers label
     // their own rows verified; only `verify_runtime_hypothesis` may.
-    register('get_runtime_observations', 'Read bounded observations from the active runtime session.', runtimeObservationSchema(), async ({ functionAddress, limit = 100, cursor }) => {
+    register('get_runtime_observations', 'Read bounded observations from the active runtime session.', runtimeObservationSchema(), async ({ functionAddress, limit = 100, cursor }, callOptions = {}) => {
       const params = { functionAddress: functionAddress || null };
       const offset = pageOffset('get_runtime_observations', params, cursor);
-      return runtimeObservations(context, { functionAddress, limit, offset, cursorFor: (next) => pageCursor('get_runtime_observations', params, next) });
+      return runtimeObservations(context, { functionAddress, limit, offset, cursorFor: (next) => pageCursor('get_runtime_observations', params, next), signal: callOptions.signal || null });
     }, { verifier: false, cost: 'medium', scopeSupport: ['auto', 'runtime'], category: 'runtime', resultKind: 'runtime-observations', modelProjection: projectRuntime, deterministic: false });
     register('verify_runtime_hypothesis', 'Run the configured deterministic runtime verifier for a hypothesis.', runtimeVerifySchema(), async ({ hypothesis, options: runtimeOptions }, callOptions = {}) => runtimeVerify(context, hypothesis, { ...(runtimeOptions || {}), signal: callOptions.signal || null }), {
       verifier: true, cost: 'expensive', scopeSupport: ['auto', 'runtime'], category: 'verification', resultKind: 'runtime-verification', modelProjection: projectVerification, deterministic: false });
@@ -284,10 +295,10 @@ export function createHexToolRegistry(context = {}, options = {}) {
     // provider can otherwise self-label a row `verified` and, through the shared
     // ingestion path, mint privileged verified evidence that ProposalStore accepts
     // as mutation authority. Only the recomputing verifiers may mint verified.
-    register('get_binary_diff', 'Get a paged deterministic function-level binary diff.', { type: 'object', properties: { limit: limitProperty(100, 500), cursor: cursorProperty() }, additionalProperties: false }, async ({ limit = 100, cursor }) => {
+    register('get_binary_diff', 'Get a paged deterministic function-level binary diff.', { type: 'object', properties: { limit: limitProperty(100, 500), cursor: cursorProperty() }, additionalProperties: false }, async ({ limit = 100, cursor }, callOptions = {}) => {
       const params = { view: 'function-diff' };
       const offset = pageOffset('get_binary_diff', params, cursor);
-      return binaryDiff(context, { limit, offset, cursorFor: (next) => pageCursor('get_binary_diff', params, next) });
+      return binaryDiff(context, { limit, offset, cursorFor: (next) => pageCursor('get_binary_diff', params, next), signal: callOptions.signal || null });
     }, {
       verifier: false, cost: 'expensive', scopeSupport: ['auto', 'project'], category: 'semantic', resultKind: 'binary-diff', modelProjection: projectBinaryDiff,
     });
@@ -402,7 +413,9 @@ function estimateInstructionCount(context, address, end) {
     if (stop == null && context.program?.functionRange) stop = context.program.functionRange(start)?.end ?? null;
     if (stop == null || stop <= start) return null;
     const bytes = stop - start;
-    const count = (bytes + 3n) / 4n;
+    const arch = String(context?.architecture ?? context?.program?.architecture ?? context?.program?.arch ?? '').toLowerCase();
+    const isVarLenX86 = arch === 'x86' || arch === 'x86_64' || arch === 'x64' || arch === 'i386' || arch === 'amd64';
+    const count = isVarLenX86 ? bytes : ((bytes + 3n) / 4n);
     return count > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(count);
   } catch { return null; }
 }
@@ -452,20 +465,28 @@ async function searchPage(context, legacy, tool, query, limit, offset, cursorFor
     ...(nextOffset != null ? { continuation: { cursor: cursorFor(nextOffset) } } : {}),
   };
 }
+function parseFunctionAddress(functionAddress) {
+  try {
+    return BigInt(functionAddress);
+  } catch {
+    throw new AIError('invalid_tool_call', `Invalid functionAddress: ${String(functionAddress)}`);
+  }
+}
+
 async function allFacts(legacy, functionAddress) {
-  const addr = BigInt(functionAddress);
+  const addr = parseFunctionAddress(functionAddress);
   const model = await legacy.__loader.get(addr);
   const ir = model ? irFor(model) : null;
   return { addr, model, ir, facts: ir ? semanticFacts(ir) : [] };
 }
 
-async function semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, cursorFor) {
-  const addr = BigInt(functionAddress);
+async function semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, cursorFor, options = {}) {
+  const addr = parseFunctionAddress(functionAddress);
   // Prefer an existing deterministic fact index when the host has one. This
   // avoids rebuilding/serializing full Semantic IR merely to page already-known
   // facts, while preserving the IR path as the authoritative fallback.
   if (typeof context?.semanticFactsFor === 'function') {
-    const indexed = await context.semanticFactsFor(addr, { kinds: kinds || [], limit, offset });
+    const indexed = await context.semanticFactsFor(addr, { kinds: kinds || [], limit, offset, ...(options?.signal ? { signal: options.signal } : {}) });
     const rows = Array.isArray(indexed) ? indexed : (Array.isArray(indexed?.results) ? indexed.results : []);
     const reportedOffset = Number(indexed?.offset ?? offset);
     const pageOffset = Number.isSafeInteger(reportedOffset) && reportedOffset >= 0 ? reportedOffset : offset;
@@ -602,7 +623,8 @@ function attachContinuation(value, offset, cursorFactory) {
   const out = { ...(value || {}), offset };
   const returned = out.returned != null && Number.isFinite(Number(out.returned)) ? Number(out.returned) : resultCount(out) || 0;
   const explicitTotal = (typeof out.total === 'number' || (typeof out.total === 'string' && out.total.trim() !== '')) && Number.isFinite(Number(out.total)) ? Number(out.total) : null;
-  const complete = out.complete === true || (out.truncated === false && explicitTotal != null && offset + returned >= explicitTotal);
+  const rawComplete = out.complete === true || (out.truncated === false && explicitTotal != null && offset + returned >= explicitTotal);
+  const complete = explicitTotal != null && offset + returned < explicitTotal ? false : rawComplete;
   out.returned = returned;
   out.complete = Boolean(complete);
   out.truncated = !out.complete;
@@ -613,19 +635,23 @@ function attachContinuation(value, offset, cursorFactory) {
 
 function boundedResult(value, limit) {
   const out = { ...(value || {}) };
-  let observedArray = false;
+  let primaryHandled = false;
   for (const key of ['results', 'sites', 'functions', 'updates', 'nodes', 'paths', 'blocks', 'callers', 'callees']) if (Array.isArray(out[key])) {
-    observedArray = true;
-    const preTotal = out.total ?? out[key].length;
     const originalLength = out[key].length;
     out[key] = out[key].slice(0, limit);
-    out.total ??= preTotal;
-    out.returned = out[key].length;
-    out.truncated = !!out.truncated || originalLength > out[key].length || (out.total != null && out.total > out.returned);
+    if (!primaryHandled) {
+      primaryHandled = true;
+      const preTotal = out.total ?? originalLength;
+      out.total ??= preTotal;
+      out.returned = out[key].length;
+      out.truncated = !!out.truncated || originalLength > out[key].length || (out.total != null && out.total > out.returned);
+    } else {
+      out.truncated = !!out.truncated || originalLength > out[key].length;
+    }
   }
-  if (observedArray) {
-    out.complete = out.complete ?? !out.truncated;
-    out.reason = out.reason ?? (out.complete ? null : 'result-limit');
+  if (primaryHandled) {
+    out.complete = out.truncated ? false : (out.complete ?? true);
+    out.reason = out.complete ? null : (out.reason || 'result-limit');
     out.coverage = out.coverage ?? (Number.isFinite(out.total) && out.total > 0 ? Math.min(1, out.returned / out.total) : (out.complete ? 1 : null));
   }
   return out;
@@ -657,7 +683,7 @@ function compactSelection(selection) {
 }
 function currentFunctionAddress(context) { return addressText(context.activeFunction?.address ?? context.currentFunction?.address ?? context.activeFunction?.identity?.startAddr ?? context.currentAddress); }
 
-async function inspectFunctionRegion(context, legacy, args, offset, cursorFor) {
+async function inspectFunctionRegion(context, legacy, args, offset, cursorFor, options = {}) {
   const model = await legacy.__loader.get(args.functionAddress);
   if (!model) return { functionAddress: args.functionAddress, view: args.view, results: [], total: 0, returned: 0, complete: true, truncated: false };
   const count = Math.max(1, Math.min(500, Number(args.count || (args.radius ? args.radius * 2 + 1 : 160))));
@@ -667,7 +693,7 @@ async function inspectFunctionRegion(context, legacy, args, offset, cursorFor) {
   else if (args.view === 'semantic-ir') { semanticIr = irFor(model); source = semanticIr?.instructions || []; }
   else if (args.view === 'cfg') source = model.blocks || model.cfg?.blocks || [];
   else {
-    let value = typeof context.decompile === 'function' ? await context.decompile(args.functionAddress) : (typeof context.pseudocodeFor === 'function' ? context.pseudocodeFor(args.functionAddress, model) : '');
+    let value = typeof context.decompile === 'function' ? await (options?.signal ? context.decompile(args.functionAddress, { signal: options.signal }) : context.decompile(args.functionAddress)) : (typeof context.pseudocodeFor === 'function' ? context.pseudocodeFor(args.functionAddress, model) : '');
     const text = typeof value === 'string' ? value : value?.text || value?.code || JSON.stringify(jsonSafe(value || ''));
     source = text.split(/\r?\n/);
   }
@@ -699,10 +725,10 @@ function semanticInstruction(inst) {
   return out;
 }
 
-async function decompileFunction(context, legacy, address) {
+async function decompileFunction(context, legacy, address, options = {}) {
   if (typeof context.decompile === 'function') {
-    const value = await context.decompile(address);
-    const text = typeof value === 'string' ? value : value?.text || value?.code || JSON.stringify(jsonSafe(value));
+    const value = await (options?.signal ? context.decompile(address, { signal: options.signal }) : context.decompile(address));
+    const text = value == null ? '' : (typeof value === 'string' ? value : value?.text || value?.code || JSON.stringify(jsonSafe(value)) || '');
     return { functionAddress: addressText(address), pseudocodeExcerpt: text.slice(0, 30000), total: text.length, returned: Math.min(text.length, 30000), complete: text.length <= 30000, truncated: text.length > 30000, reason: text.length > 30000 ? 'preview-limit' : null, trust: 'untrusted-data' };
   }
   if (legacy.decompile) return legacy.decompile(address);
@@ -745,19 +771,22 @@ function externalArrayPage(value, rows, { offset = 0, limit, localOffset = 0, cu
   };
 }
 
-async function getCfg(context, legacy, address, limit, offset = 0, cursorFor = null) {
+async function getCfg(context, legacy, address, limit, offset = 0, cursorFor = null, options = {}) {
   if (typeof context.getCFG === 'function') {
-    let value = await context.getCFG(address, { limit: limit + 1, offset });
+    const sigOpt = options?.signal ? { signal: options.signal } : {};
+    let value = await context.getCFG(address, { limit: limit + 1, offset, ...sigOpt });
     let localOffset = 0;
     if (offset > 0 && reportedOffset(value) !== offset) {
       const prefixLimit = Math.min(1_000_000, offset + limit + 1);
-      value = await context.getCFG(address, { limit: prefixLimit, offset: 0 });
+      value = await context.getCFG(address, { limit: prefixLimit, offset: 0, ...sigOpt });
       localOffset = offset;
     }
     const key = Array.isArray(value?.blocks) ? 'blocks' : Array.isArray(value?.nodes) ? 'nodes' : 'results';
     const rows = Array.isArray(value) ? value : (Array.isArray(value?.[key]) ? value[key] : []);
     const paged = externalArrayPage(value, rows, { offset, limit, localOffset, cursorFor, base: { functionAddress: addressText(address) } });
-    return { ...paged, [key]: paged.results, results: key === 'results' ? paged.results : undefined };
+    if (key === 'results') return paged;
+    const { results, ...rest } = paged;
+    return { ...rest, [key]: results };
   }
   const model = await legacy.__loader.get(address);
   const all = model?.blocks || model?.cfg?.blocks || [];
@@ -778,8 +807,12 @@ async function lookupSignature(context, args) {
   try { symbol = address && context.symbols?.symbolAt ? context.symbols.symbolAt(BigInt(address)) : null; } catch { symbol = null; }
   return { address, name: args.name || symbol?.name || null, signature: symbol?.signature || symbol?.type || null, found: !!symbol, source: symbol ? 'symbols' : null };
 }
-async function compareFunctions(context, legacy, leftAddress, rightAddress) {
-  if (typeof context.compareFunctions === 'function') return context.compareFunctions(leftAddress, rightAddress);
+async function compareFunctions(context, legacy, leftAddress, rightAddress, options = {}) {
+  if (typeof context.compareFunctions === 'function') {
+    return options?.signal
+      ? context.compareFunctions(leftAddress, rightAddress, { signal: options.signal })
+      : context.compareFunctions(leftAddress, rightAddress);
+  }
   const [left, right] = await Promise.all([legacy.get_function(leftAddress), legacy.get_function(rightAddress)]);
   const leftCount = Number.isSafeInteger(left?.instructions) ? left.instructions : null;
   const rightCount = Number.isSafeInteger(right?.instructions) ? right.instructions : null;
@@ -787,14 +820,44 @@ async function compareFunctions(context, legacy, leftAddress, rightAddress) {
 }
 function projectSearchLocal(project, query, limit, offset = 0, cursorFor = null) {
   const q = String(query).toLowerCase(), matches = [];
+  const seen = new WeakSet();
+  const maxMatches = Math.max(offset + limit + 1, 5000);
+  let budgetHit = false;
   const walk = (value, path = '$', depth = 0) => {
-    if (depth > 6 || value == null) return;
-    if (typeof value === 'string' && value.toLowerCase().includes(q)) matches.push({ path, excerpt: value.slice(0, 1000) });
-    else if (Array.isArray(value)) value.forEach((item, index) => walk(item, `${path}[${index}]`, depth + 1));
-    else if (typeof value === 'object') Object.entries(value).forEach(([key, item]) => walk(item, `${path}.${key}`, depth + 1));
+    if (budgetHit || depth > 6 || value == null) return;
+    if (typeof value === 'string') {
+      if (value.toLowerCase().includes(q)) {
+        if (matches.length >= maxMatches) { budgetHit = true; return; }
+        matches.push({ path, excerpt: value.slice(0, 1000) });
+      }
+      return;
+    }
+    if (typeof value !== 'object') return;
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index++) {
+        if (budgetHit) break;
+        walk(value[index], `${path}[${index}]`, depth + 1);
+      }
+      return;
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (budgetHit) break;
+      walk(item, `${path}.${key}`, depth + 1);
+    }
   };
   walk(project);
   const results = matches.slice(offset, offset + limit);
+  if (budgetHit) {
+    const next = results.length > 0 ? offset + results.length : null;
+    return {
+      query, results, total: null, returned: results.length, offset,
+      complete: false, truncated: true, reason: 'scan-budget', coverage: null,
+      ...(next != null && cursorFor ? { continuation: { cursor: cursorFor(next) } } : {}),
+    };
+  }
   const next = offset + results.length < matches.length ? offset + results.length : null;
   return pageResult({ query, results }, matches.length, offset, results.length, next != null && cursorFor ? cursorFor(next) : null);
 }
@@ -832,14 +895,15 @@ function normalizeObservationRow(row) {
   return next;
 }
 
-async function runtimeObservations(context, { functionAddress, limit = 100, offset = 0, cursorFor }) {
+async function runtimeObservations(context, { functionAddress, limit = 100, offset = 0, cursorFor, signal = null }) {
   const platform = context.runtimePlatform || context.runtime;
   if (typeof platform.getObservations === 'function') {
-    let value = await platform.getObservations({ functionAddress, limit: limit + 1, offset });
+    const sigOpt = signal ? { signal } : {};
+    let value = await platform.getObservations({ functionAddress, limit: limit + 1, offset, ...sigOpt });
     let localOffset = 0;
     if (offset > 0 && reportedOffset(value) !== offset) {
       const prefixLimit = Math.min(1_000_000, offset + limit + 1);
-      value = await platform.getObservations({ functionAddress, limit: prefixLimit, offset: 0 });
+      value = await platform.getObservations({ functionAddress, limit: prefixLimit, offset: 0, ...sigOpt });
       localOffset = offset;
     }
     const sourceRows = Array.isArray(value) ? value : (Array.isArray(value?.observations) ? value.observations : (Array.isArray(value?.results) ? value.results : []));
@@ -859,13 +923,14 @@ async function runtimeVerify(context, hypothesis, options) {
   if (!platform || typeof platform.verifyHypothesis !== 'function') return { verified: false, reason: 'runtime-verifier-unavailable' };
   return platform.verifyHypothesis(hypothesis, options || {});
 }
-async function binaryDiff(context, { limit, offset = 0, cursorFor }) {
+async function binaryDiff(context, { limit, offset = 0, cursorFor, signal = null }) {
   let value;
   let localOffset = 0;
   if (typeof context.getBinaryDiff === 'function') {
-    value = await context.getBinaryDiff({ limit: limit + 1, offset });
+    const sigOpt = signal ? { signal } : {};
+    value = await context.getBinaryDiff({ limit: limit + 1, offset, ...sigOpt });
     if (offset > 0 && reportedOffset(value) !== offset) {
-      value = await context.getBinaryDiff({ limit: Math.min(1_000_000, offset + limit + 1), offset: 0 });
+      value = await context.getBinaryDiff({ limit: Math.min(1_000_000, offset + limit + 1), offset: 0, ...sigOpt });
       localOffset = offset;
     }
   } else {
@@ -875,7 +940,10 @@ async function binaryDiff(context, { limit, offset = 0, cursorFor }) {
   const key = Array.isArray(value?.results) ? 'results' : Array.isArray(value?.functions) ? 'functions' : Array.isArray(value?.changes) ? 'changes' : Array.isArray(value) ? 'results' : null;
   const rows = Array.isArray(value) ? value : (key ? value[key] : []);
   const paged = externalArrayPage(value, rows, { offset, limit, localOffset, cursorFor });
-  if (key && key !== 'results') return { ...paged, [key]: paged.results, results: undefined };
+  if (key && key !== 'results') {
+    const { results, ...rest } = paged;
+    return { ...rest, [key]: results };
+  }
   return paged;
 }
 

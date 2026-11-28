@@ -514,7 +514,7 @@ test('runtime: _clearSaveError removes previously attached badge after language 
 test('product-base.js capture-phase shortcut guards fileLoading and tools-base.js guards EMPTY_INDEX on notes import/clear', () => {
   assert.match(
     productBaseSrc,
-    /const shortcut = \(event\) => \{\s*if \(isFileLoading\(app\)\) \{ event\.preventDefault\(\); return; \}/,
+    /const shortcut = \(event\) => \{\s*if \(isFileLoading\(app\)\) return;/,
     'capture-phase shortcut handler must block shortcuts during fileLoading',
   );
 

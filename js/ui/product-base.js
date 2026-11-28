@@ -82,8 +82,24 @@ const ja = () => {
 };
 const text = (j, e) => (uiRoot()?.lang ? (ja() ? j : e) : pick(j, e));
 
+function safeBigInt(value) {
+  if (value == null) return null;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
 function addressText(value) {
-  try { return addrHex(typeof value === 'bigint' ? value : BigInt(value)); } catch { return String(value || '—'); }
+  const big = safeBigInt(value);
+  if (big != null) {
+    try { return addrHex(big); } catch { /* fall through */ }
+  }
+  return String(value || '—');
 }
 
 function functionName(app, addr) {
@@ -542,7 +558,7 @@ export function buildInitialLandingCard(app, router, { onDismiss = null } = {}) 
       list.append(listRow({
         title: item.name,
         meta: item.meta,
-        onClick: () => router?.navigate?.('/explorer/types?q=' + encodeURIComponent(item.name)),
+        onClick: () => router?.navigate?.('/explorer/classes?q=' + encodeURIComponent(item.name)),
       }));
     }
     classWrap.append(list);
@@ -1664,8 +1680,8 @@ function renderExplorer(app, router, route, routeContext = {}) {
       if (filterMode === 'saved') {
         const ql = q.toLowerCase();
         const saved = bookmarkListOf(app).filter((bm) => {
-          if (bm?.addr == null) return false;
-          const bAddr = BigInt(bm.addr);
+          const bAddr = safeBigInt(bm?.addr);
+          if (bAddr == null) return false;
           const liveName = isFunctionStart(app, bAddr)
             ? (app.symbols?.nameAt?.(bAddr) || bm.name || functionName(app, bAddr))
             : (bm.name || bookmarkLabel(app, bAddr));
@@ -1674,7 +1690,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
           const hay = [liveName, bm?.name, bm?.note, tags, addressText(bAddr)].filter(Boolean).join(' ').toLowerCase();
           return hay.includes(ql);
         }).map((bm) => {
-          const bAddr = BigInt(bm.addr);
+          const bAddr = safeBigInt(bm.addr);
           const liveName = isFunctionStart(app, bAddr)
             ? (app.symbols?.nameAt?.(bAddr) || bm.name || functionName(app, bAddr))
             : (bm.name || bookmarkLabel(app, bAddr));
@@ -1682,7 +1698,8 @@ function renderExplorer(app, router, route, routeContext = {}) {
         });
         sortFunctionItems(saved, sortMode, app, editedMap);
         showRows(saved, (bm) => {
-          const bAddr = BigInt(bm.addr);
+          const bAddr = safeBigInt(bm.addr);
+          if (bAddr == null) return listRow({ title: String(bm?.name || '—'), subtitle: '' });
           const bName = bm.name || bookmarkLabel(app, bAddr);
           const action = makeFnRowAction(bAddr, bName, () => { syncFilterChips(); if (filterMode === 'saved') void update(); });
           const tags = Array.isArray(bm?.tags) ? bm.tags.join(', ') : String(bm?.tag || '');
@@ -1713,7 +1730,8 @@ function renderExplorer(app, router, route, routeContext = {}) {
         }
         sortFunctionItems(editedRows, sortMode, app, editedMap);
         showRows(editedRows, (item) => {
-          const itemAddr = BigInt(item.addr);
+          const itemAddr = safeBigInt(item.addr);
+          if (itemAddr == null) return listRow({ title: String(item?.name || '—'), subtitle: '' });
           const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
           return listRow({
             title: item.name,
@@ -1737,7 +1755,8 @@ function renderExplorer(app, router, route, routeContext = {}) {
           return;
         }
         showRows(items, (item) => {
-          const itemAddr = BigInt(item.addr);
+          const itemAddr = safeBigInt(item.addr);
+          if (itemAddr == null) return listRow({ title: String(item?.name || '—'), subtitle: '' });
           const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
           return listRow({
             title: item.name,
@@ -1890,19 +1909,20 @@ function renderExplorer(app, router, route, routeContext = {}) {
 function codeViewState(app) {
   return {
     getState: () => {
-      const topRow = app.viewer.topRow();
-      const selectedRow = app.viewer.selectedRow;
+      const viewer = app?.viewer;
+      const topRow = typeof viewer?.topRow === 'function' ? viewer.topRow() : 0;
+      const selectedRow = viewer?.selectedRow ?? -1;
       let topAddress = null;
       let selectedAddress = null;
       try {
-        if (Number.isFinite(topRow) && topRow >= 0 && typeof app.viewer.rowAddress === 'function') {
-          const a = app.viewer.rowAddress(topRow);
+        if (Number.isFinite(topRow) && topRow >= 0 && typeof viewer?.rowAddress === 'function') {
+          const a = viewer.rowAddress(topRow);
           if (a != null) topAddress = BigInt(a).toString();
         }
       } catch { /* ignore */ }
       try {
-        if (Number.isFinite(selectedRow) && selectedRow >= 0 && typeof app.viewer.rowAddress === 'function') {
-          const a = app.viewer.rowAddress(selectedRow);
+        if (Number.isFinite(selectedRow) && selectedRow >= 0 && typeof viewer?.rowAddress === 'function') {
+          const a = viewer.rowAddress(selectedRow);
           if (a != null) selectedAddress = BigInt(a).toString();
         }
       } catch { /* ignore */ }
@@ -1911,35 +1931,36 @@ function codeViewState(app) {
         selectedRow,
         topAddress,
         selectedAddress,
-        mode: app.store.get('displayMode'),
-        regionId: app.store.get('currentRegion')?.id || null,
+        mode: app?.store?.get?.('displayMode'),
+        regionId: app?.store?.get?.('currentRegion')?.id || null,
       };
     },
     restoreState: (state) => {
       if (!state) return;
-      if (state.regionId && app.store?.get?.('currentRegion')?.id !== state.regionId) {
-        const region = (app.store?.get?.('regions') || []).find((r) => r?.id === state.regionId);
+      if (state.regionId && app?.store?.get?.('currentRegion')?.id !== state.regionId) {
+        const region = (app?.store?.get?.('regions') || []).find((r) => r?.id === state.regionId);
         if (region) app.selectRegion?.(region, { silent: true });
       }
-      if (state.mode) app.setMode(state.mode);
+      if (state.mode) app?.setMode?.(state.mode);
+      const viewer = app?.viewer;
       let topRow = Number.isFinite(state.topRow) ? state.topRow : null;
-      if (state.topAddress != null && typeof app.viewer.rowOfAddress === 'function') {
+      if (state.topAddress != null && typeof viewer?.rowOfAddress === 'function') {
         try {
-          const mapped = app.viewer.rowOfAddress(BigInt(state.topAddress));
+          const mapped = viewer.rowOfAddress(BigInt(state.topAddress));
           if (mapped != null && mapped >= 0) topRow = mapped;
         } catch { /* ignore */ }
       }
-      if (topRow != null && Number.isFinite(topRow)) app.viewer.goToRow(topRow, 'top');
+      if (topRow != null && Number.isFinite(topRow)) viewer?.goToRow?.(topRow, 'top');
       let selectedRow = Number.isFinite(state.selectedRow) && state.selectedRow >= 0 ? state.selectedRow : null;
-      if (state.selectedAddress != null && typeof app.viewer.rowOfAddress === 'function') {
+      if (state.selectedAddress != null && typeof viewer?.rowOfAddress === 'function') {
         try {
-          const mapped = app.viewer.rowOfAddress(BigInt(state.selectedAddress));
+          const mapped = viewer.rowOfAddress(BigInt(state.selectedAddress));
           if (mapped != null && mapped >= 0) selectedRow = mapped;
         } catch { /* ignore */ }
       }
       if (selectedRow != null && selectedRow >= 0) {
-        app.viewer.select(selectedRow, false);
-        app.store?.set?.({ selectedRow });
+        viewer?.select?.(selectedRow, false);
+        app?.store?.set?.({ selectedRow });
       }
     },
   };
@@ -2325,11 +2346,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     lineEl.classList.add('hex-goal-highlight');
     lineEl.setAttribute('data-line-index', String(lineIndex));
     if (lineEl.style) {
-      lineEl.style.borderLeft = '3px solid var(--accent, #f59e0b)';
+      lineEl.style.borderLeftColor = 'var(--accent, #f59e0b)';
       lineEl.style.background = 'rgba(245, 158, 11, 0.14)';
-      lineEl.style.paddingLeft = '8px';
-      lineEl.style.marginLeft = '-11px';
-      lineEl.style.display = 'block';
     }
   };
 
@@ -3005,7 +3023,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       } else {
         const list = h('div', 'ui-list');
         for (const item of callers) {
-          const target = item.addr != null ? BigInt(item.addr) : (item.site != null ? BigInt(item.site) : null);
+          const target = safeBigInt(item.addr) ?? safeBigInt(item.site);
           if (target == null) continue;
           list.append(listRow({
             title: item.addr != null ? functionName(app, target) : bookmarkLabel(app, target),
@@ -3022,7 +3040,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       } else {
         const list = h('div', 'ui-list');
         for (const item of callees) {
-          const target = item.addr != null ? BigInt(item.addr) : null;
+          const target = safeBigInt(item.addr);
           if (target == null) continue;
           list.append(listRow({
             title: functionName(app, target),
@@ -3300,7 +3318,8 @@ export function findingIdentifier(item, idx) {
   if (item?.key != null && item.key !== '') return String(item.key);
   const goal = item?.goal?.text || item?.goal?.id || item?.goal || item?.title || item?.name || 'finding';
   const addr = item?.addr ?? item?.address ?? item?.functionAddr ?? item?.function;
-  const addrStr = addr != null ? BigInt(addr).toString(16) : 'global';
+  const addrBig = safeBigInt(addr);
+  const addrStr = addrBig != null ? addrBig.toString(16) : (addr != null ? String(addr) : 'global');
   const kind = item?.kind || item?.type || item?.claimType || item?.verdict || '';
   const evidenceId = item?.evidenceId || item?.evidence?.id || '';
   const rawKey = `${goal}:${addrStr}:${kind}:${evidenceId}`;
@@ -3342,14 +3361,15 @@ function renderFindingDetail(app, router, findingId) {
     c.body.append(h('p', 'ui-lead', String(item.summary || item.description || item.detail)));
   }
   const actions = h('div', 'ui-actions');
-  if (address != null) {
+  const addressBig = safeBigInt(address);
+  if (addressBig != null) {
     actions.append(uiButton(text('該当関数を開く', 'Open function overview'), {
       cls: 'ui-primary-action',
-      onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/overview'),
+      onClick: () => router.navigate('/function/' + addressBig.toString() + '/overview'),
     }));
     actions.append(uiButton(text('根拠を確認する', 'Review evidence'), {
       cls: 'ui-secondary-action',
-      onClick: () => router.navigate('/function/' + BigInt(address).toString() + '/evidence'),
+      onClick: () => router.navigate('/function/' + addressBig.toString() + '/evidence'),
     }));
   }
   actions.append(uiButton(text('結果一覧に戻る', 'Back to Results'), {
@@ -3407,8 +3427,9 @@ function pickOneFile(accept='') {
     const input=document.createElement('input'); input.type='file'; input.accept=accept;
     input.style.position='fixed'; input.style.left='-10000px'; document.body.append(input);
     let settled=false;
-    const onFocus=()=>{ setTimeout(()=>{ if(!settled) finish(input.files?.[0]||null); }, 300); };
-    const finish=(file)=>{ if(settled)return; settled=true; window.removeEventListener('focus',onFocus); input.remove(); resolve(file||null); };
+    let focusTimer=0;
+    const onFocus=()=>{ focusTimer=setTimeout(()=>{ focusTimer=0; if(!settled) finish(input.files?.[0]||null); }, 300); };
+    const finish=(file)=>{ if(settled)return; settled=true; if(focusTimer){ clearTimeout(focusTimer); focusTimer=0; } window.removeEventListener('focus',onFocus); input.remove(); resolve(file||null); };
     input.addEventListener('change',()=>finish(input.files?.[0]||null),{once:true});
     input.addEventListener('cancel',()=>finish(null),{once:true});
     window.addEventListener('focus',onFocus,{once:true});
@@ -3852,8 +3873,27 @@ function getSymbolLookupEntry(sym) {
     ? [...sym.renames.entries()]
     : (sym.renames && typeof sym.renames === 'object' ? Object.entries(sym.renames) : []);
   const renameSize = renameEntries.length;
+  const renameGen = sym.renameGen ?? null;
+  let renameFingerprint = '';
+  if (renameGen == null && renameSize > 0) {
+    let h1 = 2166136261;
+    for (let i = 0; i < renameSize; i++) {
+      const k = String(renameEntries[i][0] ?? '');
+      const v = String(renameEntries[i][1] ?? '');
+      for (let j = 0; j < k.length; j++) { h1 ^= k.charCodeAt(j); h1 = Math.imul(h1, 16777619); }
+      h1 ^= 58; h1 = Math.imul(h1, 16777619);
+      for (let j = 0; j < v.length; j++) { h1 ^= v.charCodeAt(j); h1 = Math.imul(h1, 16777619); }
+    }
+    renameFingerprint = `${renameSize}:${h1 >>> 0}`;
+  }
   const cached = symbolLookupCache.get(sym);
-  if (cached && cached.gen === gen && cached.renameSize === renameSize) return cached;
+  if (
+    cached
+    && cached.gen === gen
+    && cached.renameSize === renameSize
+    && cached.renameGen === renameGen
+    && cached.renameFingerprint === renameFingerprint
+  ) return cached;
 
   const map = new Map();
   const exact = new Map();
@@ -3893,7 +3933,7 @@ function getSymbolLookupEntry(sym) {
     if (!renameVal || !String(renameVal).trim()) continue;
     try { addAliases(renameVal, BigInt(addrKey), true, true); } catch { /* ignore */ }
   }
-  const entry = { gen, renameSize, map, exact };
+  const entry = { gen, renameSize, renameGen, renameFingerprint, map, exact };
   symbolLookupCache.set(sym, entry);
   return entry;
 }
@@ -4723,15 +4763,15 @@ export function installProductUI(app) {
   const prevJumpTarget = app.viewer ? app.viewer.onJumpTarget : null;
   if (app.viewer) {
     app.viewer.onJumpTarget = (targetAddr) => {
-      if (targetAddr == null) return;
-      const addr = BigInt(targetAddr);
+      const addr = safeBigInt(targetAddr);
+      if (addr == null) return;
       if (!router.navigate('/code/' + addr.toString())) {
         app.goToAddress(addr, { announce: true });
       }
     };
   }
   const shortcut = (event) => {
-    if (isFileLoading(app)) { event.preventDefault(); return; }
+    if (isFileLoading(app)) return;
     const target = event.target;
     const tag = target?.tagName || '';
     const typing = !!(target && (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || target.isContentEditable));
@@ -4753,12 +4793,21 @@ export function installProductUI(app) {
     if (!hasOverlay && (event.metaKey || event.ctrlKey) && !event.altKey) {
       if (key === 'z') {
         if (event.shiftKey) {
+          if (app?.v6?.typeTx?.canRedo?.() && typeof app.v6?.redoTypeEdit === 'function') {
+            event.preventDefault(); app.v6.redoTypeEdit(); return;
+          }
           if (typeof app.redoEdit === 'function') { event.preventDefault(); app.redoEdit(); return; }
-        } else if (typeof app.undoEdit === 'function') {
-          event.preventDefault(); app.undoEdit(); return;
+        } else {
+          if (app?.v6?.typeTx?.canUndo?.() && typeof app.v6?.undoTypeEdit === 'function') {
+            event.preventDefault(); app.v6.undoTypeEdit(); return;
+          }
+          if (typeof app.undoEdit === 'function') { event.preventDefault(); app.undoEdit(); return; }
         }
-      } else if (event.ctrlKey && !event.metaKey && key === 'y' && typeof app.redoEdit === 'function') {
-        event.preventDefault(); app.redoEdit(); return;
+      } else if (event.ctrlKey && !event.metaKey && key === 'y') {
+        if (app?.v6?.typeTx?.canRedo?.() && typeof app.v6?.redoTypeEdit === 'function') {
+          event.preventDefault(); app.v6.redoTypeEdit(); return;
+        }
+        if (typeof app.redoEdit === 'function') { event.preventDefault(); app.redoEdit(); return; }
       }
     }
     if (!hasOverlay && ((event.altKey && event.key === 'ArrowLeft') || (event.metaKey && event.key === '['))) { event.preventDefault(); goBack(); return; }
@@ -4779,14 +4828,6 @@ export function installProductUI(app) {
       }
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && key === 'z' && !/^(INPUT|TEXTAREA|SELECT)$/.test(tag) && app?.v6) {
-      if (event.shiftKey ? app.v6.typeTx?.canRedo?.() : app.v6.typeTx?.canUndo?.()) {
-        event.preventDefault();
-        if (event.shiftKey) app.v6.redoTypeEdit();
-        else app.v6.undoTypeEdit();
-        return;
-      }
-    }
     if (hasOverlay || event.metaKey || event.ctrlKey || event.altKey) return;
     const interactiveControl = !!(target && (
       /^(BUTTON|A|SUMMARY)$/.test(tag)
@@ -4794,8 +4835,7 @@ export function installProductUI(app) {
         && !target.closest?.('.ui-pseudocode-line'))
       || target.closest?.('.tok-fn-link, .tok-addr-link')
     ));
-    if (event.key === '?') {
-      if (key === 'y' && !event.shiftKey && target?.closest?.('.tok-fn-link, .tok-addr-link, [data-entity-kind]') && app?.v6) {
+    if (key === 'y' && !event.shiftKey && target?.closest?.('.tok-fn-link, .tok-addr-link, [data-entity-kind]') && app?.v6) {
       event.preventDefault();
       const tokEl = target.closest('.tok-fn-link, .tok-addr-link, [data-entity-kind]');
       const tokName = tokEl.getAttribute('data-tok') || tokEl.textContent?.trim() || '';
@@ -4803,7 +4843,8 @@ export function installProductUI(app) {
       app.v6.openTypeEditPopover({ va: tokAddr, name: tokName, kind: tokEl.getAttribute('data-entity-kind') || 'function' });
       return;
     }
-    if (interactiveControl) return;
+    if (event.key === '?') {
+      if (interactiveControl) return;
       event.preventDefault();
       router.navigate('/help');
       return;
@@ -4914,15 +4955,19 @@ export function installProductUI(app) {
         }
         if (routeId === 'function' && curRoute?.params?.tab === 'pseudocode') {
           const screenRoot = routeHost.querySelector('[data-screen="function"]');
-          const jumpAddr = typeof screenRoot?._selectedCodeAddress === 'function'
-            ? (screenRoot._selectedCodeAddress() ?? a)
-            : a;
-          router.navigate('/code/' + BigInt(jumpAddr).toString());
+          const jumpAddr = safeBigInt(
+            typeof screenRoot?._selectedCodeAddress === 'function'
+              ? (screenRoot._selectedCodeAddress() ?? a)
+              : a,
+          );
+          if (jumpAddr != null) router.navigate('/code/' + jumpAddr.toString());
         } else {
-          const lineAddr = activeLineAddr();
-          const fnBig = BigInt(a);
-          const query = lineAddr != null && BigInt(lineAddr) !== fnBig ? ('?addr=' + BigInt(lineAddr).toString()) : '';
-          router.navigate('/function/' + fnBig.toString() + '/pseudocode' + query);
+          const lineAddr = safeBigInt(activeLineAddr());
+          const fnBig = safeBigInt(a);
+          if (fnBig != null) {
+            const query = lineAddr != null && lineAddr !== fnBig ? ('?addr=' + lineAddr.toString()) : '';
+            router.navigate('/function/' + fnBig.toString() + '/pseudocode' + query);
+          }
         }
       });
       return;

@@ -463,7 +463,7 @@ test('5.7 buildInitialLandingCard provides quick-start goals, top classes, frequ
     const classRows = cardNode.querySelector('.ui-quickstart-classes').querySelectorAll('.ui-list-row');
     assert.equal(classRows.length, 2);
     classRows[0].click();
-    assert.equal(navigated.at(-1), '/explorer/types?q=PlayerController');
+    assert.equal(navigated.at(-1), '/explorer/classes?q=PlayerController');
 
     // Clicking a hot function navigates to its pseudocode view
     const fnRows = cardNode.querySelector('.ui-quickstart-functions').querySelectorAll('.ui-list-row');

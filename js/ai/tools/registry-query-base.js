@@ -23,8 +23,10 @@ function continuation(value, offset, cursorFactory) {
   out.offset = nonNegativeSafeInteger(out.offset) ?? offset;
   const returned = nonNegativeSafeInteger(out.returned);
   out.returned = returned === rows.length ? returned : rows.length;
-  if (out.complete !== true && rows.length && !out.continuation && typeof cursorFactory === 'function') {
-    out.continuation = { cursor:cursorFactory(offset + rows.length) };
+  out.complete = out.complete === true;
+  out.truncated = !out.complete;
+  if (!out.complete && rows.length && !out.continuation && typeof cursorFactory === 'function') {
+    out.continuation = { cursor:cursorFactory(out.offset + rows.length) };
   }
   return out;
 }
@@ -78,16 +80,16 @@ function installQueryOverrides(registry, context) {
   if (!queryContext(context)) return registry;
 
   const originalGetFunction = registry.get('get_function')?.execute;
-  if (originalGetFunction) replace(registry, 'get_function', async (args) =>
-    markQueryAuthority(await originalGetFunction(args)));
+  if (originalGetFunction) replace(registry, 'get_function', async (args, execution = {}) =>
+    markQueryAuthority(await originalGetFunction(args, execution)));
 
   const originalCurrent = registry.get('get_current_function')?.execute;
-  if (originalCurrent) replace(registry, 'get_current_function', async (args) =>
-    markQueryAuthority(await originalCurrent(args)));
+  if (originalCurrent) replace(registry, 'get_current_function', async (args, execution = {}) =>
+    markQueryAuthority(await originalCurrent(args, execution)));
 
   const originalInspect = registry.get('inspect_function_region')?.execute;
   if (originalInspect) replace(registry, 'inspect_function_region', async (args, execution = {}) => {
-    if (args.view !== 'assembly' || typeof context.getInstructions !== 'function') return originalInspect(args);
+    if (args.view !== 'assembly' || typeof context.getInstructions !== 'function') return originalInspect(args, execution);
     const params = {
       functionAddress:args.functionAddress,
       view:args.view,
@@ -102,12 +104,32 @@ function installQueryOverrides(registry, context) {
     if (!args.cursor && args.aroundInstructionId != null) {
       const radius = Math.max(0, Math.min(250, Number(args.radius ?? 20) || 0));
       const target = Number(args.aroundInstructionId);
+      if (!Number.isFinite(target)) {
+        return {
+          functionAddress:addressText(args.functionAddress),
+          view:'assembly',
+          results:[],
+          offset,
+          returned:0,
+          total:null,
+          complete:false,
+          truncated:true,
+          reason:'anchor-unresolved',
+          analysisAuthority:'AnalysisQueryAPI',
+        };
+      }
       const basis = [];
       let scannedComplete = false;
       // Bounded full-corpus scan so targets beyond the first window are still
       // anchored. The scan budget is an upper bound on a single window, never
       // a silent truncation of the searched corpus.
       for (let pageOffset = 0, pages = 0; pages < 40 && basis.length < 20000; pages++) {
+        if (execution.signal?.aborted) {
+          if (execution.signal.reason !== undefined) throw execution.signal.reason;
+          const abortErr = new Error('The operation was aborted.');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
         const window = await context.getInstructions(args.functionAddress, {
           offset: pageOffset,
           limit: 500,
@@ -179,7 +201,7 @@ function installQueryOverrides(registry, context) {
     replace(registry, tool, async (args, execution = {}) => {
       const params = { [key]:args[key] };
       const paging = queryPaging(registry, tool, params, args.cursor);
-      const limit = Math.max(1, Number(args.limit) || fallbackLimit);
+      const limit = Math.min(fallbackLimit, Math.max(1, Math.floor(Number(args.limit) || fallbackLimit)));
       const value = await context[method](args[key], {
         limit,
         offset:paging.offset,
@@ -191,9 +213,10 @@ function installQueryOverrides(registry, context) {
 
   if (typeof context.getCallers === 'function' && typeof context.getCallees === 'function') {
     replace(registry, 'get_related_functions', async ({ functionAddress, limit = 24 }, execution = {}) => {
+      const pageLimit = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0 && limit <= 1000 ? limit : 24;
       const [callers, callees] = await Promise.all([
-        context.getCallers(functionAddress, { limit, offset:0, signal:execution.signal ?? null }),
-        context.getCallees(functionAddress, { limit, offset:0, signal:execution.signal ?? null }),
+        context.getCallers(functionAddress, { limit: pageLimit, offset:0, signal:execution.signal ?? null }),
+        context.getCallees(functionAddress, { limit: pageLimit, offset:0, signal:execution.signal ?? null }),
       ]);
       const normalizeSide = (value) => {
         if (value?.complete === true) return value;
@@ -210,7 +233,7 @@ function installQueryOverrides(registry, context) {
       const normalizedCallees = normalizeSide(callees);
       const related = buildRelatedFunctionsResult({
         functionAddress,
-        limit,
+        limit: pageLimit,
         callers:normalizedCallers,
         callees:normalizedCallees,
         cursorFor:(tool, params, offset) => queryPaging(registry, tool, params, null).makeCursor(offset),
@@ -220,6 +243,7 @@ function installQueryOverrides(registry, context) {
         ['callers', 'get_callers', normalizedCallers],
         ['callees', 'get_callees', normalizedCallees],
       ]) {
+        if (related[`${key}Page`]?.reason === 'malformed-completeness') { delete continuations[key]; continue; }
         if (side?.complete === true || (Array.isArray(side?.results) && side.results.length > 0)) continue;
         const nextOffset = Number.isSafeInteger(side?.nextOffset) && side.nextOffset > 0 ? side.nextOffset : null;
         if (nextOffset == null) { delete continuations[key]; continue; }
@@ -228,7 +252,7 @@ function installQueryOverrides(registry, context) {
           tool,
           arguments:{
             address,
-            limit,
+            limit: pageLimit,
             cursor:queryPaging(registry, tool, { address }, null).makeCursor(nextOffset),
           },
         };

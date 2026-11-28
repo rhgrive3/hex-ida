@@ -6,6 +6,17 @@ import { h, uiButton } from './primitives.js';
 
 const EMPTY = Object.freeze([]);
 
+function safeBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try { return BigInt(trimmed); } catch { return null; }
+  }
+  return null;
+}
+
 /*
  * Display-only C highlighting. Each token is a child span of its line, so the
  * line's text (what Copy and the provenance map see) stays byte-identical.
@@ -204,7 +215,8 @@ export function attachTokenHighlight(codeEl, { onHighlightChange } = {}) {
     prev,
     destroy: () => {
       clear({ silent: true });
-      codeEl.removeEventListener('click', onClick);
+      tokenIndex = null;
+      codeEl.removeEventListener?.('click', onClick);
       if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
         document.removeEventListener('keydown', onKeyDown);
       }
@@ -378,7 +390,7 @@ export function createDecompilerNavigation(query, { currentSnapshot, isCurrent =
       if (!Array.isArray(refs)) return unavailable('invalid-reverse-map');
       // Follow the producer's reverse index, and require its forward edge too.
       const field = { addr:'addresses', row:'rows', ir:'ir', ssa:'ssaRefs' }[kind];
-      if (refs.some(ref => !map.entities[ref]?.origins?.[field]?.some(origin => String(origin) === String(value)))) {
+      if (refs.some(ref => !Object.hasOwn(map.entities, ref) || !map.entities[ref]?.origins?.[field]?.some(origin => String(origin) === String(value)))) {
         return unavailable('inconsistent-reverse-map');
       }
       const recordRefs = map.transformReverse && Object.hasOwn(map.transformReverse, key) ? map.transformReverse[key] : EMPTY;
@@ -435,7 +447,10 @@ export function createDecompilerProvenanceView(query, options = {}) {
   input.setAttribute('aria-label', text('対応する命令アドレス', 'Instruction address'));
   const rows = [];
   let action = 0;
-  const label = value => addrHex(BigInt(value));
+  const label = value => {
+    const addr = safeBigInt(value);
+    return addr != null ? addrHex(addr) : String(value);
+  };
   const reasonText = reason => {
     const entry = REASON_TEXT[reason];
     return entry ? text(entry[0], entry[1]) : text('対応表を利用できません。', 'Mapping unavailable.');
@@ -445,8 +460,10 @@ export function createDecompilerProvenanceView(query, options = {}) {
     history.replaceChildren();
     const active = new Set(outcome.entities.map(entity => entity.lineIndex));
     for (let index = 0; index < rows.length; index++) {
-      rows[index].classList.toggle('selected', active.has(index));
-      rows[index].setAttribute('aria-current', active.has(index) ? 'true' : 'false');
+      const row = rows[index];
+      if (!row) continue;
+      row.classList.toggle('selected', active.has(index));
+      row.setAttribute('aria-current', active.has(index) ? 'true' : 'false');
     }
     if (outcome.state !== 'ready') {
       status.textContent = reasonText(outcome.reason);
@@ -508,15 +525,27 @@ export function createDecompilerProvenanceView(query, options = {}) {
     }
     status.textContent = `${outcome.entities.length} ` + text('行が対応しています。', 'matching lines.');
     const addresses = [...new Set(outcome.entities.flatMap(entity => entity.origins.addresses).map(String))];
-    currentSelectedAddr = addresses.length ? BigInt(addresses[0]) : null;
+    currentSelectedAddr = addresses.length ? safeBigInt(addresses[0]) : null;
     const records = [...new Set(outcome.entities.flatMap(entity => entity.recordRefs))];
     const kinds = [...new Set(records.map(index => query.value.renderProvenance.ledger[index]?.kind).filter(Boolean))];
+    const changeAddressPage = async nextOffset => {
+      const serial = ++action;
+      const current = await navigation.checkSnapshot();
+      if (serial !== action) return;
+      if (current.state !== 'ready') show(current);
+      else renderAddresses(nextOffset);
+    };
     const renderAddresses = offset => {
       details.replaceChildren();
       for (const value of addresses.slice(offset, offset + 64)) {
         details.append(uiButton(label(value), { cls:'ui-secondary-action', onClick:async () => {
           const serial = ++action;
-          const opened = await navigation.openAddress(BigInt(value), address => {
+          const addrBig = safeBigInt(value);
+          if (addrBig == null) {
+            show({ state:'unavailable', reason:'invalid-address', entities:EMPTY });
+            return;
+          }
+          const opened = await navigation.openAddress(addrBig, address => {
             if (serial === action && !options.signal?.aborted && options.isCurrent?.() !== false) options.onNavigate?.(address);
           });
           if (serial === action && opened.state !== 'ready') show(opened);
@@ -524,8 +553,8 @@ export function createDecompilerProvenanceView(query, options = {}) {
       }
       if (addresses.length > 64) {
         details.append(h('span', 'ui-hint', `${offset + 1}–${Math.min(offset + 64, addresses.length)} / ${addresses.length}`));
-        if (offset > 0) details.append(uiButton(text('前の命令', 'Previous addresses'), { onClick:() => { action++; renderAddresses(offset - 64); } }));
-        if (offset + 64 < addresses.length) details.append(uiButton(text('次の命令', 'Next addresses'), { onClick:() => { action++; renderAddresses(offset + 64); } }));
+        if (offset > 0) details.append(uiButton(text('前の命令', 'Previous addresses'), { onClick:() => changeAddressPage(offset - 64) }));
+        if (offset + 64 < addresses.length) details.append(uiButton(text('次の命令', 'Next addresses'), { onClick:() => changeAddressPage(offset + 64) }));
       }
       if (kinds.length) details.append(h('span', 'ui-hint', text('変換: ', 'Transforms: ') + kinds.join(', ')));
     };
@@ -537,7 +566,8 @@ export function createDecompilerProvenanceView(query, options = {}) {
     if (serial !== action) return;
     show(outcome);
     if (outcome.state === 'ready' && outcome.entities.length) {
-      const row = rows[outcome.entities[0].lineIndex];
+      const targetEntity = outcome.entities.find((e) => rows[e.lineIndex]);
+      const row = targetEntity ? rows[targetEntity.lineIndex] : null;
       row?.scrollIntoView?.({ block:'nearest' });
       row?.focus?.({ preventScroll:true });
     }
@@ -621,7 +651,12 @@ export function createDecompilerProvenanceView(query, options = {}) {
     };
 
     const renderActiveLines = () => {
+      action++;
+      currentSelectedAddr = null;
+      details.replaceChildren();
+      history.replaceChildren();
       tokenHighlight?.destroy?.();
+      tokenHighlight = null;
       code.replaceChildren();
       rows.length = 0;
       const activeLines = cleanViewOn ? cleanLines : indexedRaw;
@@ -682,7 +717,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
       if (fnComment && !commentInserted) {
         code.prepend(makeCommentRow());
       }
-      tokenHighlight = attachTokenHighlight(code, {
+      tokenHighlight = options.signal?.aborted ? null : attachTokenHighlight(code, {
         onHighlightChange: ({ token, count, index }) => {
           if (!token || !count) {
             tokNav.hidden = true;
@@ -698,7 +733,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
     };
     renderActiveLines();
     if (options.signal) {
-      if (options.signal.aborted) tokenHighlight.destroy();
+      if (options.signal.aborted) tokenHighlight?.destroy?.();
       else options.signal.addEventListener?.('abort', () => tokenHighlight?.destroy?.(), { once: true });
     }
   } else {
@@ -718,5 +753,11 @@ export function createDecompilerProvenanceView(query, options = {}) {
       void select(() => navigation.selectOrigin('addr', initAddr));
     }
   }
-  return Object.freeze({ root, code, navigation, tokenHighlight, selectedAddress: () => currentSelectedAddr });
+  return Object.freeze({
+    root,
+    code,
+    navigation,
+    get tokenHighlight() { return tokenHighlight; },
+    selectedAddress: () => currentSelectedAddr,
+  });
 }
