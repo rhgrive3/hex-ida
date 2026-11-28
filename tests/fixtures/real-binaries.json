@@ -8,9 +8,9 @@
       "urlEnv": "HEX_FIXTURE_BATTLECATS_URL"
     },
     "TsumTsum": {
-      "file": "TsumTsum",
-      "size": 45994784,
-      "sha256": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3",
+      "file": "bainary-test",
+      "size": 46402912,
+      "sha256": "038dc1302ef7801b97c78fa81a240f53192758ad6fa94cae77d5d67b6fa20d25",
       "urlEnv": "HEX_FIXTURE_TSUMTSUM_URL"
     },
     "YWP": {

@@ -8,9 +8,10 @@
       "gitBlobSha1": "c8734ebe660465e4e96254b5b86f03121bb7b8ba"
     },
     "TsumTsum": {
-      "path": "tests/TsumTsum",
-      "size": 45994784,
-      "gitBlobSha1": "b6b23d3bf1aa7831372bafff55cfd202d74a9d3a"
+      "path": "tests/bainary-test",
+      "size": 46402912,
+      "gitBlobSha1": "83647746c4022a0983d64bcd4b69aeec5d1d96a4",
+      "url": "https://github.com/rhgrive3/hex-ida/releases/download/fixtures-bainary-test/bainary-test"
     },
     "YWP": {
       "path": "tests/YWP",
