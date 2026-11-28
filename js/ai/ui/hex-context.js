@@ -10,12 +10,18 @@ import {
 } from './hex-context-query-base.js';
 
 const QUERY_AUTHORITY = 'AnalysisQueryAPI';
-const MAX_QUERY_PAGE = 5_000;
 
+function normalizeOptions(options) {
+  return options && typeof options === 'object' ? options : {};
+}
 function toBigInt(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
-  try { return BigInt(typeof value === 'string' && /^0x/i.test(value) ? value : String(value)); }
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || !/^(?:0x[0-9a-f]+|-?[0-9]+)$/i.test(trimmed)) return null;
+  try { return BigInt(trimmed); }
   catch { return null; }
 }
 function completenessOf(result) { return result?.completeness ?? result?.status?.completeness ?? 'partial'; }
@@ -23,35 +29,53 @@ function reasonOf(result) { return result?.status?.reason ?? result?.reason ?? n
 function isStale(error) { return error?.name === 'AnalysisSnapshotStaleError' || error?.code === 'ANALYSIS_SNAPSHOT_STALE'; }
 function abortIfNeeded(signal) {
   if (!signal?.aborted) return;
-  if (signal.reason != null) throw signal.reason;
+  if (signal.reason !== undefined) throw signal.reason;
   const error = new Error('AbortError');
   error.name = 'AbortError';
   error.code = 'ABORT_ERR';
   throw error;
 }
 function hasExplicitFalsyAbortReason(signal) {
-  return signal?.aborted === true && signal.reason != null && !signal.reason;
+  return signal?.aborted === true && signal.reason !== undefined && !signal.reason;
 }
 function rethrowWithExactAbortReason(signal, error) {
   if (hasExplicitFalsyAbortReason(signal)) throw signal.reason;
   throw error;
 }
 function bounded(value, fallback, max) {
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? Math.min(max, number) : fallback;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? Math.min(max, value) : fallback;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^[0-9]+$/.test(trimmed)) return fallback;
+    const number = Number(trimmed);
+    return Number.isSafeInteger(number) && number >= 0 ? Math.min(max, number) : fallback;
+  }
+  return fallback;
 }
 async function withFreshSnapshot(app, operation, options = {}) {
+  const opts = normalizeOptions(options);
   let last = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    abortIfNeeded(options.signal);
-    const snapshot = await app.analysisQueries.snapshot({ signal:options.signal ?? null });
+    abortIfNeeded(opts.signal);
+    let snapshot;
+    try {
+      snapshot = await app.analysisQueries.snapshot({
+        signal:opts.signal ?? null,
+        onProgress:opts.onProgress,
+        onIdentityProgress:opts.onIdentityProgress,
+      });
+    } catch (error) {
+      rethrowWithExactAbortReason(opts.signal, error);
+    }
     try {
       const value = await operation(app.analysisQueries, snapshot);
-      abortIfNeeded(options.signal);
+      abortIfNeeded(opts.signal);
       return value;
     } catch (error) {
       last = error;
-      if (!isStale(error) || attempt > 0) throw error;
+      if (!isStale(error) || attempt > 0) rethrowWithExactAbortReason(opts.signal, error);
     }
   }
   throw last ?? new Error('analysis-query-retry-exhausted');
@@ -61,10 +85,11 @@ function define(context, name, value) {
 }
 
 export async function analyzeModelAt(app, address, end = null, options = {}) {
+  const opts = normalizeOptions(options);
   try {
-    return await analyzeBaseModelAt(app, address, end, options);
+    return await analyzeBaseModelAt(app, address, end, opts);
   } catch (error) {
-    rethrowWithExactAbortReason(options.signal, error);
+    rethrowWithExactAbortReason(opts.signal, error);
   }
 }
 
@@ -75,19 +100,30 @@ export function createHexAIContext(app) {
   const scopedMethods = new Set(['taskIdiomView', 'inspectConditionalModel', 'checkLoopInvariant', 'asyncEventOrder', 'portableIntegerChecks', 'blockCaptures', 'investigationFrontier', 'typeEvidence', 'interproceduralQuery', 'abiInputBindings', 'abiPlacementEvidence', 'explainTransformChain', 'runtimeObservations', 'scopedCapabilities', 'semanticQuery', 'resumeSemanticQuery', 'dispatchTargets',
     'applePointerView', 'knowledgeMatches', 'objectMemory', 'rangeValueCatalog', 'callGraphSlice', 'resumeCallGraphSlice', 'referenceSlice', 'replayReferenceSlice', 'refineValueFacts', 'summarySlice', 'resumeSummarySlice', 'proofSlice', 'replayProof', 'cancelScopedQuery', 'demandInvestigationFrontier', 'investigateDemand', 'demandQuery', 'resumeDemandQuery', 'explainDemandResult', 'replayDemandResult']);
   define(context, 'runScopedAnalysis', async (method, request, options = {}) => {
+    const opts = normalizeOptions(options);
     if (!scopedMethods.has(method)) throw new TypeError('scoped-ai-method-not-allowed');
-    abortIfNeeded(options.signal);
+    const isCancel = method === 'cancelScopedQuery';
+    if (!isCancel) abortIfNeeded(opts.signal);
     if (!scopedAnalysisHost(app)?.configuration?.enabled) return {
       value: { status:'unsupported', reason:'scoped-analysis-disabled', exact:false },
       completeness:'unsupported', analysisAuthority:QUERY_AUTHORITY,
     };
     const api = app.analysisQueries;
     if (typeof api?.scopedSnapshot !== 'function' || typeof api[method] !== 'function') throw new TypeError('scoped-ai-query-api-unavailable');
-    const snapshot = await api.scopedSnapshot({ signal:options.signal ?? null });
-    // Do not auto-retry consumed cursors. Staleness is an explicit restart
-    // obligation; retrying could duplicate results or reset a query budget.
-    const result = await api[method](snapshot, request, { signal:options.signal ?? null, limits:options.limits ?? {} });
-    abortIfNeeded(options.signal);
+    let result;
+    try {
+      const snapshot = await api.scopedSnapshot({ signal:opts.signal ?? null });
+      // Do not auto-retry consumed cursors. Staleness is an explicit restart
+      // obligation; retrying could duplicate results or reset a query budget.
+      const limits = opts.limits && typeof opts.limits === 'object' && !Array.isArray(opts.limits) ? opts.limits : {};
+      result = await api[method](snapshot, request, { signal:opts.signal ?? null, limits });
+    } catch (error) {
+      rethrowWithExactAbortReason(opts.signal, error);
+    }
+    if (!isCancel) abortIfNeeded(opts.signal);
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      return { value:null, completeness:'unsupported', analysisAuthority:QUERY_AUTHORITY };
+    }
     return { ...result, analysisAuthority:QUERY_AUTHORITY };
   });
 
@@ -98,11 +134,11 @@ export function createHexAIContext(app) {
     const base = context[name];
     if (typeof base !== 'function') return;
     define(context, name, async (...args) => {
-      const options = args[optionsIndex] || {};
+      const options = normalizeOptions(args[optionsIndex]);
       try {
         return await base(...args);
       } catch (error) {
-        rethrowWithExactAbortReason(options?.signal, error);
+        rethrowWithExactAbortReason(options.signal, error);
       }
     });
   };
@@ -115,11 +151,12 @@ export function createHexAIContext(app) {
   wrapAbortReason('getCallees', 1);
 
   define(context, 'searchStrings', async (query, options = {}) => {
-    const offset = bounded(options.offset, 0, 1_000_000);
-    const limit = Math.max(1, bounded(options.limit, 50, 200));
+    const opts = normalizeOptions(options);
+    const offset = bounded(opts.offset, 0, 1_000_000);
+    const limit = Math.max(1, bounded(opts.limit, 50, 200));
     const targetCount = limit + 1;
     return withFreshSnapshot(app, async (api, snapshot) => {
-      const info = await api.binaryInfo(snapshot, { signal:options.signal ?? null });
+      const info = await api.binaryInfo(snapshot, { signal:opts.signal ?? null });
       if (completenessOf(info) === 'unsupported' || !info?.value) {
         return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason:reasonOf(info) || 'binary-info-unavailable' };
       }
@@ -131,7 +168,7 @@ export function createHexAIContext(app) {
       let exactTotalKnown = complete;
       let reason = complete ? null : (reasonOf(info) || 'binary-info-incomplete');
       for (const region of info.value.regions || []) {
-        abortIfNeeded(options.signal);
+        abortIfNeeded(opts.signal);
         if (results.length >= targetCount) break;
         const regionOffset = neededOffset;
         const remaining = targetCount - results.length;
@@ -140,9 +177,12 @@ export function createHexAIContext(app) {
           kind:'text',
           query:String(query ?? ''),
           from:0,
-        }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
+        }, { offset:regionOffset, limit:remaining }, { signal:opts.signal ?? null });
         const regionCompleteness = completenessOf(result);
         if (regionCompleteness === 'unsupported') {
+          if (neededOffset > 0) {
+            return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason:reasonOf(result) || 'search-region-total-unproven' };
+          }
           exactTotalKnown = false;
           complete = false;
           reason ||= reasonOf(result) || 'typed-search-producer-unavailable';
@@ -202,44 +242,50 @@ export function createHexAIContext(app) {
         truncated:!pageComplete,
         reason:pageComplete ? null : (reason || (hasNext ? 'result-limit' : 'typed-search-producer-unavailable')),
       };
-    }, options);
+    }, opts);
   });
 
-  const getDecompile = async (address, options = {}) => withFreshSnapshot(app, async (api, snapshot) => {
-    const result = await api.decompile(snapshot, address, { signal:options.signal ?? null });
-    const completeness = completenessOf(result);
-    if (completeness === 'unsupported' || result?.value == null) {
-      return { text:null, complete:false, truncated:true, unsupported:true, reason:reasonOf(result) || 'decompiler-projection-unavailable' };
-    }
-    const text = typeof result.value === 'string'
-      ? result.value
-      : (result.value.pseudocode ?? result.value.text ?? result.value.code ?? null);
-    return {
-      value:result.value,
-      text:typeof text === 'string' ? text : null,
-      complete:completeness === 'complete',
-      truncated:completeness !== 'complete',
-      reason:reasonOf(result),
-      analysisAuthority:QUERY_AUTHORITY,
-    };
-  }, options);
+  const getDecompile = async (address, options = {}) => {
+    const opts = normalizeOptions(options);
+    return withFreshSnapshot(app, async (api, snapshot) => {
+      const result = await api.decompile(snapshot, address, { signal:opts.signal ?? null });
+      const completeness = completenessOf(result);
+      if (completeness === 'unsupported' || result?.value == null) {
+        return { text:null, complete:false, truncated:true, unsupported:true, reason:reasonOf(result) || 'decompiler-projection-unavailable' };
+      }
+      const text = typeof result.value === 'string'
+        ? result.value
+        : (result.value.pseudocode ?? result.value.text ?? result.value.code ?? null);
+      return {
+        value:result.value,
+        text:typeof text === 'string' ? text : null,
+        complete:completeness === 'complete',
+        truncated:completeness !== 'complete',
+        reason:reasonOf(result),
+        analysisAuthority:QUERY_AUTHORITY,
+      };
+    }, opts);
+  };
   define(context, 'getDecompile', getDecompile);
   define(context, 'decompile', async (address, options = {}) => (await getDecompile(address, options)).text);
 
-  define(context, 'findPaths', async (from, to, options = {}) => withFreshSnapshot(app, async (api, snapshot) => {
-    const result = await api.causalPath(snapshot, { functionId:from }, { functionId:to }, { ...options, signal:options.signal ?? null });
-    const completeness = completenessOf(result);
-    if (completeness === 'unsupported' || result?.value == null) {
-      return { paths:[], returned:0, total:null, complete:false, truncated:true, unsupported:true, reason:reasonOf(result) || 'causal-path-unavailable', analysisAuthority:QUERY_AUTHORITY };
-    }
-    return {
-      ...result.value,
-      complete:completeness === 'complete',
-      truncated:completeness !== 'complete',
-      reason:reasonOf(result) ?? result.value?.reason ?? null,
-      analysisAuthority:QUERY_AUTHORITY,
-    };
-  }, options));
+  define(context, 'findPaths', async (from, to, options = {}) => {
+    const opts = normalizeOptions(options);
+    return withFreshSnapshot(app, async (api, snapshot) => {
+      const result = await api.causalPath(snapshot, { functionId:from }, { functionId:to }, { ...opts, signal:opts.signal ?? null });
+      const completeness = completenessOf(result);
+      if (completeness === 'unsupported' || !result?.value || typeof result.value !== 'object' || Array.isArray(result.value)) {
+        return { paths:[], returned:0, total:null, complete:false, truncated:true, unsupported:true, reason:reasonOf(result) || 'causal-path-unavailable', analysisAuthority:QUERY_AUTHORITY };
+      }
+      return {
+        ...result.value,
+        complete:completeness === 'complete',
+        truncated:completeness !== 'complete',
+        reason:reasonOf(result) ?? result.value?.reason ?? null,
+        analysisAuthority:QUERY_AUTHORITY,
+      };
+    }, opts);
+  });
 
   return context;
 }

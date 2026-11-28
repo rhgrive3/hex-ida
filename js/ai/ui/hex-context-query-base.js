@@ -14,16 +14,32 @@ import { createAnalysisSnapshot } from '../../analysis/query/index.js';
 const QUERY_AUTHORITY = 'AnalysisQueryAPI';
 const MAX_QUERY_PAGE = 5_000;
 
+function normalizeOptions(options) {
+  return options && typeof options === 'object' ? options : {};
+}
+
 function toBigInt(value) {
   if (value == null) return null;
   if (typeof value === 'bigint') return value;
-  try { return BigInt(typeof value === 'string' && /^0x/i.test(value) ? value : String(value)); }
+  if (typeof value === 'number') return Number.isSafeInteger(value) ? BigInt(value) : null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || !/^(?:0x[0-9a-f]+|-?[0-9]+)$/i.test(trimmed)) return null;
+  try { return BigInt(trimmed); }
   catch { return null; }
 }
 
 function safeCount(value, fallback, max = MAX_QUERY_PAGE) {
-  const n = Number(value);
-  return Number.isSafeInteger(n) && n >= 0 ? Math.min(max, n) : fallback;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? Math.min(max, value) : fallback;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^[0-9]+$/.test(trimmed)) return fallback;
+    const n = Number(trimmed);
+    return Number.isSafeInteger(n) && n >= 0 ? Math.min(max, n) : fallback;
+  }
+  return fallback;
 }
 
 function queryCompleteness(result) {
@@ -41,26 +57,28 @@ function isStale(error) {
 
 function abortIfNeeded(signal) {
   if (!signal?.aborted) return;
-  const error = signal.reason instanceof Error ? signal.reason : new Error('AbortError');
+  if (signal.reason !== undefined) throw signal.reason;
+  const error = new Error('AbortError');
   error.name = 'AbortError';
-  if (!error.code) error.code = 'ABORT_ERR';
+  error.code = 'ABORT_ERR';
   throw error;
 }
 
 async function withFreshSnapshot(app, operation, options = {}) {
+  const opts = normalizeOptions(options);
   const api = app?.analysisQueries;
   if (!api) throw new Error('analysis-query-api-unavailable');
   let last = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    abortIfNeeded(options.signal);
+    abortIfNeeded(opts.signal);
     const snapshot = await api.snapshot({
-      signal:options.signal ?? null,
-      onProgress:options.onProgress,
-      onIdentityProgress:options.onIdentityProgress,
+      signal:opts.signal ?? null,
+      onProgress:opts.onProgress,
+      onIdentityProgress:opts.onIdentityProgress,
     });
     try {
       const value = await operation(api, snapshot);
-      abortIfNeeded(options.signal);
+      abortIfNeeded(opts.signal);
       return value;
     } catch (error) {
       last = error;
@@ -86,13 +104,13 @@ function presentationModel(result) {
 }
 
 async function queryFunction(app, address, options = {}) {
+  const opts = normalizeOptions(options);
   const addr = toBigInt(address);
   if (addr == null) return { result:null, model:null };
-  const queryOptions = { ...options };
-  const maxInstructions = Number(options.maxInstructions);
-  if (Number.isFinite(maxInstructions)) {
-    if (Math.floor(maxInstructions) <= 0) return { result:null, model:null };
-    queryOptions.maxRows = Math.max(1, Math.floor(maxInstructions));
+  const queryOptions = { ...opts };
+  if (typeof opts.maxInstructions === 'number' && Number.isFinite(opts.maxInstructions)) {
+    if (Math.floor(opts.maxInstructions) <= 0) return { result:null, model:null };
+    queryOptions.maxRows = Math.max(1, Math.floor(opts.maxInstructions));
   }
   const result = await withFreshSnapshot(app,
     (api, snapshot) => api.function(snapshot, addr, queryOptions), queryOptions);
@@ -106,8 +124,11 @@ async function queryFunction(app, address, options = {}) {
  * never synthesized from Semantic-v2 instruction objects.
  */
 export async function analyzeModelAt(app, address, end = null, options = {}) {
-  if (!app?.analysisQueries) return analyzeLegacyModelAt(app, address, end, options);
-  const { model } = await queryFunction(app, address, options);
+  const opts = normalizeOptions(options);
+  if (!app?.analysisQueries) return analyzeLegacyModelAt(app, address, end, opts);
+  const parsedEnd = end != null ? toBigInt(end) : null;
+  const queryOpts = parsedEnd != null && opts.end == null ? { ...opts, end:parsedEnd } : opts;
+  const { model } = await queryFunction(app, address, queryOpts);
   return model;
 }
 
@@ -120,17 +141,19 @@ function copyWithMetadata(result, key = 'results') {
   const completeness = queryCompleteness(result);
   const page = result?.page || {};
   const total = exactPageTotal(page.total);
+  const offset = safeCount(page.offset, 0, 1_000_000);
+  const returned = safeCount(page.returned, rows.length, MAX_QUERY_PAGE);
   return {
     [key]:rows,
-    offset:Number(page.offset ?? 0),
-    returned:Number(page.returned ?? rows.length),
+    offset,
+    returned,
     total,
     complete:completeness === 'complete' && page.next == null,
     truncated:completeness !== 'complete' || page.next != null,
     reason:queryReason(result),
     completeness:{
       complete:completeness === 'complete' && page.next == null,
-      returned:Number(page.returned ?? rows.length),
+      returned,
       total,
       reason:queryReason(result),
     },
@@ -189,24 +212,32 @@ export function createHexAIContext(app) {
   const context = cloneContextDescriptors(legacy);
   const MAX_NAME_CACHE = 2048;
   const names = new Map();
-  let cachedBinaryId = null;
-  const currentBinaryId = () => app?.backend?.binaryId ?? legacy.binaryId ?? null;
+  let cachedNameScope = null;
+  const currentBinaryId = () => {
+    try { return app?.backend?.binaryId ?? legacy.binaryId ?? null; }
+    catch { return app?.backend?.binaryId ?? null; }
+  };
+  const currentNameScope = () => JSON.stringify([currentBinaryId(), app?.backend?.gen ?? app?.analysisEpoch ?? null]);
   const ensureNameScope = () => {
-    const activeId = currentBinaryId();
-    if (activeId !== cachedBinaryId) {
+    const activeScope = currentNameScope();
+    if (activeScope !== cachedNameScope) {
       names.clear();
-      cachedBinaryId = activeId;
+      cachedNameScope = activeScope;
     }
-    return activeId;
+    return activeScope;
   };
   const nameCacheKey = (address) => JSON.stringify([ensureNameScope(), address.toString()]);
   const remember = (row) => {
     const address = toBigInt(row?.address ?? row?.addr ?? row?.startAddress);
-    if (address != null && row?.name) {
-      const key = nameCacheKey(address);
-      if (names.has(key)) names.delete(key);
-      names.set(key, String(row.name));
-      while (names.size > MAX_NAME_CACHE) names.delete(names.keys().next().value);
+    if (address != null) {
+      if (row?.name) {
+        const key = nameCacheKey(address);
+        if (names.has(key)) names.delete(key);
+        names.set(key, String(row.name));
+        while (names.size > MAX_NAME_CACHE) names.delete(names.keys().next().value);
+      } else if (row && Object.hasOwn(row, 'name')) {
+        names.delete(nameCacheKey(address));
+      }
     }
     return address;
   };
@@ -261,11 +292,12 @@ export function createHexAIContext(app) {
 
   define(context, 'searchFunctions', {
     value:async (query, options = {}) => {
-      const offset = safeCount(options.offset, 0, 1_000_000);
-      const limit = Math.max(1, safeCount(options.limit, 40, 200));
+      const opts = normalizeOptions(options);
+      const offset = safeCount(opts.offset, 0, 1_000_000);
+      const limit = Math.max(1, safeCount(opts.limit, 40, 200));
       const result = await withFreshSnapshot(app,
-        (api, snapshot) => api.functions(snapshot, { text:String(query ?? '') }, { offset, limit }, { signal:options.signal ?? null }),
-        options);
+        (api, snapshot) => api.functions(snapshot, { text:String(query ?? '') }, { offset, limit }, { signal:opts.signal ?? null }),
+        opts);
       const page = copyWithMetadata(result);
       page.results = page.results.map((row) => {
         const address = remember(row);
@@ -278,11 +310,12 @@ export function createHexAIContext(app) {
 
   define(context, 'searchStrings', {
     value:async (query, options = {}) => {
-      const offset = safeCount(options.offset, 0, 1_000_000);
-      const limit = Math.max(1, safeCount(options.limit, 50, 200));
+      const opts = normalizeOptions(options);
+      const offset = safeCount(opts.offset, 0, 1_000_000);
+      const limit = Math.max(1, safeCount(opts.limit, 50, 200));
       const targetCount = limit + 1;
       return withFreshSnapshot(app, async (api, snapshot) => {
-        const info = await api.binaryInfo(snapshot, { signal:options.signal ?? null });
+        const info = await api.binaryInfo(snapshot, { signal:opts.signal ?? null });
         if (queryCompleteness(info) === 'unsupported' || !info?.value) {
           return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason:queryReason(info) || 'binary-info-unavailable' };
         }
@@ -290,9 +323,11 @@ export function createHexAIContext(app) {
         let neededOffset = offset;
         let anySupported = false;
         let complete = queryCompleteness(info) === 'complete';
+        let exactTotal = 0;
+        let exactTotalKnown = complete;
         let reason = complete ? null : (queryReason(info) || 'binary-info-incomplete');
         for (const region of info.value.regions || []) {
-          abortIfNeeded(options.signal);
+          abortIfNeeded(opts.signal);
           if (results.length >= targetCount) break;
           const regionOffset = neededOffset;
           const remaining = targetCount - results.length;
@@ -301,21 +336,33 @@ export function createHexAIContext(app) {
             kind:'text',
             query:String(query ?? ''),
             from:0,
-          }, { offset:regionOffset, limit:remaining }, { signal:options.signal ?? null });
-          if (queryCompleteness(result) === 'unsupported') {
+          }, { offset:regionOffset, limit:remaining }, { signal:opts.signal ?? null });
+          const regionCompleteness = queryCompleteness(result);
+          if (regionCompleteness === 'unsupported') {
+            if (neededOffset > 0) {
+              return { results:[], offset, returned:0, total:null, complete:false, truncated:true, reason:queryReason(result) || 'search-region-total-unproven' };
+            }
+            exactTotalKnown = false;
             complete = false;
             reason ||= queryReason(result) || 'typed-search-producer-unavailable';
             continue;
           }
           anySupported = true;
           const regionTotal = exactPageTotal(result?.page?.total);
-          if (queryCompleteness(result) !== 'complete') {
+          if (regionCompleteness === 'complete' && regionTotal != null) {
+            const nextExactTotal = exactTotal + regionTotal;
+            if (Number.isSafeInteger(nextExactTotal)) exactTotal = nextExactTotal;
+            else exactTotalKnown = false;
+          } else {
+            exactTotalKnown = false;
+          }
+          if (regionCompleteness !== 'complete') {
             complete = false;
             reason ||= queryReason(result) || 'search-incomplete';
           }
           const matches = Array.isArray(result?.value) ? result.value : [];
           if (neededOffset > 0) {
-            if (queryCompleteness(result) === 'complete' && regionTotal != null && regionTotal <= neededOffset) {
+            if (regionCompleteness === 'complete' && regionTotal != null && regionTotal <= neededOffset) {
               neededOffset -= regionTotal;
               continue;
             }
@@ -349,30 +396,32 @@ export function createHexAIContext(app) {
           results:rows,
           offset,
           returned:rows.length,
-          total:pageComplete ? offset + rows.length : null,
+          total:pageComplete && exactTotalKnown ? exactTotal : null,
           complete:pageComplete,
           truncated:!pageComplete,
-          reason:pageComplete ? null : (reason || (hasNext ? 'result-limit' : 'search-incomplete')),
+          reason:pageComplete ? null : (reason || (hasNext ? 'result-limit' : 'typed-search-producer-unavailable')),
         };
-      }, options);
+      }, opts);
     },
   });
 
   define(context, 'getInstructions', {
     value:async (address, options = {}) => {
-      const offset = safeCount(options.offset, 0, 1_000_000);
-      const limit = Math.max(1, safeCount(options.limit, 160, 500));
+      const opts = normalizeOptions(options);
+      const offset = safeCount(opts.offset, 0, 1_000_000);
+      const limit = Math.max(1, safeCount(opts.limit, 160, 500));
       const result = await withFreshSnapshot(app,
-        (api, snapshot) => api.instructions(snapshot, { functionId:address }, { offset, limit }, { signal:options.signal ?? null }),
-        options);
+        (api, snapshot) => api.instructions(snapshot, { functionId:address }, { offset, limit }, { signal:opts.signal ?? null }),
+        opts);
       return copyWithMetadata(result);
     },
   });
 
   define(context, 'decompile', {
     value:async (address, options = {}) => {
+      const opts = normalizeOptions(options);
       const result = await withFreshSnapshot(app,
-        (api, snapshot) => api.decompile(snapshot, address, { signal:options.signal ?? null }), options);
+        (api, snapshot) => api.decompile(snapshot, address, { signal:opts.signal ?? null }), opts);
       if (queryCompleteness(result) === 'unsupported' || result?.value == null) return null;
       return typeof result.value === 'string'
         ? result.value
@@ -384,9 +433,10 @@ export function createHexAIContext(app) {
 
   define(context, 'getCFG', {
     value:async (address, options = {}) => {
+      const opts = normalizeOptions(options);
       const result = await withFreshSnapshot(app,
-        (api, snapshot) => api.cfg(snapshot, address, { signal:options.signal ?? null }), options);
-      if (queryCompleteness(result) === 'unsupported' || result?.value == null) {
+        (api, snapshot) => api.cfg(snapshot, address, { signal:opts.signal ?? null }), opts);
+      if (queryCompleteness(result) === 'unsupported' || !result?.value || typeof result.value !== 'object' || Array.isArray(result.value)) {
         return { blocks:[], complete:false, truncated:true, reason:queryReason(result) || 'cfg-unavailable' };
       }
       return {
@@ -399,10 +449,11 @@ export function createHexAIContext(app) {
   });
 
   const graphPage = (method, address, options = {}) => {
-    const offset = safeCount(options.offset, 0, 1_000_000);
-    const limit = Math.max(1, safeCount(options.limit, 100, 1_000));
+    const opts = normalizeOptions(options);
+    const offset = safeCount(opts.offset, 0, 1_000_000);
+    const limit = Math.max(1, safeCount(opts.limit, 100, 1_000));
     return withFreshSnapshot(app, async (api, snapshot) => {
-      const result = await api[method](snapshot, address, { offset, limit }, { signal:options.signal ?? null });
+      const result = await api[method](snapshot, address, { offset, limit }, { signal:opts.signal ?? null });
       const page = copyWithMetadata(result);
       if (queryCompleteness(result) !== 'complete') {
         page.total = null;
@@ -413,20 +464,23 @@ export function createHexAIContext(app) {
         Object.defineProperty(page, 'nextOffset', { value:nextOffset, enumerable:false });
       }
       return page;
-    }, options);
+    }, opts);
   };
   define(context, 'getXrefs', { value:(address, options = {}) => graphPage('xrefs', address, options) });
   define(context, 'getCallers', { value:(address, options = {}) => graphPage('callers', address, options) });
   define(context, 'getCallees', { value:(address, options = {}) => graphPage('callees', address, options) });
 
   define(context, 'findPaths', {
-    value:async (from, to, options = {}) => withFreshSnapshot(app, async (api, snapshot) => {
-      const result = await api.causalPath(snapshot, { functionId:from }, { functionId:to }, { ...options, signal:options.signal ?? null });
-      if (queryCompleteness(result) === 'unsupported' || result?.value == null) {
-        return { paths:[], returned:0, total:0, complete:false, truncated:true, unsupported:true, reason:queryReason(result) || 'causal-path-unavailable' };
-      }
-      return result.value;
-    }, options),
+    value:async (from, to, options = {}) => {
+      const opts = normalizeOptions(options);
+      return withFreshSnapshot(app, async (api, snapshot) => {
+        const result = await api.causalPath(snapshot, { functionId:from }, { functionId:to }, { ...opts, signal:opts.signal ?? null });
+        if (queryCompleteness(result) === 'unsupported' || !result?.value || typeof result.value !== 'object' || Array.isArray(result.value)) {
+          return { paths:[], returned:0, total:null, complete:false, truncated:true, unsupported:true, reason:queryReason(result) || 'causal-path-unavailable' };
+        }
+        return result.value;
+      }, opts);
+    },
   });
 
   return context;
