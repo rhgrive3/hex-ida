@@ -14,7 +14,7 @@
   },
   "fixtures": {
     "battlecats": { "size": 28153072, "sha256": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13" },
-    "TsumTsum": { "size": 46402912, "sha256": "038dc1302ef7801b97c78fa81a240f53192758ad6fa94cae77d5d67b6fa20d25" },
+    "TsumTsum": { "size": 46402912, "sha256": "b722a2a9c5162eb1a9972e8636ea94f00ba7cb5674c3352ab3247a2ec79431b8" },
     "YWP": { "size": 63455952, "sha256": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6" }
   },
   "regressionPolicy": {

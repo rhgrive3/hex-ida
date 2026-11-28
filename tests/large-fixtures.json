@@ -10,7 +10,7 @@
     "TsumTsum": {
       "path": "tests/bainary-test",
       "size": 46402912,
-      "gitBlobSha1": "83647746c4022a0983d64bcd4b69aeec5d1d96a4",
+      "gitBlobSha1": "2c42688e181ff839a103eb9aac3492b76079ec96",
       "url": "https://github.com/rhgrive3/hex-ida/releases/download/fixtures-bainary-test/bainary-test"
     },
     "YWP": {
