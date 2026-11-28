@@ -24,6 +24,8 @@ import {
 } from './wasm-objc-swift-scanner.js';
 import { linkWasmStructuralHints, normalizeFunctions } from './wasm-xref-linker.js';
 import { resolveStrippedCxxRtti } from './cxx/stripped-rtti-resolver.js';
+import { resolveVtableRefOwners } from './cxx/vtable-ref-resolver.js';
+import { resolveStrippedObjcMethods } from './apple/objc-method-resolver.js';
 import { normalizeUnifiedMetadata } from './apple/unified-metadata-normalizer.js';
 import { buildVirtualFolderTree } from './virtual-tree.js';
 import { buildSemanticNames } from './semantic-namer.js';
@@ -53,6 +55,8 @@ export {
   linkWasmStructuralHints,
   normalizeFunctions,
   resolveStrippedCxxRtti,
+  resolveVtableRefOwners,
+  resolveStrippedObjcMethods,
   normalizeUnifiedMetadata,
   buildVirtualFolderTree,
   buildSemanticNames,
@@ -189,6 +193,8 @@ export function runWasmStructuralAnalysis(opts = {}) {
     objcSwift: null,
     xrefLinks: null,
     cxxRtti: null,
+    vtableRefOwners: null,
+    objcMethods: null,
     unifiedMetadata: null,
     virtualTree: null,
     semanticNames: null,
@@ -457,12 +463,79 @@ export function runWasmStructuralAnalysis(opts = {}) {
     }
   }
 
-  if (out.cxxRtti || out.objcSwift || objcModel || swiftModel) {
+  const fnSource = o.functions ?? o.symbols ?? o.program ?? null;
+  const xrefTextVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? textLo;
+  const derivedTextHi = textHi ?? (
+    xrefTextVa != null && o.codeBytes instanceof Uint8Array && o.codeBytes.length > 0
+      ? xrefTextVa + BigInt(o.codeBytes.length)
+      : null
+  );
+  const normalizedFns = fnSource ? normalizeFunctions(fnSource, derivedTextHi) : [];
+
+  if (
+    out.cxxRtti
+    && Array.isArray(out.cxxRtti.classes)
+    && out.cxxRtti.classes.length > 0
+    && normalizedFns.length > 0
+    && (o.codeBytes instanceof Uint8Array || objcSwiftImg)
+  ) {
+    try {
+      const vtRef = resolveVtableRefOwners({
+        cxxRtti: out.cxxRtti,
+        codeBytes: o.codeBytes instanceof Uint8Array ? o.codeBytes : null,
+        image: objcSwiftImg,
+        textVa: xrefTextVa,
+        textLo,
+        functions: normalizedFns,
+        arch,
+      });
+      if (vtRef && vtRef.addedByFunction && vtRef.addedByFunction.size > 0) {
+        out.vtableRefOwners = vtRef;
+        if (out.cxxRtti.byFunction instanceof Map && typeof out.cxxRtti.byFunction.set === 'function') {
+          for (const [fnVa, link] of vtRef.addedByFunction.entries()) {
+            if (!out.cxxRtti.byFunction.has(fnVa)) {
+              out.cxxRtti.byFunction.set(fnVa, link);
+            }
+          }
+          if (out.cxxRtti.stats && typeof out.cxxRtti.stats.linkedFunctions === 'number') {
+            out.cxxRtti.stats.linkedFunctions = out.cxxRtti.byFunction.size;
+          }
+        }
+      }
+    } catch (err) {
+      out.vtableRefOwners = null;
+      if (typeof o.onError === 'function') o.onError('vtableRefOwners', err);
+    }
+  }
+
+  let effectiveObjcModel = objcModel;
+  if (!effectiveObjcModel && objcSwiftImg && Array.isArray(objcSwiftImg.sections) && objcSwiftImg.bytes instanceof Uint8Array) {
+    try {
+      const objcRes = resolveStrippedObjcMethods({
+        image: objcSwiftImg,
+        imageBase: imageBase ?? 0n,
+        textLo: textLo ?? 0n,
+        textHi: derivedTextHi ?? 0n,
+        ptrSize: o.ptrSize ?? 8,
+        pointerFormat: o.pointerFormat ?? null,
+        stripPac: o.stripPac !== false,
+      });
+      if (objcRes && (objcRes.classes.length > 0 || objcRes.methodsByIMP.size > 0)) {
+        out.objcMethods = objcRes;
+        effectiveObjcModel = objcRes;
+      }
+    } catch (err) {
+      out.objcMethods = null;
+      if (typeof o.onError === 'function') o.onError('objcMethods', err);
+    }
+  }
+
+  if (out.cxxRtti || out.objcSwift || effectiveObjcModel || swiftModel) {
     try {
       const unified = normalizeUnifiedMetadata({
         cxxRtti: out.cxxRtti,
         objcSwift: out.objcSwift,
-        objcModel,
+        objcModel: effectiveObjcModel,
         swiftModel,
         symbols: o.symbols ?? null,
       });
@@ -475,8 +548,6 @@ export function runWasmStructuralAnalysis(opts = {}) {
     }
   }
 
-  const fnSource = o.functions ?? o.symbols ?? o.program ?? null;
-  const xrefTextVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? textLo;
   if (fnSource && (out.vtables || out.constTables || out.cxxRtti)) {
     try {
       const links = linkWasmStructuralHints({
@@ -498,13 +569,6 @@ export function runWasmStructuralAnalysis(opts = {}) {
       if (typeof o.onError === 'function') o.onError('xrefLinks', err);
     }
   }
-
-  const derivedTextHi = textHi ?? (
-    xrefTextVa != null && o.codeBytes instanceof Uint8Array && o.codeBytes.length > 0
-      ? xrefTextVa + BigInt(o.codeBytes.length)
-      : null
-  );
-  const normalizedFns = fnSource ? normalizeFunctions(fnSource, derivedTextHi) : [];
 
   const hasTreeInputs = Boolean(
     (out.unifiedMetadata && out.unifiedMetadata.classes?.length > 0)

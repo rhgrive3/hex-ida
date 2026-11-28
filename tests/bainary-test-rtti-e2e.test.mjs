@@ -19,6 +19,8 @@ import {
 } from '../js/ui/beginner/glossary-translator.js';
 import { scanVtables } from '../js/analysis/wasm-vtable-scanner.js';
 import { resolveStrippedCxxRtti } from '../js/analysis/cxx/stripped-rtti-resolver.js';
+import { resolveVtableRefOwners } from '../js/analysis/cxx/vtable-ref-resolver.js';
+import { resolveStrippedObjcMethods } from '../js/analysis/apple/objc-method-resolver.js';
 import { normalizeUnifiedMetadata } from '../js/analysis/apple/unified-metadata-normalizer.js';
 import { buildVirtualFolderTree } from '../js/analysis/virtual-tree.js';
 import { buildSemanticNames } from '../js/analysis/semantic-namer.js';
@@ -554,5 +556,24 @@ describe('bainary-test RTTI / Virtual Tree / Semantic Namer E2E', () => {
       totalComputeMs <= 500,
       `compute budget exceeded: total=${totalComputeMs.toFixed(1)}ms (rtti=${rttiMs.toFixed(1)}ms, tree=${treeMs.toFixed(1)}ms, namer=${namerMs.toFixed(1)}ms) > 500ms`,
     );
+
+    // 5. Additional authentic recovery: ObjC baseMethods/metaclasses/categories + C++ non-virtual ctors/dtors
+    const objcRes = resolveStrippedObjcMethods({
+      image: { bytes, sections: parsed.sections, imageBase: parsed.imageBase },
+      imageBase: parsed.imageBase,
+      textLo: parsed.textLo,
+      textHi: parsed.textHi,
+      ptrSize: 8,
+    });
+    assert.ok(objcRes.classes.length >= 3000, `expected >= 3000 ObjC classes, got ${objcRes.classes.length}`);
+    assert.ok(objcRes.methodsByIMP.size >= 35000, `expected >= 35000 ObjC methods, got ${objcRes.methodsByIMP.size}`);
+
+    const vtRefRes = resolveVtableRefOwners({
+      cxxRtti,
+      image: { bytes, sections: parsed.sections, imageBase: parsed.imageBase },
+      functions: parsed.functions,
+      arch: 'arm64',
+    });
+    assert.ok(vtRefRes.stats.resolvedUnique >= 3500, `expected >= 3500 unique C++ ctors/dtors, got ${vtRefRes.stats.resolvedUnique}`);
   });
 });
