@@ -23,6 +23,11 @@ import {
   scanObjcSwiftMetadataFromImage,
 } from './wasm-objc-swift-scanner.js';
 import { linkWasmStructuralHints, normalizeFunctions } from './wasm-xref-linker.js';
+import { resolveStrippedCxxRtti } from './cxx/stripped-rtti-resolver.js';
+import { normalizeUnifiedMetadata } from './apple/unified-metadata-normalizer.js';
+import { buildVirtualFolderTree } from './virtual-tree.js';
+import { buildSemanticNames } from './semantic-namer.js';
+import { aggregateClassFields } from './cxx/class-field-aggregator.js';
 
 export {
   scanArm64RmwFields,
@@ -47,6 +52,11 @@ export {
   scanObjcSwiftMetadataFromImage,
   linkWasmStructuralHints,
   normalizeFunctions,
+  resolveStrippedCxxRtti,
+  normalizeUnifiedMetadata,
+  buildVirtualFolderTree,
+  buildSemanticNames,
+  aggregateClassFields,
 };
 
 function toBigIntOrNull(v) {
@@ -163,6 +173,12 @@ export function runWasmStructuralAnalysis(opts = {}) {
   const wasmOpt = o.wasmExports ? { wasmExports: o.wasmExports } : {};
   const common = { ...engineOpt, ...wasmOpt };
 
+  const stringsByFunc = o.stringsByFunc ?? null;
+  const apisByFunc = o.apisByFunc ?? null;
+  const cryptoHints = o.cryptoHints ?? null;
+  const objcModel = o.objcModel ?? null;
+  const swiftModel = o.swiftModel ?? null;
+
   const out = {
     rmw: null,
     x86Rmw: null,
@@ -172,6 +188,11 @@ export function runWasmStructuralAnalysis(opts = {}) {
     callgraph: null,
     objcSwift: null,
     xrefLinks: null,
+    cxxRtti: null,
+    unifiedMetadata: null,
+    virtualTree: null,
+    semanticNames: null,
+    classFields: null,
   };
 
   const archLower = String(arch || '').toLowerCase();
@@ -201,6 +222,8 @@ export function runWasmStructuralAnalysis(opts = {}) {
   const imageBase = toBigIntOrNull(o.imageBase);
   const hasExplicitSections = Array.isArray(o.dataSections) && o.dataSections.length > 0;
   const hasTextConst = o.textConstBytes instanceof Uint8Array;
+
+  let scannedSections = null;
 
   if (!hasExplicitSections && !hasTextConst) {
     if (o.dataBytes instanceof Uint8Array && o.dataBytes.length >= 16) {
@@ -327,6 +350,7 @@ export function runWasmStructuralAnalysis(opts = {}) {
         bySection: constBySection,
       };
     }
+    scannedSections = sections;
     if (vtBySection.length > 0) {
       out.vtables = {
         vtables: aggVtables,
@@ -337,13 +361,25 @@ export function runWasmStructuralAnalysis(opts = {}) {
     }
   }
 
+  let cgEdges = null;
   if (o.callgraph && typeof o.callgraph.numNodes === 'number' && o.callgraph.edgeSrc && o.callgraph.edgeDst) {
-    out.callgraph = analyzeCallGraphMetrics(
+    const metrics = analyzeCallGraphMetrics(
       o.callgraph.numNodes,
       o.callgraph.edgeSrc,
       o.callgraph.edgeDst,
       common,
     );
+    cgEdges = {
+      nodes: o.callgraph.nodes ?? null,
+      edgeSrc: o.callgraph.edgeSrc,
+      edgeDst: o.callgraph.edgeDst,
+    };
+    out.callgraph = {
+      ...metrics,
+      ...(o.callgraph.nodes ? { nodes: o.callgraph.nodes } : {}),
+      edgeSrc: o.callgraph.edgeSrc,
+      edgeDst: o.callgraph.edgeDst,
+    };
   } else if (o.program) {
     const cg = extractCallGraphFromProgram(o.program, o.symbols);
     if (cg && cg.numNodes > 0) {
@@ -359,11 +395,18 @@ export function runWasmStructuralAnalysis(opts = {}) {
         else if (r === CALLGRAPH_ROLE.UTILITY_HUB) utilityHubCount++;
         else if (r === CALLGRAPH_ROLE.LEAF_COMPUTE) leafCount++;
       }
+      cgEdges = {
+        nodes: cg.nodes,
+        edgeSrc: cg.edgeSrc,
+        edgeDst: cg.edgeDst,
+      };
       out.callgraph = {
         ...metrics,
         numNodes: cg.numNodes,
         numEdges: cg.edgeSrc.length,
         nodes: cg.nodes,
+        edgeSrc: cg.edgeSrc,
+        edgeDst: cg.edgeDst,
         summary: {
           recursiveCount,
           dispatcherCount,
@@ -386,21 +429,167 @@ export function runWasmStructuralAnalysis(opts = {}) {
     }
   }
 
+  if (out.vtables && Array.isArray(out.vtables.vtables) && out.vtables.vtables.length > 0) {
+    try {
+      const rtti = resolveStrippedCxxRtti({
+        vtables: out.vtables,
+        image: objcSwiftImg,
+        sections: scannedSections,
+        dataBytes: o.dataBytes instanceof Uint8Array ? o.dataBytes : null,
+        dataVa: toBigIntOrNull(o.dataVa),
+        imageBase: imageBase ?? 0n,
+        textLo: textLo ?? 0n,
+        textHi: textHi ?? 0n,
+        ptrSize: o.ptrSize ?? 8,
+        pointerFormat: o.pointerFormat ?? null,
+        stripPac: o.stripPac !== false,
+        resolveBindSymbol: typeof o.resolveBindSymbol === 'function' ? o.resolveBindSymbol : null,
+        symbols: o.symbols ?? null,
+        ...(o.rttiMaxClasses != null ? { maxClasses: o.rttiMaxClasses } : {}),
+        ...(o.rttiMaxSlotsPerVtable != null ? { maxSlotsPerVtable: o.rttiMaxSlotsPerVtable } : {}),
+      });
+      if (rtti && (rtti.classes?.length > 0 || rtti.byFunction?.size > 0 || rtti.stats?.vtablesInput > 0)) {
+        out.cxxRtti = rtti;
+      }
+    } catch (err) {
+      out.cxxRtti = null;
+      if (typeof o.onError === 'function') o.onError('cxxRtti', err);
+    }
+  }
+
+  if (out.cxxRtti || out.objcSwift || objcModel || swiftModel) {
+    try {
+      const unified = normalizeUnifiedMetadata({
+        cxxRtti: out.cxxRtti,
+        objcSwift: out.objcSwift,
+        objcModel,
+        swiftModel,
+        symbols: o.symbols ?? null,
+      });
+      if (unified) {
+        out.unifiedMetadata = unified;
+      }
+    } catch (err) {
+      out.unifiedMetadata = null;
+      if (typeof o.onError === 'function') o.onError('unifiedMetadata', err);
+    }
+  }
+
   const fnSource = o.functions ?? o.symbols ?? o.program ?? null;
-  if (fnSource && (out.vtables || out.constTables)) {
-    const xrefTextVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? textLo;
-    const links = linkWasmStructuralHints({
-      codeBytes: o.codeBytes instanceof Uint8Array ? o.codeBytes : null,
-      textVa: xrefTextVa,
-      functions: fnSource,
-      vtables: out.vtables,
-      constTables: out.constTables,
-      dataVa: toBigIntOrNull(o.dataVa),
-      arch,
-      maxInsns: o.xrefMaxInsns,
-    });
-    if (links && links.stats && links.stats.functionsInput > 0) {
-      out.xrefLinks = links;
+  const xrefTextVa = toBigIntOrNull(o.textVa) ?? toBigIntOrNull(o.baseVa) ?? textLo;
+  if (fnSource && (out.vtables || out.constTables || out.cxxRtti)) {
+    try {
+      const links = linkWasmStructuralHints({
+        codeBytes: o.codeBytes instanceof Uint8Array ? o.codeBytes : null,
+        textVa: xrefTextVa,
+        functions: fnSource,
+        vtables: out.vtables,
+        constTables: out.constTables,
+        cxxRtti: out.cxxRtti,
+        dataVa: toBigIntOrNull(o.dataVa),
+        arch,
+        maxInsns: o.xrefMaxInsns,
+      });
+      if (links && links.stats && links.stats.functionsInput > 0) {
+        out.xrefLinks = links;
+      }
+    } catch (err) {
+      out.xrefLinks = null;
+      if (typeof o.onError === 'function') o.onError('xrefLinks', err);
+    }
+  }
+
+  const derivedTextHi = textHi ?? (
+    xrefTextVa != null && o.codeBytes instanceof Uint8Array && o.codeBytes.length > 0
+      ? xrefTextVa + BigInt(o.codeBytes.length)
+      : null
+  );
+  const normalizedFns = fnSource ? normalizeFunctions(fnSource, derivedTextHi) : [];
+
+  const hasTreeInputs = Boolean(
+    (out.unifiedMetadata && out.unifiedMetadata.classes?.length > 0)
+    || (out.cxxRtti && (out.cxxRtti.classes?.length > 0 || out.cxxRtti.byFunction?.size > 0))
+    || (out.objcSwift && out.objcSwift.counts?.total > 0)
+    || normalizedFns.length > 0
+    || stringsByFunc
+    || apisByFunc,
+  );
+  if (hasTreeInputs) {
+    try {
+      const tree = buildVirtualFolderTree({
+        unifiedMetadata: out.unifiedMetadata,
+        cxxRtti: out.cxxRtti,
+        objcSwift: out.objcSwift,
+        functions: normalizedFns,
+        stringsByFunc,
+        apisByFunc,
+        callgraph: cgEdges,
+        symbols: o.symbols ?? null,
+      });
+      if (tree) {
+        out.virtualTree = tree;
+      }
+    } catch (err) {
+      out.virtualTree = null;
+      if (typeof o.onError === 'function') o.onError('virtualTree', err);
+    }
+  }
+
+  const hasSemanticInputs = Boolean(
+    out.virtualTree
+    || out.unifiedMetadata
+    || out.cxxRtti
+    || out.xrefLinks
+    || stringsByFunc
+    || apisByFunc
+    || cryptoHints,
+  );
+  if (hasSemanticInputs) {
+    try {
+      const names = buildSemanticNames({
+        virtualTree: out.virtualTree,
+        unifiedMetadata: out.unifiedMetadata,
+        cxxRtti: out.cxxRtti,
+        xrefLinks: out.xrefLinks,
+        stringsByFunc,
+        apisByFunc,
+        callgraph: cgEdges,
+        rmw: out.rmw,
+        x86Rmw: out.x86Rmw,
+        textVa: xrefTextVa ?? 0n,
+        cryptoHints,
+        functions: normalizedFns,
+      });
+      if (names) {
+        out.semanticNames = names;
+      }
+    } catch (err) {
+      out.semanticNames = null;
+      if (typeof o.onError === 'function') o.onError('semanticNames', err);
+    }
+  }
+
+  const hasFieldInputs = Boolean(
+    out.cxxRtti
+    && (out.cxxRtti.classes?.length > 0 || out.cxxRtti.byFunction?.size > 0)
+    && (out.rmw || out.x86Rmw || o.accessesByFunc),
+  );
+  if (hasFieldInputs) {
+    try {
+      const fields = aggregateClassFields({
+        cxxRtti: out.cxxRtti,
+        accessesByFunc: o.accessesByFunc ?? null,
+        rmw: out.rmw,
+        x86Rmw: out.x86Rmw,
+        textVa: xrefTextVa ?? 0n,
+        functions: normalizedFns,
+      });
+      if (fields) {
+        out.classFields = fields;
+      }
+    } catch (err) {
+      out.classFields = null;
+      if (typeof o.onError === 'function') o.onError('classFields', err);
     }
   }
 

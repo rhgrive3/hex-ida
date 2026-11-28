@@ -358,6 +358,7 @@ export function linkWasmStructuralHints(opts = {}) {
     functions = null,
     vtables = null,
     constTables = null,
+    cxxRtti = null,
     dataVa = null,
     arch = 'arm64',
     maxInsns = DEFAULT_MAX_INSNS,
@@ -377,6 +378,7 @@ export function linkWasmStructuralHints(opts = {}) {
   let functionsLinked = 0;
   let vtableLinks = 0;
   let constTableLinks = 0;
+  let cxxMethodLinks = 0;
   let scannedInsns = 0;
 
   const getOrCreateFnEntry = (fn) => {
@@ -428,6 +430,72 @@ export function linkWasmStructuralHints(opts = {}) {
       });
       addTag(entry, 'vtable_member');
       vtableLinks++;
+    }
+  }
+
+  // 1b. Optional C++ RTTI full-slot linking (injected pure data, zero extra imports).
+  if (cxxRtti && typeof cxxRtti === 'object' && normalizedFunctions.length > 0) {
+    const rawRttiByFn = cxxRtti.byFunction;
+    const rttiEntries = rawRttiByFn instanceof Map
+      ? Array.from(rawRttiByFn.entries())
+      : (rawRttiByFn && typeof rawRttiByFn === 'object' ? Object.entries(rawRttiByFn) : []);
+
+    if (rttiEntries.length > 0) {
+      const baseNamesByRtti = new Map();
+      const baseNamesByClass = new Map();
+      if (cxxRtti.byRttiVa instanceof Map) {
+        for (const [rttiVa, cls] of cxxRtti.byRttiVa.entries()) {
+          if (cls && Array.isArray(cls.baseClassNames)) {
+            const key = toBigIntOrNull(rttiVa);
+            if (key != null) baseNamesByRtti.set(key, cls.baseClassNames);
+          }
+        }
+      }
+      if (Array.isArray(cxxRtti.classes)) {
+        for (let i = 0; i < cxxRtti.classes.length; i++) {
+          const cls = cxxRtti.classes[i];
+          if (!cls || typeof cls !== 'object' || !Array.isArray(cls.baseClassNames)) continue;
+          const key = toBigIntOrNull(cls.rttiVa);
+          if (key != null && !baseNamesByRtti.has(key)) {
+            baseNamesByRtti.set(key, cls.baseClassNames);
+          }
+          if (typeof cls.className === 'string' && cls.className && !baseNamesByClass.has(cls.className)) {
+            baseNamesByClass.set(cls.className, cls.baseClassNames);
+          }
+        }
+      }
+
+      for (let i = 0; i < rttiEntries.length; i++) {
+        const [rawKey, link] = rttiEntries[i];
+        if (!link || typeof link !== 'object') continue;
+        const fnVa = toBigIntOrNull(link.fnVa ?? rawKey);
+        if (fnVa == null) continue;
+        const fn = findContainingFunction(normalizedFunctions, fnVa);
+        if (!fn) continue;
+
+        const { entry } = getOrCreateFnEntry(fn);
+        const primaryOwner = typeof link.primaryOwner === 'string' && link.primaryOwner ? link.primaryOwner : null;
+        const primaryRttiVa = toBigIntOrNull(link.primaryRttiVa);
+        let baseClassNames = [];
+        if (Array.isArray(link.baseClassNames)) {
+          baseClassNames = [...link.baseClassNames];
+        } else if (primaryRttiVa != null && baseNamesByRtti.has(primaryRttiVa)) {
+          baseClassNames = [...baseNamesByRtti.get(primaryRttiVa)];
+        } else if (primaryOwner && baseNamesByClass.has(primaryOwner)) {
+          baseClassNames = [...baseNamesByClass.get(primaryOwner)];
+        }
+
+        entry.cxxClass = {
+          primaryOwner,
+          slotIndex: Number.isInteger(link.slotIndex) ? link.slotIndex : null,
+          isShared: Boolean(link.isShared),
+          sharedOwners: Array.isArray(link.sharedOwners) ? [...link.sharedOwners] : [],
+          baseClassNames,
+        };
+        addTag(entry, 'vtable_member');
+        addTag(entry, 'cxx_method');
+        cxxMethodLinks++;
+      }
     }
   }
 
@@ -540,15 +608,20 @@ export function linkWasmStructuralHints(opts = {}) {
     scannedInsns = totalInsns;
   }
 
+  const stats = {
+    functionsInput: normalizedFunctions.length,
+    functionsLinked,
+    vtableLinks,
+    constTableLinks,
+    scannedInsns,
+  };
+  if (cxxRtti != null) {
+    stats.cxxMethodLinks = cxxMethodLinks;
+  }
+
   return {
     byFunction,
-    stats: {
-      functionsInput: normalizedFunctions.length,
-      functionsLinked,
-      vtableLinks,
-      constTableLinks,
-      scannedInsns,
-    },
+    stats,
     skippedCodeScan,
   };
 }

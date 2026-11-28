@@ -2,17 +2,17 @@ import { matchText, matchName, numericSymbolRole, isDiagnosticString, normalizeC
 import { vendorOf, vendorInText, vendorConflicts, classFromSymbol } from './vendors.js';
 
 export const REASON = {
-  STRING_REF: 'string-ref', NAME: 'name-match', CALLEE_NAME: 'callee-name', CALLER_NAME: 'caller-name',
+  STRING_REF: 'string-ref', NAME: 'name-match', CLASS_OWNER: 'class-owner', CALLEE_NAME: 'callee-name', CALLER_NAME: 'caller-name',
   CALLS_MATCH: 'calls-match', CALLED_BY_MATCH: 'called-by-match', NUMERIC: 'numeric', STORE: 'store',
   COMPARE: 'compare', POPULAR: 'popular', SIZE_PENALTY: 'size-penalty', VENDOR: 'vendor', CRYPTO_CONST: 'crypto-const', NO_EVIDENCE: 'no-evidence',
 };
 const POINTS = {
-  [REASON.STRING_REF]: 20, [REASON.NAME]: 25, [REASON.CALLEE_NAME]: 12, [REASON.CALLER_NAME]: 10,
+  [REASON.STRING_REF]: 20, [REASON.NAME]: 25, [REASON.CLASS_OWNER]: 18, [REASON.CALLEE_NAME]: 12, [REASON.CALLER_NAME]: 10,
   [REASON.CALLS_MATCH]: 8, [REASON.CALLED_BY_MATCH]: 8, [REASON.NUMERIC]: 12, [REASON.STORE]: 8,
   [REASON.COMPARE]: 6, [REASON.POPULAR]: 5, [REASON.SIZE_PENALTY]: -6, [REASON.VENDOR]: -34, [REASON.CRYPTO_CONST]: 32,
 };
 const KIND_OF = {
-  [REASON.STRING_REF]: 'fact', [REASON.NAME]: 'fact', [REASON.CALLEE_NAME]: 'fact', [REASON.CALLER_NAME]: 'fact',
+  [REASON.STRING_REF]: 'fact', [REASON.NAME]: 'fact', [REASON.CLASS_OWNER]: 'fact', [REASON.CALLEE_NAME]: 'fact', [REASON.CALLER_NAME]: 'fact',
   [REASON.CALLS_MATCH]: 'inference', [REASON.CALLED_BY_MATCH]: 'inference', [REASON.NUMERIC]: 'fact', [REASON.STORE]: 'fact',
   [REASON.COMPARE]: 'fact', [REASON.POPULAR]: 'fact', [REASON.SIZE_PENALTY]: 'inference', [REASON.VENDOR]: 'fact', [REASON.CRYPTO_CONST]: 'fact',
 };
@@ -52,10 +52,98 @@ function combinedMatcher(goal) {
   if (!parts.length) return null;
   try { return new RegExp(parts.join('|'), 'i'); } catch { return null; }
 }
+const CLASS_OWNER_ADDR_RE = /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/;
+
+function parseClassOwnerAddr(rawKey) {
+  if (typeof rawKey === 'bigint') return rawKey >= 0n ? rawKey : null;
+  if (typeof rawKey === 'number') {
+    return Number.isSafeInteger(rawKey) && rawKey >= 0 ? BigInt(rawKey) : null;
+  }
+  if (typeof rawKey === 'string') {
+    const trimmed = rawKey.trim();
+    if (!trimmed || !CLASS_OWNER_ADDR_RE.test(trimmed)) return null;
+    try {
+      const addr = BigInt(trimmed);
+      return addr >= 0n ? addr : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function normalizeClassOwnerEntry(addr, rawEntry) {
+  if (rawEntry == null) return null;
+  if (typeof rawEntry === 'string') {
+    const trimmed = rawEntry.trim();
+    if (!trimmed) return null;
+    return { addr, primaryOwner: trimmed, sharedOwners: [], slotIndex: null, isShared: false };
+  }
+  if (typeof rawEntry !== 'object') return null;
+  const primaryOwner = typeof rawEntry.primaryOwner === 'string' && rawEntry.primaryOwner.trim()
+    ? rawEntry.primaryOwner.trim()
+    : null;
+  const sharedOwners = [];
+  const seen = new Set();
+  if (primaryOwner) seen.add(primaryOwner);
+  if (Array.isArray(rawEntry.sharedOwners)) {
+    for (const item of rawEntry.sharedOwners) {
+      if (typeof item !== 'string') continue;
+      const trimmed = item.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      sharedOwners.push(trimmed);
+    }
+  }
+  if (!primaryOwner && sharedOwners.length === 0) return null;
+  const slotIndex = Number.isSafeInteger(rawEntry.slotIndex) ? rawEntry.slotIndex : null;
+  const isShared = Boolean(rawEntry.isShared || (!primaryOwner && sharedOwners.length > 0));
+  return { addr, primaryOwner, sharedOwners, slotIndex, isShared };
+}
+
+function normalizeClassOwners(classOwners) {
+  if (!classOwners || typeof classOwners !== 'object' || Array.isArray(classOwners) || classOwners instanceof Set) return null;
+  const entries = classOwners instanceof Map
+    ? classOwners.entries()
+    : Object.entries(classOwners);
+  const out = new Map();
+  for (const [rawKey, rawEntry] of entries) {
+    const keyAddr = parseClassOwnerAddr(rawKey);
+    const entryAddr = rawEntry && typeof rawEntry === 'object' ? parseClassOwnerAddr(rawEntry.fnVa) : null;
+    const addr = keyAddr != null ? keyAddr : entryAddr;
+    if (addr == null) continue;
+    const normalized = normalizeClassOwnerEntry(addr, rawEntry);
+    if (!normalized) continue;
+    out.set(addr.toString(), normalized);
+  }
+  return out.size > 0 ? out : null;
+}
+
+function vendorOfClassOwners(primaryOwner, sharedOwners, learned) {
+  if (primaryOwner) {
+    const v = vendorOf(classFromSymbol(primaryOwner) || primaryOwner, learned);
+    if (v) return { ...v, where: 'class-owner', name: primaryOwner };
+  }
+  if (!primaryOwner && Array.isArray(sharedOwners) && sharedOwners.length > 0) {
+    let firstVendor = null;
+    for (const owner of sharedOwners) {
+      const v = vendorOf(classFromSymbol(owner) || owner, learned);
+      if (!v) return null;
+      if (!firstVendor) firstVendor = { ...v, where: 'class-owner', name: owner };
+    }
+    return firstVendor;
+  }
+  return null;
+}
+
 function vendorOfCandidate(c, learned) {
   if (c.name) {
     const v = vendorOf(classFromSymbol(c.name) || c.name, learned);
     if (v) return { ...v, where: 'name', name: c.name };
+  }
+  if (c.classOwner || (Array.isArray(c.sharedOwners) && c.sharedOwners.length > 0)) {
+    const v = vendorOfClassOwners(c.classOwner || null, c.sharedOwners || null, learned);
+    if (v) return v;
   }
   for (const s of c.strings || []) {
     const v = vendorInText(s.text);
@@ -83,12 +171,13 @@ function fairPrefix(values, max) {
   return { values: out, complete: false };
 }
 
-export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null, cryptoConstants = null }) {
+export function rankCandidates({ goal, strings, program, symbols, region, limit = 40, vendors = null, cryptoConstants = null, classOwners = null }) {
   const notes = [], byAddr = new Map();
   if (!goal) return { candidates: [], matchedStrings: [], notes: ['no-goal'] };
   const resultLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
   const hasProgram = !!program;
   if (!hasProgram) notes.push('no-program-index');
+  const normalizedClassOwners = normalizeClassOwners(classOwners);
 
   let normalizedRenames = null;
   if (symbols?.renames instanceof Map && symbols.renames.size > 0) {
@@ -123,6 +212,13 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     let c = byAddr.get(key);
     if (!c) {
       c = { addr, name: symbolNameAt(addr), score: 0, reasons: [], strings: [], stats: null, firstSite: site != null ? site : addr };
+      if (normalizedClassOwners) {
+        const ownerInfo = normalizedClassOwners.get(key);
+        if (ownerInfo) {
+          if (ownerInfo.primaryOwner) c.classOwner = ownerInfo.primaryOwner;
+          if (ownerInfo.sharedOwners.length > 0) c.sharedOwners = ownerInfo.sharedOwners;
+        }
+      }
       byAddr.set(key, c);
     }
     return c;
@@ -366,6 +462,105 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     }
   }
 
+  if (normalizedClassOwners) {
+    const lo = region ? region.vmAddr : null, hi = region ? region.vmAddr + region.size : null;
+    const ownerMatches = [];
+    for (const [key, entry] of normalizedClassOwners.entries()) {
+      if (lo != null && (entry.addr < lo || entry.addr >= hi)) continue;
+      let bestMatch = null;
+      const evalOwner = (owner, weight, matchKind) => {
+        const normOwner = normalizeCallableName(owner);
+        if (matcher && !matcher.test(owner) && !(normOwner && matcher.test(normOwner))) return;
+        const m = matchName(goal, owner);
+        if (!m) return;
+        const v = vendorOf(classFromSymbol(owner) || owner, vendors);
+        const isVendor = !!v;
+        const vendorConflict = !!(v && vendorConflicts(goal.id, v));
+        const effScore = m.score * weight;
+        const cand = {
+          key,
+          entry,
+          owner,
+          m,
+          matchKind,
+          effScore,
+          isVendor,
+          vendorConflict,
+        };
+        if (
+          !bestMatch
+          || (cand.vendorConflict ? 1 : 0) < (bestMatch.vendorConflict ? 1 : 0)
+          || ((cand.vendorConflict === bestMatch.vendorConflict) && (
+            cand.effScore > bestMatch.effScore
+            || (cand.effScore === bestMatch.effScore && cand.owner < bestMatch.owner)
+          ))
+        ) {
+          bestMatch = cand;
+        }
+      };
+
+      let primaryVendorConflict = false;
+      if (entry.primaryOwner) {
+        const pv = vendorOf(classFromSymbol(entry.primaryOwner) || entry.primaryOwner, vendors);
+        primaryVendorConflict = !!(pv && vendorConflicts(goal.id, pv));
+        evalOwner(entry.primaryOwner, 1, 'primary');
+      }
+      if (!bestMatch && !primaryVendorConflict && entry.sharedOwners.length > 0) {
+        for (const shared of entry.sharedOwners) {
+          // If primaryOwner is present, do not boost via a vendor-conflicting sharedOwner.
+          if (entry.primaryOwner) {
+            const sv = vendorOf(classFromSymbol(shared) || shared, vendors);
+            if (sv && vendorConflicts(goal.id, sv)) continue;
+          }
+          evalOwner(shared, 0.75, 'shared');
+        }
+      }
+      if (bestMatch) ownerMatches.push(bestMatch);
+    }
+
+    ownerMatches.sort((a, b) => (
+      (a.vendorConflict ? 1 : 0) - (b.vendorConflict ? 1 : 0)
+      || (a.isVendor ? 1 : 0) - (b.isVendor ? 1 : 0)
+      || b.effScore - a.effScore
+      || (a.matchKind === 'primary' ? 0 : 1) - (b.matchKind === 'primary' ? 0 : 1)
+      || a.owner.length - b.owner.length
+      || (a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0)
+      || compareAddr(a.entry.addr, b.entry.addr)
+    ));
+
+    let newOwnerMatchCount = 0;
+    let ownerCapped = false;
+    const keptOwnerMatches = [];
+    for (const match of ownerMatches) {
+      if (byAddr.has(match.key)) {
+        keptOwnerMatches.push(match);
+      } else if (newOwnerMatchCount < 400) {
+        keptOwnerMatches.push(match);
+        newOwnerMatchCount++;
+      } else {
+        ownerCapped = true;
+      }
+    }
+    if (ownerCapped) notes.push('class-owner-matches-capped');
+    for (const match of keptOwnerMatches) {
+      const { entry, owner, m, matchKind, effScore } = match;
+      const c = candidate(entry.addr, entry.addr);
+      if (!c) continue;
+      if (entry.primaryOwner && !c.classOwner) c.classOwner = entry.primaryOwner;
+      if (entry.sharedOwners.length > 0 && !c.sharedOwners) c.sharedOwners = entry.sharedOwners;
+      addReason(c, REASON.CLASS_OWNER, POINTS[REASON.CLASS_OWNER] * effScore, {
+        owner,
+        name: owner,
+        primaryOwner: entry.primaryOwner,
+        sharedOwners: entry.sharedOwners,
+        slotIndex: entry.slotIndex,
+        isShared: entry.isShared,
+        term: m.term,
+        matchKind,
+      });
+    }
+  }
+
   const vendorChecked = new Set();
   const applyVendorPenalty = (c) => {
     const key = c.addr.toString();
@@ -384,10 +579,19 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   };
   for (const c of byAddr.values()) applyVendorPenalty(c);
 
-  const taintedName = (name) => {
-    if (!name) return false;
-    const v = vendorOf(classFromSymbol(name) || name, vendors);
-    return !!v && vendorConflicts(goal.id, v);
+  const taintedName = (name, addr = null) => {
+    if (name) {
+      const v = vendorOf(classFromSymbol(name) || name, vendors);
+      if (v && vendorConflicts(goal.id, v)) return true;
+    }
+    if (normalizedClassOwners && addr != null) {
+      const ownerInfo = normalizedClassOwners.get(addr.toString());
+      if (ownerInfo) {
+        const ov = vendorOfClassOwners(ownerInfo.primaryOwner, ownerInfo.sharedOwners, vendors);
+        if (ov && vendorConflicts(goal.id, ov)) return true;
+      }
+    }
+    return false;
   };
   const tainted = (c) => {
     if (!c) return false;
@@ -413,7 +617,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
           if (callee.addr == null || callee.addr === seed.addr) continue;
           const name = symbolNameAt(callee.addr);
           const existingCallee = byAddr.get(callee.addr.toString());
-          const calleeTainted = existingCallee ? tainted(existingCallee) : taintedName(name);
+          const calleeTainted = existingCallee ? tainted(existingCallee) : taintedName(name, callee.addr);
           const m = name && !calleeTainted ? matchName(goal, name) : null;
           if (m) {
             const factor = calleeNameHits === 0 ? 1 : calleeNameHits === 1 ? 0.6 : calleeNameHits === 2 ? 0.35 : 0;
@@ -434,7 +638,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
         if (caller.addr == null || caller.addr === seed.addr) continue;
         const name = symbolNameAt(caller.addr);
         const existingCaller = byAddr.get(caller.addr.toString());
-        const callerTainted = existingCaller ? tainted(existingCaller) : taintedName(name);
+        const callerTainted = existingCaller ? tainted(existingCaller) : taintedName(name, caller.addr);
         const m = name && !callerTainted ? matchName(goal, name) : null;
         if (m) {
           const factor = callerNameHits === 0 ? 1 : callerNameHits === 1 ? 0.6 : callerNameHits === 2 ? 0.35 : 0;
@@ -461,7 +665,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     const called = program.callCountOf(c.addr);
     if (called >= 3) {
       const isConstGetter = !!(c.name && symbolMutationKind(c.name).kind === 'const-getter');
-      const hasStrong = (c.strings || []).some((s) => s.score >= 0.8) || c.reasons.some((r) => r.code === REASON.NAME && r.points >= 18);
+      const hasStrong = (c.strings || []).some((s) => s.score >= 0.8) || c.reasons.some((r) => (r.code === REASON.NAME || r.code === REASON.CLASS_OWNER) && r.points >= 18);
       const popPoints = (isConstGetter || !hasStrong) ? POINTS[REASON.POPULAR] * 0.4 : POINTS[REASON.POPULAR];
       addReason(c, REASON.POPULAR, popPoints, { n: called, complete: !program.callsCapped });
     }
