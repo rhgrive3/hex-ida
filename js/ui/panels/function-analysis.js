@@ -22,17 +22,27 @@ function stale(error) {
     || error?.code === 'ANALYSIS_SNAPSHOT_STALE';
 }
 
+function abortErrorOf(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const err = new Error(typeof signal?.reason === 'string' && signal.reason ? signal.reason : 'Aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
 async function withFreshSnapshot(app, operation, options = {}) {
   const api = app?.analysisQueries;
   if (!api) throw new Error('AnalysisQueryAPI is unavailable');
+  const signal = options?.signal ?? null;
   let last = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (signal?.aborted) throw abortErrorOf(signal);
     const snapshot = await api.snapshot(options);
+    if (signal?.aborted) throw abortErrorOf(signal);
     try {
       return await operation(api, snapshot);
     } catch (error) {
       last = error;
-      if (!stale(error) || attempt > 0) throw error;
+      if (signal?.aborted || !stale(error) || attempt > 0) throw error;
     }
   }
   throw last ?? new Error('analysis-query-retry-exhausted');
@@ -40,9 +50,14 @@ async function withFreshSnapshot(app, operation, options = {}) {
 
 export async function analysisBundle(app, functionId, options = {}) {
   return withFreshSnapshot(app, async (api, snapshot) => {
-    const fn = await api.function(snapshot, functionId);
+    const fn = await api.function(snapshot, functionId, options);
     const resolved = fn?.value?.startAddress ?? fn?.value?.functionId ?? functionId;
-    const target = BigInt(resolved);
+    let target;
+    try {
+      target = typeof resolved === 'bigint' ? resolved : BigInt(resolved);
+    } catch {
+      throw new Error('Invalid function address');
+    }
     const value = fn?.value ?? null;
     if (value == null) return { snapshot, fn, decompile:null, cfg:null, target };
     const decompiled = value.decompiler ?? (value.model
@@ -203,15 +218,17 @@ function resolveGoalContext(app, target, options) {
     : null;
   if (stored) {
     const ctxAddr = stored.targetAddr ?? stored.addr ?? stored.address ?? stored.candidate?.addr ?? null;
-    if (ctxAddr == null || target == null) {
+    if (ctxAddr == null && target == null) {
       return { ...stored, explicit: true };
     }
-    try {
-      if (BigInt(ctxAddr) === BigInt(target)) {
-        return { ...stored, explicit: true };
+    if (ctxAddr != null && target != null) {
+      try {
+        if (BigInt(ctxAddr) === BigInt(target)) {
+          return { ...stored, explicit: true };
+        }
+      } catch {
+        // Malformed address must not misattribute stored context to another function.
       }
-    } catch {
-      return { ...stored, explicit: true };
     }
   }
 
@@ -302,7 +319,10 @@ function renderHighlightedPseudocode(pseudocode, highlightLines) {
   const trimmedAll = allLines.join('\n').trim();
   if (!trimmedAll) return { element: null, firstHighlighted: null };
 
-  const highlightSet = new Set(Array.isArray(highlightLines) ? highlightLines : []);
+  const highlightSet = new Set(
+    (Array.isArray(highlightLines) ? highlightLines : [])
+      .filter((idx) => Number.isSafeInteger(idx) && idx >= 0 && idx < allLines.length),
+  );
   if (!highlightSet.size) {
     const preview = allLines.slice(0, 24).join('\n').trim();
     return { element: preview ? codeBlock(preview) : null, firstHighlighted: null };
@@ -337,6 +357,9 @@ function renderHighlightedPseudocode(pseudocode, highlightLines) {
 export function showFunctions(app) {
   const region = app.store.get('currentRegion');
   if (!region) { toast('先にファイルを開いてください。'); return; }
+  const initialGen = app?.backend?.gen;
+  const initialFile = app?.store?.get?.('fileInfo');
+  const isCurrentBinary = () => app?.backend?.gen === initialGen && app?.store?.get?.('fileInfo') === initialFile;
   let sequence = 0;
   let controller = null;
   let debounceTimer = 0;
@@ -376,11 +399,16 @@ export function showFunctions(app) {
   const appendRows = (items) => {
     const fragment = document.createDocumentFragment();
     for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
       const address = item.address ?? item.addr ?? null;
       if (address == null) continue;
-      const addr = BigInt(address);
+      let addr;
+      try { addr = typeof address === 'bigint' ? address : BigInt(address); } catch { continue; }
       const details = [addrHex(addr)];
-      const size = item.size == null ? null : BigInt(item.size);
+      let size = null;
+      if (item.size != null) {
+        try { size = typeof item.size === 'bigint' ? item.size : BigInt(item.size); } catch { size = null; }
+      }
       if (size != null && size > 0n) details.push(sizeText(size));
       fragment.append(tapRow(item.name || '名前のない関数', {
         sub:details.join('  ·  '),
@@ -405,21 +433,21 @@ export function showFunctions(app) {
   };
 
   const loadMore = async (current) => {
-    if (loading || current !== sequence || !pager) return;
+    const activeController = controller;
+    if (loading || current !== sequence || !pager || !activeController) return;
+    const signal = activeController.signal;
     loading = true;
     more?.remove();
     try {
-      const page = await pager.next({ signal:controller.signal });
-      if (current !== sequence || controller.signal.aborted) return;
+      const page = await pager.next({ signal });
+      if (current !== sequence || signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
       loaded += page.value.length;
       appendRows(page.value);
       updateMore(current, page.completeness, page.total);
     } catch (error) {
-      if (current !== sequence && error?.name !== 'AbortError') return;
-      if (error?.name !== 'AbortError' && current === sequence) {
-        alertDialog('関数を調べられませんでした', userError(error));
-        updateMore(current, pager.completeness, pager.total);
-      }
+      if (current !== sequence || signal.aborted || error?.name === 'AbortError' || !isCurrentBinary()) return;
+      alertDialog('関数を調べられませんでした', userError(error));
+      updateMore(current, pager.completeness, pager.total);
     } finally {
       if (current === sequence) loading = false;
     }
@@ -428,7 +456,9 @@ export function showFunctions(app) {
   const render = async () => {
     const current = ++sequence;
     controller?.abort();
-    controller = new AbortController();
+    const activeController = new AbortController();
+    controller = activeController;
+    const signal = activeController.signal;
     const text = input.value.trim();
     status.textContent = '関数を確認しています…';
     results.replaceChildren();
@@ -437,8 +467,8 @@ export function showFunctions(app) {
     loading = false;
     more = null;
     try {
-      const page = await pager.next({ signal:controller.signal });
-      if (current !== sequence || controller.signal.aborted || !sheet.root.isConnected) return;
+      const page = await pager.next({ signal });
+      if (current !== sequence || signal.aborted || !sheet.root.isConnected || !isCurrentBinary()) return;
       if (page.unsupported) {
         const reason = page.status?.reason ? `（${page.status.reason}）` : '';
         status.textContent = `関数一覧は現在の解析経路では利用できません${reason}。`;
@@ -451,7 +481,7 @@ export function showFunctions(app) {
       updateStatus(page.completeness, page.total);
       updateMore(current, page.completeness, page.total);
     } catch (error) {
-      if (error?.name === 'AbortError' || current !== sequence) return;
+      if (error?.name === 'AbortError' || signal.aborted || current !== sequence || !isCurrentBinary()) return;
       status.textContent = '';
       alertDialog('関数を調べられませんでした', userError(error));
     }
@@ -553,8 +583,14 @@ export function showFunctionSummary(app, row, options = {}) {
         sub:`${COMPLETENESS_JA[fn.completeness] ?? fn.completeness} · ${architecture}${abi ? ` · ${abi}` : ''}`,
         disabled:true,
       }));
-      const start = value.startAddress == null ? target : BigInt(value.startAddress);
-      const end = value.endAddress == null ? null : BigInt(value.endAddress);
+      let start = target;
+      if (value.startAddress != null) {
+        try { start = BigInt(value.startAddress); } catch { start = target; }
+      }
+      let end = null;
+      if (value.endAddress != null) {
+        try { end = BigInt(value.endAddress); } catch { end = null; }
+      }
       if (end != null && end > start) {
         facts.append(tapRow('解析範囲', {
           sub:`${addrHex(start)} – ${addrHex(end)} · ${sizeText(end - start)}`,
