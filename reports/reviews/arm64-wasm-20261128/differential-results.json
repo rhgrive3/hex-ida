@@ -1,0 +1,1850 @@
+{
+ "schema": "hex-ida-differential/v1",
+ "hexSha": "4bcb45b14f9617cf2bc74c9dcf3fe711f14cd4a1",
+ "totals": {
+  "skip": 2447,
+  "agree": 3217,
+  "disagree": 60,
+  "hang-mismatch": 70
+ },
+ "skipReasons": {
+  "ida-compile": 1437,
+  "link": 1008,
+  "hex-compile": 2
+ },
+ "disagree": [
+  {
+   "case": "6/6_clang_O2_g",
+   "name": "call_printf",
+   "addr": "0x1954",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "1749907192",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "1749907192",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "1749907192",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_clang_O2_no_g",
+   "name": "call_printf",
+   "addr": "0x1954",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "94897984276214",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94897984276214",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94897984276214",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_clang_O3_g",
+   "name": "call_printf",
+   "addr": "0x1954",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "731645688",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "731645688",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "731645688",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_clang_O3_no_g",
+   "name": "call_printf",
+   "addr": "0x1954",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "94076451845878",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94076451845878",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94076451845878",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_clang_Os_g",
+   "name": "call_printf",
+   "addr": "0x1954",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "2197776120",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "2197776120",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "2197776120",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_clang_Os_no_g",
+   "name": "call_printf",
+   "addr": "0x1954",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "94303635461878",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94303635461878",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94303635461878",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_gcc_O2_g",
+   "name": "call_printf",
+   "addr": "0x1dd0",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "4010817304",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "4010817304",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "4010817304",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_gcc_O2_no_g",
+   "name": "call_printf",
+   "addr": "0x1dd0",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "94387942422294",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94387942422294",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94387942422294",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_gcc_O3_g",
+   "name": "call_printf",
+   "addr": "0x2320",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "3660183320",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "3660183320",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "3660183320",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "6/6_gcc_O3_no_g",
+   "name": "call_printf",
+   "addr": "0x2320",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "94247323670294",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94247323670294",
+     "ida": "22"
+    },
+    {
+     "args": [],
+     "hex": "94247323670294",
+     "ida": "22"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O0_g",
+   "name": "switch_small",
+   "addr": "0xd38",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      1
+     ],
+     "hex": "15",
+     "ida": "5"
+    },
+    {
+     "args": [
+      2
+     ],
+     "hex": "15",
+     "ida": "50"
+    },
+    {
+     "args": [
+      3
+     ],
+     "hex": "15",
+     "ida": "2"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O0_g",
+   "name": "switch_large",
+   "addr": "0xde8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      1
+     ],
+     "hex": "0",
+     "ida": "10"
+    },
+    {
+     "args": [
+      2
+     ],
+     "hex": "0",
+     "ida": "20"
+    },
+    {
+     "args": [
+      3
+     ],
+     "hex": "0",
+     "ida": "30"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O0_g",
+   "name": "state_machine",
+   "addr": "0x2504",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O0_no_g",
+   "name": "switch_small",
+   "addr": "0xd38",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      1
+     ],
+     "hex": "15",
+     "ida": "5"
+    },
+    {
+     "args": [
+      2
+     ],
+     "hex": "15",
+     "ida": "50"
+    },
+    {
+     "args": [
+      3
+     ],
+     "hex": "15",
+     "ida": "2"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O0_no_g",
+   "name": "switch_large",
+   "addr": "0xde8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      1
+     ],
+     "hex": "0",
+     "ida": "10"
+    },
+    {
+     "args": [
+      2
+     ],
+     "hex": "0",
+     "ida": "20"
+    },
+    {
+     "args": [
+      3
+     ],
+     "hex": "0",
+     "ida": "30"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O0_no_g",
+   "name": "state_machine",
+   "addr": "0x2504",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O1_g",
+   "name": "state_machine",
+   "addr": "0x165c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O1_no_g",
+   "name": "op_shl",
+   "addr": "0x160c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "18446744072635809792",
+     "ida": "3221225472"
+    },
+    {
+     "args": [
+      10,
+      31
+     ],
+     "hex": "21474836480",
+     "ida": "0"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "18446744073709522944",
+     "ida": "4294938624"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O1_no_g",
+   "name": "op_shr",
+   "addr": "0x1614",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "17179869183",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "4503599627370495",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -1000,
+      -2999
+     ],
+     "hex": "36028797018963966",
+     "ida": "4294967294"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O1_no_g",
+   "name": "state_machine",
+   "addr": "0x165c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_g",
+   "name": "loop_break",
+   "addr": "0xc54",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      10
+     ],
+     "hex": "1",
+     "ida": "0"
+    },
+    {
+     "args": [
+      42
+     ],
+     "hex": "1",
+     "ida": "4294967295"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_g",
+   "name": "large_jump_table",
+   "addr": "0x1618",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1,
+      5
+     ],
+     "hex": "5",
+     "ida": "4294967292"
+    },
+    {
+     "args": [
+      1,
+      4,
+      4
+     ],
+     "hex": "4",
+     "ida": "0"
+    },
+    {
+     "args": [
+      2,
+      7,
+      3
+     ],
+     "hex": "3",
+     "ida": "4"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_g",
+   "name": "state_machine",
+   "addr": "0x16dc",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_g",
+   "name": "fsm_func_table",
+   "addr": "0x1740",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "5996",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_no_g",
+   "name": "loop_break",
+   "addr": "0xc54",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      10
+     ],
+     "hex": "1",
+     "ida": "0"
+    },
+    {
+     "args": [
+      42
+     ],
+     "hex": "1",
+     "ida": "4294967295"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_no_g",
+   "name": "large_jump_table",
+   "addr": "0x1618",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1,
+      5
+     ],
+     "hex": "5",
+     "ida": "4294967292"
+    },
+    {
+     "args": [
+      1,
+      4,
+      4
+     ],
+     "hex": "4",
+     "ida": "0"
+    },
+    {
+     "args": [
+      2,
+      7,
+      3
+     ],
+     "hex": "3",
+     "ida": "4"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_no_g",
+   "name": "state_machine",
+   "addr": "0x16dc",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_no_g",
+   "name": "fsm_func_table",
+   "addr": "0x1740",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "5996",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O2_no_g",
+   "name": "computed_goto",
+   "addr": "0x179c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "10"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_g",
+   "name": "loop_break",
+   "addr": "0xc50",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      10
+     ],
+     "hex": "1",
+     "ida": "0"
+    },
+    {
+     "args": [
+      42
+     ],
+     "hex": "1",
+     "ida": "4294967295"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_g",
+   "name": "large_jump_table",
+   "addr": "0x1644",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1,
+      5
+     ],
+     "hex": "5",
+     "ida": "4294967292"
+    },
+    {
+     "args": [
+      1,
+      4,
+      4
+     ],
+     "hex": "4",
+     "ida": "0"
+    },
+    {
+     "args": [
+      2,
+      7,
+      3
+     ],
+     "hex": "3",
+     "ida": "4"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_g",
+   "name": "state_machine",
+   "addr": "0x1708",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_g",
+   "name": "fsm_func_table",
+   "addr": "0x176c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "6040",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_no_g",
+   "name": "loop_break",
+   "addr": "0xc50",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      10
+     ],
+     "hex": "1",
+     "ida": "0"
+    },
+    {
+     "args": [
+      42
+     ],
+     "hex": "1",
+     "ida": "4294967295"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_no_g",
+   "name": "large_jump_table",
+   "addr": "0x1644",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1,
+      5
+     ],
+     "hex": "5",
+     "ida": "4294967292"
+    },
+    {
+     "args": [
+      1,
+      4,
+      4
+     ],
+     "hex": "4",
+     "ida": "0"
+    },
+    {
+     "args": [
+      2,
+      7,
+      3
+     ],
+     "hex": "3",
+     "ida": "4"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_no_g",
+   "name": "state_machine",
+   "addr": "0x1708",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_no_g",
+   "name": "fsm_func_table",
+   "addr": "0x176c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "6040",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_O3_no_g",
+   "name": "computed_goto",
+   "addr": "0x17c8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "10"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_g",
+   "name": "large_jump_table",
+   "addr": "0x15f4",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1,
+      5
+     ],
+     "hex": "5",
+     "ida": "4294967292"
+    },
+    {
+     "args": [
+      1,
+      4,
+      4
+     ],
+     "hex": "4",
+     "ida": "0"
+    },
+    {
+     "args": [
+      2,
+      7,
+      3
+     ],
+     "hex": "3",
+     "ida": "4"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_g",
+   "name": "state_machine",
+   "addr": "0x16b8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_g",
+   "name": "fsm_func_table",
+   "addr": "0x171c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "5960",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_no_g",
+   "name": "large_jump_table",
+   "addr": "0x15f4",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1,
+      5
+     ],
+     "hex": "5",
+     "ida": "4294967292"
+    },
+    {
+     "args": [
+      1,
+      4,
+      4
+     ],
+     "hex": "4",
+     "ida": "0"
+    },
+    {
+     "args": [
+      2,
+      7,
+      3
+     ],
+     "hex": "3",
+     "ida": "4"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_no_g",
+   "name": "state_machine",
+   "addr": "0x16b8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_no_g",
+   "name": "fsm_func_table",
+   "addr": "0x171c",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "5960",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_clang_Os_no_g",
+   "name": "computed_goto",
+   "addr": "0x1778",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "0",
+     "ida": "10"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_O1_no_g",
+   "name": "op_shl",
+   "addr": "0xbb8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "18446744072635809792",
+     "ida": "3221225472"
+    },
+    {
+     "args": [
+      10,
+      31
+     ],
+     "hex": "21474836480",
+     "ida": "0"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "18446744073709522944",
+     "ida": "4294938624"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_O1_no_g",
+   "name": "op_shr",
+   "addr": "0xbc0",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "17179869183",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "4503599627370495",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -1000,
+      -2999
+     ],
+     "hex": "36028797018963966",
+     "ida": "4294967294"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_O2_no_g",
+   "name": "op_shl",
+   "addr": "0xc40",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "18446744072635809792",
+     "ida": "3221225472"
+    },
+    {
+     "args": [
+      10,
+      31
+     ],
+     "hex": "21474836480",
+     "ida": "0"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "18446744073709522944",
+     "ida": "4294938624"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_O2_no_g",
+   "name": "op_shr",
+   "addr": "0xc50",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "17179869183",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "4503599627370495",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -1000,
+      -2999
+     ],
+     "hex": "36028797018963966",
+     "ida": "4294967294"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_O3_no_g",
+   "name": "op_shl",
+   "addr": "0xd70",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "18446744072635809792",
+     "ida": "3221225472"
+    },
+    {
+     "args": [
+      10,
+      31
+     ],
+     "hex": "21474836480",
+     "ida": "0"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "18446744073709522944",
+     "ida": "4294938624"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_O3_no_g",
+   "name": "op_shr",
+   "addr": "0xd80",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "17179869183",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "4503599627370495",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -1000,
+      -2999
+     ],
+     "hex": "36028797018963966",
+     "ida": "4294967294"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_Os_g",
+   "name": "state_machine",
+   "addr": "0x1908",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "3",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_Os_no_g",
+   "name": "op_shl",
+   "addr": "0xbe0",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "18446744072635809792",
+     "ida": "3221225472"
+    },
+    {
+     "args": [
+      10,
+      31
+     ],
+     "hex": "21474836480",
+     "ida": "0"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "18446744073709522944",
+     "ida": "4294938624"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_Os_no_g",
+   "name": "op_shr",
+   "addr": "0xbe8",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      -1,
+      -2
+     ],
+     "hex": "17179869183",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -7,
+      -20
+     ],
+     "hex": "4503599627370495",
+     "ida": "4294967295"
+    },
+    {
+     "args": [
+      -1000,
+      -2999
+     ],
+     "hex": "36028797018963966",
+     "ida": "4294967294"
+    }
+   ]
+  },
+  {
+   "case": "1/1_gcc_Os_no_g",
+   "name": "state_machine",
+   "addr": "0x1908",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      0,
+      1
+     ],
+     "hex": "3",
+     "ida": "1"
+    }
+   ]
+  },
+  {
+   "case": "4/4_clang_Os_g",
+   "name": "call_struct_byval",
+   "addr": "0xe38",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "15",
+     "ida": "32742"
+    },
+    {
+     "args": [],
+     "hex": "15",
+     "ida": "32742"
+    },
+    {
+     "args": [],
+     "hex": "15",
+     "ida": "32742"
+    }
+   ]
+  },
+  {
+   "case": "4/4_clang_Os_g",
+   "name": "call_ret_large_struct",
+   "addr": "0xfe4",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "215",
+     "ida": "32869"
+    },
+    {
+     "args": [],
+     "hex": "215",
+     "ida": "32869"
+    },
+    {
+     "args": [],
+     "hex": "215",
+     "ida": "32869"
+    }
+   ]
+  },
+  {
+   "case": "4/4_clang_Os_no_g",
+   "name": "call_struct_byval",
+   "addr": "0xe38",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "15",
+     "ida": "32767"
+    },
+    {
+     "args": [],
+     "hex": "15",
+     "ida": "32767"
+    },
+    {
+     "args": [],
+     "hex": "15",
+     "ida": "32767"
+    }
+   ]
+  },
+  {
+   "case": "4/4_clang_Os_no_g",
+   "name": "call_ret_large_struct",
+   "addr": "0xfe4",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [],
+     "hex": "215",
+     "ida": "32729"
+    },
+    {
+     "args": [],
+     "hex": "215",
+     "ida": "32729"
+    },
+    {
+     "args": [],
+     "hex": "215",
+     "ida": "32729"
+    }
+   ]
+  },
+  {
+   "case": "2/2_clang_O0_no_g",
+   "name": "enum_switch",
+   "addr": "0x1bd4",
+   "state": "disagree",
+   "hexState": "PASS",
+   "detail": [
+    {
+     "args": [
+      1
+     ],
+     "hex": "0",
+     "ida": "100"
+    },
+    {
+     "args": [
+      2
+     ],
+     "hex": "0",
+     "ida": "50"
+    },
+    {
+     "args": [
+      3
+     ],
+     "hex": "0",
+     "ida": "4294967295"
+    }
+   ]
+  }
+ ],
+ "hangMismatch": [
+  {
+   "case": "7/7_clang_O0_g",
+   "name": "param_tail_call_optimized",
+   "addr": "0xcb8"
+  },
+  {
+   "case": "7/7_clang_O0_g",
+   "name": "param_non_tail_call",
+   "addr": "0xd34"
+  },
+  {
+   "case": "7/7_clang_O0_g",
+   "name": "param_buffer_overflow_stack",
+   "addr": "0x10ec"
+  },
+  {
+   "case": "7/7_clang_O0_g",
+   "name": "param_buffer_overflow_heap",
+   "addr": "0x117c"
+  },
+  {
+   "case": "7/7_clang_O0_no_g",
+   "name": "param_tail_call_optimized",
+   "addr": "0xcb8"
+  },
+  {
+   "case": "7/7_clang_O0_no_g",
+   "name": "param_non_tail_call",
+   "addr": "0xd34"
+  },
+  {
+   "case": "7/7_clang_O0_no_g",
+   "name": "param_buffer_overflow_stack",
+   "addr": "0x10ec"
+  },
+  {
+   "case": "7/7_clang_O0_no_g",
+   "name": "param_buffer_overflow_heap",
+   "addr": "0x117c"
+  },
+  {
+   "case": "7/7_gcc_O0_g",
+   "name": "param_tail_call_optimized",
+   "addr": "0xda0"
+  },
+  {
+   "case": "7/7_gcc_O0_g",
+   "name": "param_non_tail_call",
+   "addr": "0xe08"
+  },
+  {
+   "case": "7/7_gcc_O0_g",
+   "name": "param_buffer_overflow_heap",
+   "addr": "0x1278"
+  },
+  {
+   "case": "7/7_gcc_O0_no_g",
+   "name": "param_tail_call_optimized",
+   "addr": "0xda0"
+  },
+  {
+   "case": "7/7_gcc_O0_no_g",
+   "name": "param_non_tail_call",
+   "addr": "0xe08"
+  },
+  {
+   "case": "7/7_gcc_O0_no_g",
+   "name": "param_buffer_overflow_heap",
+   "addr": "0x1278"
+  },
+  {
+   "case": "7/7_gcc_O1_g",
+   "name": "param_tail_call_optimized",
+   "addr": "0xc68"
+  },
+  {
+   "case": "7/7_gcc_O1_g",
+   "name": "param_non_tail_call",
+   "addr": "0xcb0"
+  },
+  {
+   "case": "7/7_gcc_O1_no_g",
+   "name": "param_tail_call_optimized",
+   "addr": "0xc68"
+  },
+  {
+   "case": "7/7_gcc_O1_no_g",
+   "name": "param_non_tail_call",
+   "addr": "0xcb0"
+  },
+  {
+   "case": "1/1_clang_O0_g",
+   "name": "loop_nested",
+   "addr": "0x10c4"
+  },
+  {
+   "case": "1/1_clang_O0_g",
+   "name": "recursion_factorial",
+   "addr": "0x1bfc"
+  },
+  {
+   "case": "1/1_clang_O0_g",
+   "name": "tail_recursion",
+   "addr": "0x1c5c"
+  },
+  {
+   "case": "1/1_clang_O0_no_g",
+   "name": "loop_nested",
+   "addr": "0x10c4"
+  },
+  {
+   "case": "1/1_clang_O0_no_g",
+   "name": "recursion_factorial",
+   "addr": "0x1bfc"
+  },
+  {
+   "case": "1/1_clang_O0_no_g",
+   "name": "tail_recursion",
+   "addr": "0x1c5c"
+  },
+  {
+   "case": "1/1_clang_O1_g",
+   "name": "recursion_factorial",
+   "addr": "0x1130"
+  },
+  {
+   "case": "1/1_clang_O1_g",
+   "name": "tail_recursion",
+   "addr": "0x1168"
+  },
+  {
+   "case": "1/1_clang_O1_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1194"
+  },
+  {
+   "case": "1/1_clang_O1_no_g",
+   "name": "recursion_factorial",
+   "addr": "0x1130"
+  },
+  {
+   "case": "1/1_clang_O1_no_g",
+   "name": "tail_recursion",
+   "addr": "0x1168"
+  },
+  {
+   "case": "1/1_clang_O1_no_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1194"
+  },
+  {
+   "case": "1/1_clang_O2_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x12f0"
+  },
+  {
+   "case": "1/1_clang_O2_no_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x12f0"
+  },
+  {
+   "case": "1/1_clang_O3_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1304"
+  },
+  {
+   "case": "1/1_clang_O3_no_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1304"
+  },
+  {
+   "case": "1/1_clang_Os_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1264"
+  },
+  {
+   "case": "1/1_clang_Os_no_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1264"
+  },
+  {
+   "case": "1/1_gcc_O0_g",
+   "name": "loop_nested",
+   "addr": "0x1130"
+  },
+  {
+   "case": "1/1_gcc_O0_g",
+   "name": "recursion_factorial",
+   "addr": "0x1b98"
+  },
+  {
+   "case": "1/1_gcc_O0_g",
+   "name": "tail_recursion",
+   "addr": "0x1bd8"
+  },
+  {
+   "case": "1/1_gcc_O0_no_g",
+   "name": "loop_nested",
+   "addr": "0x1130"
+  },
+  {
+   "case": "1/1_gcc_O0_no_g",
+   "name": "recursion_factorial",
+   "addr": "0x1b98"
+  },
+  {
+   "case": "1/1_gcc_O0_no_g",
+   "name": "tail_recursion",
+   "addr": "0x1bd8"
+  },
+  {
+   "case": "1/1_gcc_O1_g",
+   "name": "recursion_factorial",
+   "addr": "0xb14"
+  },
+  {
+   "case": "1/1_gcc_O1_g",
+   "name": "loop_nested",
+   "addr": "0xee0"
+  },
+  {
+   "case": "1/1_gcc_O1_g",
+   "name": "tail_recursion",
+   "addr": "0x154c"
+  },
+  {
+   "case": "1/1_gcc_O1_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1578"
+  },
+  {
+   "case": "1/1_gcc_O1_no_g",
+   "name": "recursion_factorial",
+   "addr": "0xb14"
+  },
+  {
+   "case": "1/1_gcc_O1_no_g",
+   "name": "loop_nested",
+   "addr": "0xee0"
+  },
+  {
+   "case": "1/1_gcc_O1_no_g",
+   "name": "tail_recursion",
+   "addr": "0x154c"
+  },
+  {
+   "case": "1/1_gcc_O1_no_g",
+   "name": "indirect_recursion_a",
+   "addr": "0x1578"
+  },
+  {
+   "case": "3/3_clang_O0_g",
+   "name": "alloca_usage",
+   "addr": "0xde0"
+  },
+  {
+   "case": "3/3_clang_O0_g",
+   "name": "heap_overflow",
+   "addr": "0x19cc"
+  },
+  {
+   "case": "3/3_clang_O0_no_g",
+   "name": "alloca_usage",
+   "addr": "0xde0"
+  },
+  {
+   "case": "3/3_clang_O0_no_g",
+   "name": "heap_overflow",
+   "addr": "0x19cc"
+  },
+  {
+   "case": "3/3_clang_O1_g",
+   "name": "local_array",
+   "addr": "0xb60"
+  },
+  {
+   "case": "3/3_clang_O1_g",
+   "name": "vla_stack",
+   "addr": "0xbe8"
+  },
+  {
+   "case": "3/3_clang_O1_g",
+   "name": "alloca_usage",
+   "addr": "0xc68"
+  },
+  {
+   "case": "3/3_clang_O1_g",
+   "name": "heap_overflow",
+   "addr": "0x1330"
+  },
+  {
+   "case": "3/3_clang_O1_no_g",
+   "name": "local_array",
+   "addr": "0xb60"
+  },
+  {
+   "case": "3/3_clang_O1_no_g",
+   "name": "vla_stack",
+   "addr": "0xbe8"
+  },
+  {
+   "case": "3/3_clang_O1_no_g",
+   "name": "alloca_usage",
+   "addr": "0xc68"
+  },
+  {
+   "case": "3/3_clang_O1_no_g",
+   "name": "heap_overflow",
+   "addr": "0x1330"
+  },
+  {
+   "case": "3/3_gcc_O0_g",
+   "name": "heap_overflow",
+   "addr": "0x1b64"
+  },
+  {
+   "case": "3/3_gcc_O0_no_g",
+   "name": "heap_overflow",
+   "addr": "0x1b64"
+  },
+  {
+   "case": "3/3_gcc_O1_g",
+   "name": "heap_overflow",
+   "addr": "0x14d4"
+  },
+  {
+   "case": "3/3_gcc_O1_no_g",
+   "name": "heap_overflow",
+   "addr": "0x14d4"
+  },
+  {
+   "case": "3/3_gcc_O2_g",
+   "name": "heap_overflow",
+   "addr": "0x1510"
+  },
+  {
+   "case": "3/3_gcc_O2_no_g",
+   "name": "heap_overflow",
+   "addr": "0x1510"
+  },
+  {
+   "case": "3/3_gcc_Os_g",
+   "name": "heap_overflow",
+   "addr": "0x148c"
+  },
+  {
+   "case": "3/3_gcc_Os_no_g",
+   "name": "heap_overflow",
+   "addr": "0x148c"
+  }
+ ]
+}
