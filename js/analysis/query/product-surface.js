@@ -1,4 +1,5 @@
 import { classifyFunction, discoverSubsystems } from '../../recognition/classifier.js';
+import { recognitionVendorContext } from '../library-code.js';
 import { assertAnalysisSnapshot } from './snapshot.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from '../../string-budget.js';
 import { jsonSafe, stableDigest } from '../../core/identity/index.js';
@@ -512,7 +513,7 @@ export function createProductSurfaceQueries(app) {
         identity:base.knowledge.identity || null,
         name:base.knowledge.names?.[0] || null,
       } : null;
-      const refined = classifyFunction(input, { notKnownVendor:true, ...(signature ? { signature } : {}) });
+      const refined = classifyFunction(input, { ...recognitionVendorContext(app, address), ...(signature ? { signature } : {}) });
       const subsystems = discoverSubsystems(input);
       const value = {
         classification:refined.classification,

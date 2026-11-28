@@ -100,7 +100,7 @@ export function renderGraph(nodes, edges, opts) {
     if (!p) continue;
     const label = [n.title, ...(n.lines || []).slice(0, 2)].filter(Boolean).join(' — ');
     const g = svgEl('g', {
-      class: 'g-node' + (n.kind ? ' ' + n.kind : ''), tabindex: 0,
+      class: 'g-node' + (n.kind ? ' ' + n.kind : ''), tabindex: 0, 'data-node-id': String(n.id),
       role: n.onTap || o.onNode ? 'button' : 'img', 'aria-label': label || pick('関係図のノード', 'Graph node'),
     });
     g.append(svgEl('rect', { x: p.x, y: p.y, width: p.w, height: p.h, rx: 8, class: 'g-box' }));

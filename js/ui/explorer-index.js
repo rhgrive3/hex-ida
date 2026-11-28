@@ -158,7 +158,7 @@ function sortMatchedEntries(matched, { sort, hasQuery, prioritySet, savedSet, ed
 export async function queryFunctionsFast(
   app,
   query,
-  { signal, offset = 0, limit = 120, sort = 'address', filterSet = null, prioritySet = null, savedSet = null, editedSet = null } = {},
+  { signal, offset = 0, limit = 120, sort = 'address', filterSet = null, excludeSet = null, prioritySet = null, savedSet = null, editedSet = null } = {},
 ) {
   if (signal?.aborted) throw abortError();
   const q = String(query || '').trim().toLowerCase();
@@ -168,7 +168,7 @@ export async function queryFunctionsFast(
 
   const symbols = app?.symbols;
   if (!symbols || !symbols.funcs) {
-    const needsPostProcess = Boolean(filterSet || sort !== 'address' || q);
+    const needsPostProcess = Boolean(filterSet || excludeSet || sort !== 'address' || q);
     const fetchOffset = needsPostProcess ? 0 : start;
     const fetchLimit = needsPostProcess ? Math.max(start + count, 2000) : count;
     const rows = await queryFunctions(app, query, { signal, offset: fetchOffset, limit: fetchLimit });
@@ -179,6 +179,7 @@ export async function queryFunctionsFast(
       const row = rawList[i];
       const addr = typeof row.addr === 'bigint' ? row.addr : BigInt(row.addr);
       if (filterSet && !setHasAddr(filterSet, addr)) continue;
+      if (excludeSet && setHasAddr(excludeSet, addr)) continue;
       const name = String(row.name || `sub_${addr.toString(16).toUpperCase()}`);
       const nameLower = name.toLowerCase();
       const hexLower = addr.toString(16);
@@ -205,13 +206,14 @@ export async function queryFunctionsFast(
 
   const entries = getFunctionSearchIndex(symbols);
   let matched;
-  if (!q && !filterSet) {
+  if (!q && !filterSet && !excludeSet) {
     matched = sort === 'address' ? entries : entries.slice();
   } else {
     matched = [];
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       if (filterSet && !setHasAddr(filterSet, entry.addr)) continue;
+      if (excludeSet && setHasAddr(excludeSet, entry.addr)) continue;
       if (q) {
         const rank = matchRank(entry.nameLower, entry.hexLower, q, hexQuery);
         if (rank < 0) continue;

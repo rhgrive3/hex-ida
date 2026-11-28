@@ -29,6 +29,12 @@ import { buildGoalCandidateSummary, findGoalHighlightLines } from './function-an
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
 import * as explorerIndex from './explorer-index.js';
+import { reportFile } from './investigation-report.js';
+import { setSyncAddress, syncAddressFor, highlightGraphNode } from './view-sync.js';
+import { findEntryPaths } from '../analysis/entry-paths.js';
+import { markMission, missionSteps, missionFunction } from './mission.js';
+import { probeFunction, summarize as summarizeProbe, arityFromPseudocode, formatArgs, formatValue } from '../analysis/io-probe.js';
+import { libraryIndexFor, libraryInfoAt, isFoldable, libraryKindLabel, classifyClassName, recognitionVendorContext } from '../analysis/library-code.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 import { uiRoot } from '../ui-root.js';
 import {
@@ -368,6 +374,7 @@ function collectFrequentFunctions(app, limit = 5) {
     const key = big.toString();
     if (seen.has(key)) return;
     seen.add(key);
+    if (isFoldable(libraryInfoAt(app, big))) return;
     out.push({ addr: big, name: String(name || functionName(app, big)), callCount });
   };
   const hot = app?.appMap?.hotFunctions || app?.autoReport?.report?.notable || null;
@@ -401,6 +408,58 @@ function collectFrequentFunctions(app, limit = 5) {
   return out.slice(0, limit);
 }
 
+function buildMissionSection(app, router) {
+  const wrap = h('div', 'ui-quickstart-section ui-mission');
+  const render = () => {
+    const steps = missionSteps(app);
+    const doneCount = steps.filter((x) => x.done).length;
+    const heading = h('h3', 'ui-quickstart-heading', text(`ミッション ${doneCount} / ${steps.length}`, `Mission ${doneCount} / ${steps.length}`));
+    const list = h('ol', 'ui-mission-steps');
+    const next = steps.find((x) => !x.done) || null;
+    const fn = missionFunction(app);
+    for (const step of steps) {
+      const li = h('li', 'ui-mission-step' + (step.done ? ' is-done' : '') + (step === next ? ' is-next' : ''));
+      li.append(h('span', 'ui-mission-mark', step.done ? '✓' : ''), h('span', 'ui-mission-label', text(step.ja, step.en)));
+      if (step === next) {
+        let action = null;
+        if (step.id === 'open') {
+          action = fn != null
+            ? uiButton(text('開く', 'Open'), { cls: 'ui-secondary-action', onClick: () => router?.navigate?.('/function/' + fn.toString() + '/overview') })
+            : uiButton(text('索引', 'Explorer'), { cls: 'ui-secondary-action', onClick: () => router?.navigate?.('/explorer/functions') });
+        } else if (step.id === 'pseudo' && fn != null) {
+          action = uiButton(text('読む', 'Read'), { cls: 'ui-secondary-action', onClick: () => router?.navigate?.('/function/' + fn.toString() + '/pseudocode') });
+        } else if (step.id === 'name' && fn != null) {
+          action = uiButton(text('名前を付ける', 'Rename'), { cls: 'ui-secondary-action', onClick: () => showRename(app, fn) });
+        } else if (step.id === 'note' && fn != null) {
+          action = uiButton(text('書く', 'Write'), { cls: 'ui-secondary-action', onClick: () => showComment(app, fn) });
+        } else if (step.id === 'report') {
+          action = uiButton(text('書き出す', 'Export'), { cls: 'ui-secondary-action', onClick: () => exportReportFromProduct(app, 'html') });
+        }
+        if (action) li.append(action);
+      }
+      list.append(li);
+    }
+    wrap.replaceChildren(heading, list);
+  };
+  render();
+  const refresh = () => {
+    if (!wrap.isConnected) { if (wrap.dataset.mounted) cleanup(); return; }
+    wrap.dataset.mounted = '1';
+    render();
+  };
+  const unsubNotes = app?.notes?.subscribe?.(refresh) || null;
+  const doc = globalThis.document;
+  const win = globalThis.window;
+  const cleanup = () => {
+    doc?.removeEventListener?.('hex:mission', refresh);
+    win?.removeEventListener?.('hashchange', refresh);
+    if (typeof unsubNotes === 'function') unsubNotes();
+  };
+  doc?.addEventListener?.('hex:mission', refresh);
+  win?.addEventListener?.('hashchange', refresh);
+  return wrap;
+}
+
 function collectTopClassesOrModules(app, limit = 5) {
   const out = [];
   const seen = new Set();
@@ -408,6 +467,7 @@ function collectTopClassesOrModules(app, limit = 5) {
     const clean = String(name || '').trim();
     if (!clean || seen.has(clean)) return;
     seen.add(clean);
+    if (isFoldable(classifyClassName(app, clean))) return;
     out.push({ name: clean, meta, onClick });
   };
   const mapClasses = app?.appMap?.classes || app?.appMap?.modules;
@@ -484,6 +544,7 @@ export function buildInitialLandingCard(app, router, { onDismiss = null } = {}) 
   }));
   goalsWrap.append(goalBar);
   c.body.append(goalsWrap);
+  c.body.append(buildMissionSection(app, router));
 
   const classes = collectTopClassesOrModules(app, 5);
   if (classes.length) {
@@ -745,6 +806,11 @@ if (!app.store?.get?.('fileInfo')) {
   }
 }
 s.body.append(hero.root);
+if (app.store?.get?.('fileInfo')) {
+  const missionCard = card(null, { className: 'ui-mission-card' });
+  missionCard.body.append(buildMissionSection(app, router));
+  s.body.append(missionCard.root);
+}
 
   const overview = card(text('自動で分かったこと', 'Automatic overview'), {
     subtitle: text('ファイル全体の地図を作り、候補・根拠・未確認点をまとめます。',
@@ -1370,6 +1436,8 @@ function renderExplorer(app, router, route, routeContext = {}) {
   let allChip = null;
   let savedChip = null;
   let editedChip = null;
+  let libraryChip = null;
+  let hideLibrary = app.uiResume?.explorerHideLibrary !== false;
   let sortSelect = null;
   const searchRow = h('div', 'ui-explorer-search-row');
   searchRow.append(search);
@@ -1388,6 +1456,18 @@ function renderExplorer(app, router, route, routeContext = {}) {
       editedChip.textContent = text(`編集済み (✎ ${count})`, `Edited (✎ ${count})`);
       editedChip.setAttribute('aria-pressed', String(filterMode === 'edited'));
     }
+    if (libraryChip) {
+      libraryChip.textContent = text('ライブラリを隠す', 'Hide libraries');
+      libraryChip.setAttribute('aria-pressed', String(hideLibrary));
+    }
+  };
+  const setHideLibrary = (next) => {
+    hideLibrary = Boolean(next);
+    queryOffset = 0;
+    pendingVirtualState = null;
+    app.setUiResume?.({ explorerHideLibrary: hideLibrary });
+    syncFilterChips();
+    void update();
   };
   const setFilterMode = (next) => {
     if (!VALID_EXPLORER_FILTERS.has(next) || filterMode === next) return;
@@ -1416,6 +1496,11 @@ function renderExplorer(app, router, route, routeContext = {}) {
       pressed: filterMode === 'edited',
       onClick: () => setFilterMode(filterMode === 'edited' ? 'all' : 'edited'),
     });
+    libraryChip = uiButton('', {
+      cls: 'ui-secondary-action ui-explorer-filter-chip ui-library-filter-chip',
+      pressed: hideLibrary,
+      onClick: () => setHideLibrary(!hideLibrary),
+    });
     sortSelect = h('select', 'ui-explorer-sort');
     sortSelect.setAttribute('aria-label', text('並び順', 'Sort functions'));
     for (const [val, lbl] of [
@@ -1439,7 +1524,7 @@ function renderExplorer(app, router, route, routeContext = {}) {
       void update();
     });
     syncFilterChips();
-    filterBar.append(allChip, savedChip, editedChip, sortSelect);
+    filterBar.append(allChip, savedChip, editedChip, libraryChip, sortSelect);
     controls.append(filterBar);
   }
   s.body.append(controls);
@@ -1669,8 +1754,26 @@ function renderExplorer(app, router, route, routeContext = {}) {
 
       content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
       try {
-        const items = await matchingFunctionItems(app, q, { signal, offset: queryOffset, limit: pageSize, sort: sortMode });
+        let library = null;
+        try { library = await libraryIndexFor(app, { signal }); } catch (err) { if (err?.name === 'AbortError') throw err; library = null; }
         if (!current()) return;
+        const excludeSet = hideLibrary && library?.folded?.size ? library.folded : null;
+        const items = await matchingFunctionItems(app, q, { signal, offset: queryOffset, limit: pageSize, sort: sortMode, excludeSet });
+        if (!current()) return;
+        let hiddenCount = 0;
+        if (excludeSet && typeof explorerIndex.queryFunctionsFast === 'function' && app.symbols?.funcs) {
+          try {
+            const shownTotal = Number(items?.queryPage?.total);
+            const all = await explorerIndex.queryFunctionsFast(app, q, { signal, offset: 0, limit: 0, sort: 'address' });
+            if (Number.isSafeInteger(shownTotal) && Number.isSafeInteger(all?.total)) hiddenCount = Math.max(0, all.total - shownTotal);
+          } catch (err) { if (err?.name === 'AbortError') throw err; }
+          if (!current()) return;
+        }
+        const libraryLabel = (addrBig) => {
+          const info = library?.byAddr?.get(addrBig.toString());
+          if (!isFoldable(info)) return '';
+          return `${text('ライブラリ', 'Library')}: ${info.vendor}`;
+        };
         if (!items?.length && app.store?.get?.('symbolsReady') === false && Boolean(app.analysisBaseSymbolsReady)) {
           virtual?.dispose(); virtual = null;
           content.replaceChildren(loadingState(text('関数一覧をバックグラウンドで復元しています…', 'Recovering functions in the background…')));
@@ -1681,15 +1784,24 @@ function renderExplorer(app, router, route, routeContext = {}) {
           const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
           return listRow({
             title: item.name,
-            subtitle: buildFnSubtitle(itemAddr),
+            subtitle: [buildFnSubtitle(itemAddr), libraryLabel(itemAddr)].filter(Boolean).join(' · '),
             meta: item.size != null ? String(item.size) + ' B' : '',
             badge: makeEditedBadge(itemAddr.toString()),
             action,
             onClick: () => openAddressTarget(app, router, itemAddr),
           });
-        }, text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
-          // A word that is not a function name is often in a string: offer that search.
-          q ? uiButton(text(`「${q}」を文字列から探す`, `Search strings for "${q}"`), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/strings?q=' + encodeURIComponent(q)) }) : null);
+        }, hiddenCount ? text(`ライブラリに ${hiddenCount.toLocaleString()} 件あります。`, `${hiddenCount.toLocaleString()} matches are in libraries.`) : text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'),
+          hiddenCount
+            ? uiButton(text('ライブラリも表示', 'Show libraries'), { cls: 'ui-secondary-action', onClick: () => setHideLibrary(false) })
+            // A word that is not a function name is often in a string: offer that search.
+            : (q ? uiButton(text(`「${q}」を文字列から探す`, `Search strings for "${q}"`), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/strings?q=' + encodeURIComponent(q)) }) : null));
+        if (hiddenCount && items?.length) {
+          const note = h('p', 'ui-hint ui-library-hidden-note');
+          note.append(text(`ライブラリ ${hiddenCount.toLocaleString()} 件を非表示 `, `${hiddenCount.toLocaleString()} library functions hidden `));
+          note.append(uiButton(text('表示', 'Show'), { cls: 'ui-secondary-action', onClick: () => setHideLibrary(false) }));
+          const status = content.querySelector('[role="status"]');
+          if (status) status.after(note); else content.prepend(note);
+        }
       } catch (err) {
         if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('検索できませんでした', 'Search failed'), String(err?.message || err)));
       }
@@ -2034,6 +2146,14 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     ], r.left + r.width / 2, r.bottom + 4);
   } }));
   const s = screen(functionName(app, addr), { id: 'function', subtitle: addressText(addr), actions });
+  markMission(app, 'open-function', addr);
+  const libInfo = libraryInfoAt(app, addr);
+  if (isFoldable(libInfo)) {
+    s.body.append(h('p', 'ui-hint ui-library-note', text(
+      `ライブラリ: ${libInfo.vendor}（${libraryKindLabel(libInfo.kind, true)}）`,
+      `Library: ${libInfo.vendor} (${libraryKindLabel(libInfo.kind, false)})`,
+    )));
+  }
   const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next), { panelId: 'ui-function-panel', label: text('関数の表示', 'Function views') });
   s.body.append(tabbar);
   const content = tabPanel(tabbar, 'ui-workspace-content');
@@ -2182,7 +2302,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   const renderOverview = (res) => {
     const owner = app.ownerOf?.(addr);
     const ownerFact = ownerEvidence(owner);
-    const recognition = classifyFunction(recognitionInput(app, addr, res));
+    const recognition = classifyFunction(recognitionInput(app, addr, res), recognitionVendorContext(app, addr));
     const subsystems = discoverSubsystems(recognitionInput(app, addr, res));
     const grid = h('div', 'ui-card-grid');
     const summary = card(text('何をしている？', 'What does it do?'));
@@ -2593,6 +2713,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         if (rawInitial) {
           try { initialAddr = BigInt(rawInitial); } catch { initialAddr = null; }
         }
+        if (initialAddr == null) initialAddr = syncAddressFor(app, addr);
         const functionComment = app.notes?.comment?.(addr) || '';
         let wrap = false;
         let codeRef = null;
@@ -2616,6 +2737,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           extraToolbarActions,
           functionComment,
           initialAddr,
+          onSelectAddress:(selected) => setSyncAddress(app, addr, selected),
           onBookmarkAddress:(targetAddr) => {
             if (targetAddr == null) return;
             const big = BigInt(targetAddr);
@@ -2631,6 +2753,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         activeFallbackTokHl?.destroy?.();
         activeFallbackTokHl = null;
         activeProvenanceView = provenanceView;
+        markMission(app, 'read-pseudo');
         const code = provenanceView.code;
         codeRef = code;
         const findBar = createPseudocodeFindBar(code);
@@ -2701,12 +2824,13 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const graph = cfgGraph(res.model, {
       rowOfAddress: map.rowOfAddress,
       text: (insn) => insn.mnemonic + ' ' + insn.operands,
-      onNode: (_block, target) => router.navigate('/code/' + BigInt(target).toString()),
+      onNode: (_block, target) => { setSyncAddress(app, addr, target); router.navigate('/code/' + BigInt(target).toString()); },
     });
     if (!graph.nodes.length) { content.replaceChildren(emptyState(text('フローを作れませんでした', 'No control flow available'), text('この関数には図にできるブロック情報がありません。', 'This function has no graphable block information.'))); return; }
     const mode = h('div', 'ui-graph-shell');
     const graphHost = h('div', 'ui-graph-host');
     graphHost.append(renderGraph(graph.nodes, graph.edges, {}));
+    highlightGraphNode(graphHost, graph.nodes, syncAddressFor(app, addr));
     const list = h('details', 'ui-graph-text');
     list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
     const rows = h('div', 'ui-list');
@@ -2824,7 +2948,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
               lines: blockLinesOf(b),
               kind,
               addr: nodeAddr,
-              onTap: nodeAddr != null ? () => router.navigate('/code/' + nodeAddr.toString()) : null,
+              onTap: nodeAddr != null ? () => { setSyncAddress(app, addr, nodeAddr); router.navigate('/code/' + nodeAddr.toString()); } : null,
             };
           });
           const nodeIds = new Set(nodes.map((n) => n.id));
@@ -2868,6 +2992,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           const mode = h('div', 'ui-graph-shell');
           const graphHost = h('div', 'ui-graph-host');
           graphHost.append(renderGraph(nodes, edges, {}));
+          highlightGraphNode(graphHost, nodes, syncAddressFor(app, addr));
           const list = h('details', 'ui-graph-text');
           list.append(h('summary', null, text('テキスト一覧でも見る', 'View as text list')));
           const rows = h('div', 'ui-list');
@@ -2919,7 +3044,27 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         cls: 'ui-secondary-action',
         onClick: () => requireFile(app, () => showXrefs(app, addr)),
       }));
-      shell.append(callsActions, renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
+      const origin = card(text('どこから来る？', 'Where it comes from'));
+      const { paths, complete } = findEntryPaths(app.program, (a) => app.symbols?.nameAt?.(a) || null, addr);
+      if (!paths.length) {
+        origin.body.append(h('p', 'ui-sub', text('入口までの道は見つかりませんでした。', 'No path from a known entry point.')));
+      } else {
+        for (const path of paths) {
+          const row = h('div', 'ui-entry-path');
+          row.append(h('span', 'ui-entry-kind', ja() ? path.ja : path.en));
+          path.nodes.forEach((node, index) => {
+            if (index) row.append(h('span', 'ui-entry-arrow', '→'));
+            const isSelf = node === addr;
+            const step = uiButton(functionName(app, node), { cls: 'ui-secondary-action ui-entry-step' + (isSelf ? ' is-self' : '') });
+            if (!isSelf) step.addEventListener('click', () => openAddressTarget(app, router, node));
+            else step.disabled = true;
+            row.append(step);
+          });
+          origin.body.append(row);
+        }
+      }
+      if (!complete) origin.body.append(h('p', 'ui-hint', text('一部のみ探索', 'Partial search')));
+      shell.append(origin.root, callsActions, renderGraph(graph.nodes, graph.edges, {}), graphLegend('call'));
 
       const listsGrid = h('div', 'ui-card-grid');
       const callers = typeof app.program.callersOf === 'function' ? (app.program.callersOf(addr, 50) || []) : [];
@@ -3084,7 +3229,50 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       }
     });
     c.body.append(run, resultHost);
-    root.append(c.root);
+
+    const io = card(text('入力と出力', 'Inputs and outputs'));
+    const ioHost = h('div', 'ui-io-result');
+    const ioRun = uiButton(text('試す', 'Try'), { cls: 'ui-primary-action ui-io-run' });
+    ioRun.addEventListener('click', async () => {
+      ioRun.disabled = true;
+      const ioSignal = runScope.spawn('io-probe-replaced');
+      ioHost.replaceChildren(loadingState(text('実行しています…', 'Running…')));
+      try {
+        let arity = null;
+        try {
+          const snap = await app.analysisQueries.snapshot({ signal: ioSignal });
+          const dec = await app.analysisQueries.decompile(snap, addr, { signal: ioSignal });
+          arity = arityFromPseudocode(dec?.value?.pseudocode ?? dec?.value?.code ?? '');
+        } catch (err) { if (ioSignal.aborted) return; }
+        const { rows } = await probeFunction(app, addr, { trace: traceAppFunction, arity, signal: ioSignal });
+        if (!viewCurrent() || ioSignal.aborted) return;
+        const rule = summarizeProbe(rows, { ja: ja() });
+        const table = h('table', 'ui-io-table');
+        const head = h('tr');
+        for (const label of [text('入力', 'Input'), text('出力', 'Output'), text('状態', 'Status')]) head.append(h('th', null, label));
+        const thead = h('thead'); thead.append(head); table.append(thead);
+        const body = h('tbody');
+        const stopText = (r) => r.stop === 'return'
+          ? (r.writes ? text(`終了・書き込み ${r.writes}`, `returned · ${r.writes} writes`) : text('終了', 'returned'))
+          : r.stop === 'timeout' ? text('時間切れ', 'timeout') : r.stop === 'error' ? text('エラー', 'error') : text('途中で停止', 'stopped');
+        for (const r of rows) {
+          const tr = h('tr');
+          tr.append(h('td', 'mono', formatArgs(r.args)), h('td', 'mono', formatValue(r.out)), h('td', null, stopText(r)));
+          body.append(tr);
+        }
+        table.append(body);
+        const parts = [];
+        if (rule) parts.push(h('p', 'ui-io-rule', text(`きまり（試した範囲）: ${rule}`, `Rule (tested inputs): ${rule}`)));
+        parts.push(table);
+        ioHost.replaceChildren(...parts);
+      } catch (error) {
+        if (!disposed && !ioSignal.aborted && !routeSignal.aborted) ioHost.replaceChildren(errorState(text('実行できませんでした', 'Could not run'), String(error?.message || error)));
+      } finally {
+        if (!disposed && !routeSignal.aborted) ioRun.disabled = false;
+      }
+    });
+    io.body.append(ioRun, ioHost);
+    root.append(io.root, c.root);
 
     const capability = card(text('実機のデバッガ', 'Live Debugger'), { subtitle: text('ブラウザだけでは、動いている iOS アプリに接続できません。実機での観測は、外部の Hex bridge に接続したときだけ使えます。', 'Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.') });
     capability.body.append(uiButton(text('デバッガを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
@@ -3291,6 +3479,10 @@ function downloadBlob(blob,name) {
 async function exportProjectFromProduct(app) {
   try { const blob=await app.exportProjectFile(); downloadBlob(blob,(app.store.get('fileInfo')?.name||'analysis')+'.hexproj'); toast(text('プロジェクトを書き出しました。','Project exported.')); }
   catch(error){toast(text('プロジェクトを書き出せませんでした: ','Could not export project: ')+String(error?.message||error));}
+}
+function exportReportFromProduct(app, format) {
+  try { const { blob, name } = reportFile(app, format, { ja: ja() }); downloadBlob(blob, name); markMission(app, 'report'); toast(text('レポートを書き出しました。', 'Report exported.')); }
+  catch (error) { toast(text('レポートを書き出せませんでした。', 'Could not export the report.')); console.error(error); }
 }
 async function importProjectFromProduct(app) {
   const file=await pickOneFile('.hexproj,application/json'); if(!file)return;
@@ -3603,6 +3795,7 @@ function installAddressBar(app, router, addrbar) {
       }
       const targetBig = BigInt(target);
       const query = curAddr != null && BigInt(curAddr) !== targetBig ? ('?addr=' + BigInt(curAddr).toString()) : '';
+      if (curAddr != null) setSyncAddress(app, targetBig, curAddr);
       router.navigate('/function/' + targetBig.toString() + '/pseudocode' + query);
     }),
   });
@@ -4543,6 +4736,8 @@ export function installProductUI(app) {
     const r = event.currentTarget.getBoundingClientRect();
     menu([
       { label: text('パッチ（命令の書き換え）', 'Patch instructions'), action: () => requireFile(app, () => showPatches(app)) },
+      { label: text('レポートを書き出す (HTML)', 'Export report (HTML)'), action: () => requireFile(app, () => exportReportFromProduct(app, 'html')) },
+      { label: text('レポートを書き出す (Markdown)', 'Export report (Markdown)'), action: () => requireFile(app, () => exportReportFromProduct(app, 'md')) },
       { label: text('プロジェクトを書き出す (.hexproj)', 'Export project (.hexproj)'), action: () => requireFile(app, () => exportProjectFromProduct(app)) },
       { label: text('プロジェクトを読み込む', 'Import project'), action: () => requireFile(app, () => importProjectFromProduct(app)) },
       '-',
@@ -4771,6 +4966,7 @@ export function installProductUI(app) {
           const lineAddr = activeLineAddr();
           const fnBig = BigInt(a);
           const query = lineAddr != null && BigInt(lineAddr) !== fnBig ? ('?addr=' + BigInt(lineAddr).toString()) : '';
+          if (lineAddr != null) setSyncAddress(app, fnBig, lineAddr);
           router.navigate('/function/' + fnBig.toString() + '/pseudocode' + query);
         }
       });
