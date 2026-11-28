@@ -365,9 +365,11 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
   const merged = p0.candidates.concat(p1.candidates);
   merged.sort((a, b) => a.start - b.start || b.end - a.end);
 
+  const emitCutoff = Math.min(p0.unfinishedStart, p1.unfinishedStart);
   let lastEmittedEnd = 0;
   for (let i = 0; i < merged.length; i++) {
     const cand = merged[i];
+    if (cand.start >= emitCutoff) break;
     if (cand.start < lastEmittedEnd) continue;
     // Avoid letting a 1-byte-shifted NUL-prefixed non-ASCII shadow eclipse a true overlapping ASCII UTF-16 string.
     if (cand.asciiCount === 0 && i + 1 < merged.length) {
