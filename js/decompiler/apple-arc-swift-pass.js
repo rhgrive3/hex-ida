@@ -4,8 +4,8 @@
  *  1. Rewrites Xcode 14+ `_objc_msgSend$<sel>(recv, args...)` stubs into `[recv sel:args...]`.
  *  2. Rewrites direct `objc_msgSend(recv, "sel", args...)` calls into `[recv sel:args...]`.
  *  3. Folds Objective-C & Swift ARC retain/release/autorelease/bridgeObject boilerplate.
- *  4. Demangles inline Swift ($s/_$s), Itanium C++ (_Z), Rust (_R), and MSVC C++ (?...) symbols
- *     via the unified 4-ABI WASM demangler (with JS fallback).
+ *  4. Demangles inline Swift ($s/_$s), Itanium C++ (_Z/__Z and `_`-stripped Z...), Rust (_R),
+ *     and MSVC C++ (?...) symbols via the unified 4-ABI WASM demangler (with JS fallback).
  *
  * INV-005 compliant: ZERO imports from js/targets/architecture/.
  */
@@ -37,6 +37,30 @@ const ARC_PASSTHROUGH_FNS = new Set([
 
 const ARC_DROP_STMT_RE = /^\s*(?:_?objc_release|_?objc_destroyWeak|_?swift_release|_?swift_bridgeObjectRelease|_?swift_unknownObjectRelease|_?swift_errorRelease)\s*\([^;]*\)\s*;\s*$/;
 const ARC_STORE_NULL_RE = /^\s*_?objc_storeStrong\s*\(\s*&[^,]+,\s*(?:0|0LL|0ULL|NULL|nil)\s*\)\s*;\s*$/;
+
+const IDENT_CHAR_RE = /[A-Za-z0-9_$]/;
+
+// Sticky token matcher for Swift, Itanium C++ (_Z/__Z and `_`-stripped Z...), Rust, and MSVC symbols
+const DEMANGLE_TOKEN_STICKY_RE = new RegExp(
+  '(?:' +
+    '_?\\$[sSe][A-Za-z0-9_]+' +
+    '|__?T0[A-Za-z0-9_]+' +
+    '|__?[ZR][A-Za-z0-9_$]+' +
+    '|\\?[A-Za-z0-9_@$?]+' +
+    '|ZN[rVKRO]*(?:[0-9]+|S[tabisod])[A-Za-z0-9_$]*E[A-Za-z0-9_$]*' +
+    '|ZL[1-9][0-9]*[A-Za-z_][A-Za-z0-9_$]*' +
+    '|ZT[VISTThv][A-Za-z0-9_$]+' +
+    '|ZGV[A-Za-z0-9_$]+' +
+    '|Z(?:nw|na|dl|da)[A-Za-z0-9_$]+' +
+    '|Z[1-9][0-9]*[A-Za-z_][A-Za-z0-9_$]{2,}' +
+  ')(?![A-Za-z0-9_$])',
+  'y'
+);
+
+const STRIPPED_ITANIUM_SPECIFIC_RE = /^Z(?:N[rVKRO]*(?:[0-9]+|S[tabisod])[A-Za-z0-9_$]*E[A-Za-z0-9_$]*|L[1-9][0-9]*[A-Za-z_][A-Za-z0-9_$]*|T[VISTThv][A-Za-z0-9_$]+|GV[A-Za-z0-9_$]+|(?:nw|na|dl|da)[A-Za-z0-9_$]+)$/;
+const STRIPPED_ITANIUM_GENERIC_RE = /^Z[1-9][0-9]*[A-Za-z_][A-Za-z0-9_$]{2,}$/;
+const TRAILING_ITANIUM_QUAL_RE = /(?:\s+(?:const|volatile|restrict|noexcept(?:\([^)]*\))?)|\s*&&?)$/;
+const SPECIAL_ITANIUM_PREFIX_RE = /^(?:vtable|typeinfo|guard variable|construction vtable|virtual thunk|non-virtual thunk)\b/;
 
 function splitTopLevelArgs(argStr) {
   const args = [];
@@ -193,17 +217,192 @@ function foldArcPassthroughInLine(line, stats) {
   return cur;
 }
 
+/**
+ * Strips leading return-type prefix from a demangled Itanium C++ function-template name
+ * (e.g. `void Foo::bar<int>` -> `Foo::bar<int>`) while preserving `operator ...` names.
+ */
+function stripItaniumReturnTypePrefix(name) {
+  if (!name || SPECIAL_ITANIUM_PREFIX_RE.test(name)) return name;
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let lastSplit = -1;
+
+  for (let i = 0; i < name.length; i++) {
+    const ch = name[i];
+    if (ch === '(') {
+      parenDepth++;
+    } else if (ch === ')') {
+      if (parenDepth > 0) parenDepth--;
+    } else if (ch === '<') {
+      const before = name.slice(0, i);
+      if (!/(?:^|::|\s)operator\s*<?$/.test(before)) {
+        angleDepth++;
+      }
+    } else if (ch === '>') {
+      const before = name.slice(0, i);
+      if (!/(?:^|::|\s)operator\s*(?:-|>)?$/.test(before) && angleDepth > 0) {
+        angleDepth--;
+      }
+    } else if (ch === ' ' && angleDepth === 0 && parenDepth === 0) {
+      const before = name.slice(0, i).trimEnd();
+      if (/(?:^|::|\s)operator$/.test(before)) {
+        break;
+      }
+      lastSplit = i;
+    }
+  }
+
+  if (lastSplit !== -1) {
+    const candidate = name.slice(lastSplit + 1).trimStart();
+    if (/^~?[A-Za-z_]/.test(candidate)) {
+      return candidate;
+    }
+  }
+  return name;
+}
+
+/**
+ * Strips trailing cv/ref/noexcept qualifiers and balanced `(...)` parameter list from an
+ * Itanium C++ demangled name when used at a call site or signature (followed by `(` in source),
+ * preserving `operator()` and stripping leading function-template return types.
+ */
+function formatItaniumCallableName(demangled) {
+  let s = demangled.trim();
+  let strippedQual = s;
+  while (TRAILING_ITANIUM_QUAL_RE.test(strippedQual)) {
+    const next = strippedQual.replace(TRAILING_ITANIUM_QUAL_RE, '').trimEnd();
+    if (next === strippedQual) break;
+    strippedQual = next;
+  }
+
+  if (strippedQual.endsWith(')')) {
+    let depth = 0;
+    let openIdx = -1;
+    for (let k = strippedQual.length - 1; k >= 0; k--) {
+      const ch = strippedQual[k];
+      if (ch === ')') depth++;
+      else if (ch === '(') {
+        depth--;
+        if (depth === 0) {
+          openIdx = k;
+          break;
+        }
+      }
+    }
+    if (openIdx > 0) {
+      const before = strippedQual.slice(0, openIdx).trimEnd();
+      if (!/(?:^|::|\s)operator$/.test(before)) {
+        s = before;
+      } else {
+        s = strippedQual;
+      }
+    }
+  }
+
+  return stripItaniumReturnTypePrefix(s);
+}
+
+function nextNonWhitespaceChar(str, startIdx) {
+  for (let i = startIdx; i < str.length; i++) {
+    const ch = str[i];
+    if (ch !== ' ' && ch !== '\t' && ch !== '\r') return ch;
+  }
+  return '';
+}
+
 function demangleSymbolsInLine(line, stats) {
-  // Match Swift ($s/_$s/$S/_$S/_T0), Itanium C++ (_Z/__Z), Rust (_R/__R), or MSVC (?...) tokens
-  const tokenRe = /(?:_?\$[sSe][A-Za-z0-9_]+|__?T0[A-Za-z0-9_]+|__?[ZR][A-Za-z0-9_$]+|\?[A-Za-z0-9_@$?]+)/g;
-  return line.replace(tokenRe, (tok) => {
-    const kind = detectMangleKind(tok);
-    if (kind === DEMANGLE_KIND.NONE) return tok;
-    const dem = demangleSymbol(tok);
-    if (!dem || dem === tok) return tok;
-    stats.symbolsDemangled++;
-    return dem;
-  });
+  let out = '';
+  let i = 0;
+  const len = line.length;
+
+  while (i < len) {
+    const ch = line[i];
+
+    // Skip string and char literals verbatim
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      while (j < len) {
+        if (line[j] === '\\' && j + 1 < len) {
+          j += 2;
+          continue;
+        }
+        if (line[j] === quote) {
+          j++;
+          break;
+        }
+        j++;
+      }
+      out += line.slice(i, j);
+      i = j;
+      continue;
+    }
+
+    // Skip line comments verbatim
+    if (ch === '/' && line[i + 1] === '/') {
+      out += line.slice(i);
+      break;
+    }
+
+    // Skip block comments verbatim
+    if (ch === '/' && line[i + 1] === '*') {
+      const end = line.indexOf('*/', i + 2);
+      if (end === -1) {
+        out += line.slice(i);
+        break;
+      }
+      out += line.slice(i, end + 2);
+      i = end + 2;
+      continue;
+    }
+
+    // Enforce identifier boundary before any matched token
+    if (i === 0 || !IDENT_CHAR_RE.test(line[i - 1])) {
+      DEMANGLE_TOKEN_STICKY_RE.lastIndex = i;
+      const m = DEMANGLE_TOKEN_STICKY_RE.exec(line);
+      if (m) {
+        const tok = m[0];
+        const endIdx = i + tok.length;
+        const isStrippedItanium =
+          tok[0] === 'Z' &&
+          (STRIPPED_ITANIUM_SPECIFIC_RE.test(tok) || STRIPPED_ITANIUM_GENERIC_RE.test(tok));
+        const probe = isStrippedItanium ? `_${tok}` : tok;
+        const kind = detectMangleKind(probe);
+
+        if (kind !== DEMANGLE_KIND.NONE) {
+          const dem = demangleSymbol(probe);
+          const isValidDemangle = Boolean(dem && dem !== tok && dem !== probe);
+          const passesGenericGuard =
+            !isStrippedItanium ||
+            STRIPPED_ITANIUM_SPECIFIC_RE.test(tok) ||
+            (isValidDemangle && (dem.includes('(') || dem.includes('::')));
+
+          if (isValidDemangle && passesGenericGuard) {
+            let replacement = dem;
+            if (
+              kind === DEMANGLE_KIND.ITANIUM_CPP &&
+              nextNonWhitespaceChar(line, endIdx) === '('
+            ) {
+              replacement = formatItaniumCallableName(dem);
+            }
+            out += replacement;
+            stats.symbolsDemangled++;
+            i = endIdx;
+            continue;
+          }
+        }
+
+        out += tok;
+        i = endIdx;
+        continue;
+      }
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
 }
 
 /**

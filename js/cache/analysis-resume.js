@@ -153,6 +153,8 @@ export function applyAppAnalysisState(app, snapshot) {
   if (prepared.symbols) {
     app.symbols = prepared.symbols;
     app.viewer?.setSymbols?.(prepared.symbols);
+    if (typeof app.syncSymbolsStore === 'function') app.syncSymbolsStore(true);
+    else app.store?.set?.({ symbolsGen: prepared.symbols?.gen ?? 0, symbolsReady: true });
     restored = true;
   }
   if (Object.prototype.hasOwnProperty.call(prepared, 'stringIndex')) { app.stringIndex = prepared.stringIndex; restored = true; }

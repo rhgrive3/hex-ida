@@ -4,7 +4,7 @@ import {
 } from './registry.js';
 import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
-  tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip,
+  tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip, reasonText,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import * as formatMod from '../format.js';
@@ -1029,6 +1029,7 @@ function getExternalEntities(app) {
   const slice = app.currentSlice?.();
   const fileInfo = app.store?.get?.('fileInfo');
   const symbols = app.symbols;
+  const symbolsGen = symbols?.gen ?? null;
   const program = app.program || null;
   const isJapanese = ja();
   if (
@@ -1036,6 +1037,7 @@ function getExternalEntities(app) {
     && cachedExternalDescriptor.fileInfo === fileInfo
     && cachedExternalDescriptor.slice === slice
     && cachedExternalDescriptor.symbols === symbols
+    && cachedExternalDescriptor.symbolsGen === symbolsGen
     && cachedExternalDescriptor.program === program
     && cachedExternalDescriptor.isJapanese === isJapanese
     && cachedExternalItems
@@ -1092,7 +1094,7 @@ function getExternalEntities(app) {
       }
     }
   }
-  cachedExternalDescriptor = { fileInfo, slice, symbols, program, isJapanese };
+  cachedExternalDescriptor = { fileInfo, slice, symbols, symbolsGen, program, isJapanese };
   cachedExternalItems = items;
   return items;
 }
@@ -1432,6 +1434,11 @@ function renderExplorer(app, router, route, routeContext = {}) {
       try {
         const items = await matchingFunctionItems(app, q, { signal, offset: queryOffset, limit: pageSize, sort: sortMode });
         if (!current()) return;
+        if (!items?.length && app.store?.get?.('symbolsReady') === false && Boolean(app.analysisBaseSymbolsReady)) {
+          virtual?.dispose(); virtual = null;
+          content.replaceChildren(loadingState(text('関数一覧をバックグラウンドで復元しています…', 'Recovering functions in the background…')));
+          return;
+        }
         showRows(items, (item) => {
           const itemAddr = BigInt(item.addr);
           const action = makeFnRowAction(itemAddr, item.name, () => syncFilterChips());
@@ -1546,10 +1553,18 @@ function renderExplorer(app, router, route, routeContext = {}) {
     if (scope === 'functions') { syncFilterChips(); void update(); }
   };
   document.addEventListener('hex:notes-attached', onNotesAttached);
-  const unsubStore = scope === 'functions' ? (app.store?.subscribe?.((_state, patch) => {
-    if (disposed || !patch || !('patches' in patch)) return;
-    syncFilterChips();
-    if (filterMode === 'edited' || filterMode === 'all') void update();
+  const isSymbolReactiveScope = scope === 'functions' || scope === 'classes' || scope === 'data' || scope === 'external';
+  const unsubStore = isSymbolReactiveScope ? (app.store?.subscribe?.((_state, patch) => {
+    if (disposed || !patch) return;
+    if ('symbolsGen' in patch || 'symbolsReady' in patch) {
+      if (scope === 'functions') syncFilterChips();
+      void update();
+      return;
+    }
+    if (scope === 'functions' && 'patches' in patch) {
+      syncFilterChips();
+      if (filterMode === 'edited' || filterMode === 'all') void update();
+    }
   }) || null) : null;
   search.addEventListener('input', () => { queryOffset = 0; pendingVirtualState = null; clearTimeout(timer); timer = setTimeout(update, 120); });
   update();
@@ -1705,11 +1720,59 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate('/function/' + addr.toString() + '/' + next), { panelId: 'ui-function-panel', label: text('関数の表示', 'Function views') });
     s.body.append(tabbar);
     const content=tabPanel(tabbar,'ui-workspace-content');
-    content.append(errorState(
-      text('関数境界を検証できません','Function boundary could not be verified'),
-      verifiedRange.reason||'unverified-function-range',
-      uiButton(text('コードで命令を読む','Read instructions in Code'),{cls:'ui-primary-action',onClick:()=>router.navigate('/code/'+addr.toString())}),
-    ));
+    const buildUnverifiedState = (reasonCode) => {
+      const actions = h('div', 'ui-actions');
+      actions.append(
+        uiButton(text('アセンブリで開く', 'Open in Assembly'), { cls: 'ui-primary-action', onClick: () => router.navigate('/code/' + addr.toString()) }),
+        uiButton(text('関数一覧を開く', 'Browse Functions'), { cls: 'ui-secondary-action', onClick: () => router.navigate('/explorer/functions') }),
+      );
+      return emptyState(
+        text('関数境界を検証できません', 'Function boundary could not be verified'),
+        reasonText(reasonCode) || text('このアドレスでは関数境界を検証できませんでした。アセンブリ表示または関数一覧から確認できます。', 'The function boundary could not be verified at this address. You can inspect it in Assembly or pick a function from Explorer.'),
+        actions,
+      );
+    };
+    const waitingForBaseSymbols = verifiedRange.reason === 'function-symbol-missing'
+      && app.store?.get?.('symbolsReady') === false
+      && Boolean(app.analysisBaseSymbolsReady);
+    if (waitingForBaseSymbols) {
+      let disposedWait = false;
+      let settledWait = false;
+      let unsubWait = null;
+      const cleanupWait = () => {
+        if (typeof unsubWait === 'function') { unsubWait(); unsubWait = null; }
+      };
+      const onSymbolsSettled = () => {
+        if (disposedWait || settledWait) return;
+        const rechecked = app.validatedFunctionRange?.(addr);
+        if (rechecked?.ok) {
+          settledWait = true;
+          cleanupWait();
+          router.navigate(route.fullPath || ('/function/' + addr.toString() + '/' + tab), { replace: true, forcePush: true });
+          return;
+        }
+        if (app.store?.get?.('symbolsReady') !== false) {
+          settledWait = true;
+          cleanupWait();
+          content.replaceChildren(buildUnverifiedState(rechecked?.reason || verifiedRange.reason || 'unverified-function-range'));
+        }
+      };
+      content.append(loadingState(text('シンボル復元を待機しています…', 'Waiting for symbol recovery…')));
+      unsubWait = app.store?.subscribe?.((_st, patch) => {
+        if (!patch || (!('symbolsReady' in patch) && !('symbolsGen' in patch))) return;
+        onSymbolsSettled();
+      }) || null;
+      Promise.resolve(app.analysisBaseSymbolsReady).then(onSymbolsSettled, onSymbolsSettled);
+      s.body.append(content);
+      return {
+        root: s.root,
+        dispose: () => {
+          disposedWait = true;
+          cleanupWait();
+        },
+      };
+    }
+    content.append(buildUnverifiedState(verifiedRange.reason || 'unverified-function-range'));
     s.body.append(content);
     return {root:s.root};
   }
@@ -2087,6 +2150,30 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     loadingEl.append(cancelBtn);
     content.replaceChildren(loadingEl);
 
+    const renderUnavailablePseudocode = (reason) => {
+      const actions = h('div', 'ui-actions');
+      actions.append(
+        uiButton(text('アセンブリで開く', 'Open in Assembly'), {
+          cls: 'ui-primary-action',
+          onClick: () => router.navigate('/code/' + addr.toString()),
+        }),
+        uiButton(text('関数一覧を開く', 'Browse Functions'), {
+          cls: 'ui-secondary-action',
+          onClick: () => router.navigate('/explorer/functions'),
+        }),
+      );
+      const body = reasonText(reason) || text(
+        'このアドレスの関数情報を取得できませんでした。アセンブリ表示または関数一覧から確認できます。',
+        'Function information could not be resolved at this address. You can inspect it in Assembly or pick a function from Explorer.',
+      );
+      content.replaceChildren(emptyState(
+        text('このアドレスの疑似Cを表示できません', 'Pseudocode is unavailable at this address'),
+        body,
+        actions,
+      ));
+    };
+
+    let activeLoadingBase = baseLabel;
     const startedAt = Date.now();
     timerId = setInterval(() => {
       if (disposed || routeSignal.aborted || localSignal.aborted || !viewCurrent()) {
@@ -2095,18 +2182,53 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       }
       const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
       if (elapsedSec >= 2 && labelEl) {
-        labelEl.textContent = text(`関数を解析しています… (${elapsedSec}秒)`, `Analysing function… (${elapsedSec}s)`);
+        labelEl.textContent = text(`${activeLoadingBase} (${elapsedSec}秒)`, `${activeLoadingBase} (${elapsedSec}s)`);
       }
     }, 500);
 
     try {
+      if (app.store?.get?.('symbolsReady') === false && app.analysisBaseSymbolsReady) {
+        if (localSignal.aborted) return;
+        const waitingLabel = text('シンボル復元を待機しています…', 'Waiting for symbol recovery…');
+        activeLoadingBase = waitingLabel;
+        if (labelEl) labelEl.textContent = waitingLabel;
+        let onSymbolWaitAbort = null;
+        try {
+          await new Promise((resolve) => {
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              resolve();
+            };
+            onSymbolWaitAbort = finish;
+            if (localSignal.aborted) {
+              finish();
+              return;
+            }
+            localSignal.addEventListener('abort', onSymbolWaitAbort, { once: true });
+            Promise.resolve(app.analysisBaseSymbolsReady).then(finish, finish);
+          });
+        } finally {
+          if (onSymbolWaitAbort) localSignal.removeEventListener('abort', onSymbolWaitAbort);
+        }
+        if (!viewCurrent() || localSignal.aborted || routeSignal.aborted) return;
+        activeLoadingBase = baseLabel;
+        if (labelEl) labelEl.textContent = baseLabel;
+      }
+
       if (app.analysisQueries) {
         const snapshot = await app.analysisQueries.snapshot({ signal: localSignal });
         if (!viewCurrent() || localSignal.aborted || routeSignal.aborted) return;
         const res = await app.analysisQueries.decompile(snapshot, addr, { signal: localSignal });
         if (!viewCurrent() || localSignal.aborted || routeSignal.aborted) return;
         if (res.completeness === 'unsupported' || !res.value) {
-          content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+          const reason = res?.status?.reason || '';
+          if (reason.startsWith('function-analysis-unsupported-architecture:') || (!reason && !rowMapper().supported)) {
+            content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('疑似Cへの変換は、いまは ARM64 だけに対応しています。ほかの CPU の命令を ARM64 として読み違えないよう、表示を止めています。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+            return;
+          }
+          renderUnavailablePseudocode(reason);
           return;
         }
         let initialAddr = null;
@@ -2179,6 +2301,10 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       renderPseudocode(res);
     } catch (err) {
       if (cancelledByUser || localSignal.aborted || routeSignal.aborted) return;
+      if (reasonText(err?.message)) {
+        renderUnavailablePseudocode(err.message);
+        return;
+      }
       throw err;
     } finally {
       cleanup();

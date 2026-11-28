@@ -1773,7 +1773,7 @@ export function createAppAnalysisQueryAdapter(app) {
       ) {
         return publish(result.value.decompiler, result.status?.completeness, functionStatus);
       }
-      if (!result?.value?.model) return unsupported(id, 'decompiler-projection-unavailable');
+      if (!result?.value?.model) return unsupported(id, result?.status?.reason || 'decompiler-projection-unavailable');
       const address = addressOf(id) ?? result.value.startAddr ?? result.value.startAddress;
       // Only positive return evidence is forwarded: `false` would force a void
       // return, while an absent fact must leave return inference to the IR.

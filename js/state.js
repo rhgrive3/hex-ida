@@ -20,6 +20,8 @@ const DEFAULTS = {
   selectionStart: -1,    // inclusive row range while picking a range to copy
   selectionEnd: -1,
   theme: 'system',       // 'system' | 'light' | 'dark'
+  symbolsGen: 0,
+  symbolsReady: false,
 };
 
 const FORBIDDEN_STATE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);

@@ -901,6 +901,13 @@ export class App {
      「誰が誰を呼び、誰が何を見ているか」を 1 回だけ走査して作る。
      これがないと、このツールは名前と文字列を眺めるだけの道具に戻ってしまう。 */
 
+  syncSymbolsStore(ready = null) {
+    this.store?.set?.({
+      symbolsGen: this.symbols?.gen ?? 0,
+      ...(ready === null ? {} : { symbolsReady: !!ready }),
+    });
+  }
+
   /** 全体解析の対象になる、active slice内のfile-backed executable regions。 */
   programRegions() {
     const candidates=(this.store.get('regions')||[]).filter((r)=>r?.exec===true && r.size>0n && !r.zerofill);
@@ -937,7 +944,7 @@ export class App {
     const epoch=this.backend.gen;
     if(this.symbolsReady){try{await this.symbolsReady;}catch{/* names are optional */}}
     if(epoch!==this.backend.gen)return null;
-    if(this.symbols===EMPTY_INDEX){this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });this.viewer.setSymbols(this.symbols);}
+    if(this.symbols===EMPTY_INDEX){this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });this.viewer.setSymbols(this.symbols);this.syncSymbolsStore();}
     const sym=this.symbols;
     if(!sym || sym.functionStartsComplete===true || sym.functionDiscovery?.complete===true)return sym;
     const targets=this.programRegions();
@@ -968,6 +975,7 @@ export class App {
     sym.functionStartsComplete=complete;
     sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
     this.viewer.setSymbols(sym);
+    this.syncSymbolsStore();
     void this.persistAnalysisSession(['symbols']);
     return sym;
   }
@@ -1371,6 +1379,7 @@ export class App {
       if (this.notes && this.notes !== EMPTY_NOTES) this.notes.setName(addr, value);
       if (this.symbols && this.symbols !== EMPTY_INDEX) this.symbols.rename(addr, value);
       this.viewer?.setSymbols?.(this.symbols);
+      this.syncSymbolsStore();
       this.updateChrome?.();
       toast(isUndo ? pick('名前の変更を元に戻しました', 'Undid rename') : pick('名前の変更をやり直しました', 'Redid rename'));
       return true;
@@ -1663,6 +1672,7 @@ export class App {
           }
         }
         this.viewer?.setSymbols?.(this.symbols);
+        this.syncSymbolsStore();
       }
 
       if (resume.lastGoal?.text) {
@@ -1831,6 +1841,7 @@ export class App {
     await this.flushDeltaSave();
     this.workspace?.autosave?.();
     this.viewer?.setSymbols?.(this.symbols);
+    this.syncSymbolsStore();
     this.updateChrome?.();
     return {
       ok: true,
@@ -1870,6 +1881,7 @@ export class App {
           try { this.symbols.rename(BigInt(addrKey), ''); } catch { /* ignore */ }
         }
         this.viewer?.setSymbols?.(this.symbols);
+        this.syncSymbolsStore();
       }
       const region = this.store.get('currentRegion');
       this.navigation?.reset?.(region ? this.navigationEntry(region.vmAddr, pick('解析の開始', 'Analysis start')) : null);
@@ -1914,10 +1926,11 @@ export class App {
     closeAllSheets();
     this.sampleOpen=sampleOpen;
     this.detailRefresh=null;
+    this.forgetSemantics(true);
     this.symbols=EMPTY_INDEX;
     this.symbolsReady=null;
     this.viewer.setSymbols(EMPTY_INDEX);
-    this.forgetSemantics(true);
+    this.store.set({ symbolsGen: 0, symbolsReady: false });
     this.store.set({file,fileInfo:info,selectedRow:-1});
     let sliceIndex=-1;
     if (info.slices.length) {
@@ -1992,6 +2005,7 @@ export class App {
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
         for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
         this.viewer.setSymbols(this.symbols);
+        this.syncSymbolsStore();
         this.updateChrome();
       } else {
         this.viewer?.invalidate?.();
@@ -2060,10 +2074,16 @@ export class App {
         // 前回このファイルに付けた名前を戻す（元の名前より優先される）
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
+        this.syncSymbolsStore(true);
         this.updateChrome();
         return true;
       });
-      this.analysisBaseSymbolsReady = baseSymbolsReady.catch(() => false);
+      this.analysisBaseSymbolsReady = baseSymbolsReady.catch(() => {
+        if (epoch === this.backend.gen && this.store.get('sliceIndex') === sliceIndex) {
+          this.syncSymbolsStore(true);
+        }
+        return false;
+      });
       this.symbolsReady = this.analysisBaseSymbolsReady.then((ready) => {
         if (!ready || epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return null;
         // ObjC and whole-binary recognition are intentionally demand-driven.
@@ -2073,6 +2093,8 @@ export class App {
           this.ensureSwift({ priority: 'background' }),
         ]);
       }).catch(() => { /* シンボルがなくても読める */ });
+    } else {
+      this.syncSymbolsStore(true);
     }
   }
 
@@ -2147,6 +2169,7 @@ export class App {
           const added = this.symbols.addNames(model.names, { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.symbols.addFunctions(model.names.map((n) => n.addr), { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.viewer.setSymbols(this.symbols);
+          this.syncSymbolsStore();
           this.updateChrome();
           void this.persistAnalysisSession(['symbols']);
           if (added) {
@@ -2224,6 +2247,7 @@ export class App {
           this.symbols.addNames(names);
           this.symbols.addFunctions(names.map((x) => x.addr));
           this.viewer.setSymbols(this.symbols);
+          this.syncSymbolsStore();
           void this.persistAnalysisSession(['symbols']);
         }
         return model;
@@ -2309,6 +2333,7 @@ export class App {
     this._resetDeltaReadiness();
     this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
+    this.store.set({ symbolsGen: 0, symbolsReady: false });
     this._undoStack.length = 0;
     this._redoStack.length = 0;
     this.notes=EMPTY_NOTES;
