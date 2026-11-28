@@ -40,10 +40,10 @@ Browser / iPad Safari UI (js/ui/, js/viewer/, js/graphview*.js, index.html)
   │  Default route: /code (Code), with one-tap Investigate, GraphView, Omnibox, Clean View, V6 Workbench
   ▼
 Host & Orchestration Layer (js/app.js, js/backend.js, js/worker.js, js/ai/, js/userscript/)
-  │  Strict module boundary -> js/core/hex-engine-bridge.js + js/core/hex-engine-wasm.js
+  │  Strict module boundary -> js/core/hex-engine-bridge.js (internal -> js/core/hex-engine-wasm.js)
   ▼
 Unified Analysis & Execution Engine
-  ├── Freestanding C++20/WASM Engine (wasm/hex_engine.wasm, 62 units, 214 exports, 0 imports)
+  ├── Freestanding C++20/WASM Engine (wasm/hex_engine.wasm, 61 units, 214 exports, 0 imports)
   │     ├── Core: Identity (FNV-1a/digest), Byte Search, Streaming SHA-256
   │     ├── Binary & Targets: ImageStore, String/ELF/Crypto Scanners, ARM64/ARM64e, x86_64, RISC-V64
   │     ├── CFG / IR / Decompiler: CFG, Loops, Resident IR/SSA, IR Optimizer, C Emitter, ARM64 Passes

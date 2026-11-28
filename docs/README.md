@@ -17,9 +17,13 @@
 - [`HEX_MASTER_ARCHITECTURE.md`](HEX_MASTER_ARCHITECTURE.md) — マスターアーキテクチャ仕様・不変条件・情報源優先順位
 - [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md) — アーキテクチャ / フォーマット / マネージド言語の能力サポートマトリクス（`js/platform/capability-maturity.js` の投影）
 - [`HEX_COMPLETION_GOAL.md`](HEX_COMPLETION_GOAL.md) — 現在の品質基準・完成目標・検証要件
+- [`HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md`](HEX_ARM64_POST_ROADMAP_COMPETITIVE_SUPREMACY_ARCHITECTURE.md) — HEX ARM64 競争優位アーキテクチャ仕様
 - [`universal-platform.md`](universal-platform.md) — ユニバーサルバイナリ解析プラットフォーム設計
 - [`universal-binary-foundation.md`](universal-binary-foundation.md) — マルチフォーマットバイナリ基盤・ローダ設計
 - [`machine-effects-prerequisites.md`](machine-effects-prerequisites.md) — Exact MachineEffects 前提契約
+- [`PHASE10_RUNTIME_PROVIDERS_IMPLEMENTATION_GUIDE.md`](PHASE10_RUNTIME_PROVIDERS_IMPLEMENTATION_GUIDE.md) — ランタイムプロバイダ実装ガイド
+- [`PHASE11_MANAGED_FRONTENDS_PLAYBOOK.md`](PHASE11_MANAGED_FRONTENDS_PLAYBOOK.md) — マネージドフロントエンド（WASM / DEX / CIL / JVM）実装ガイド
+- [`PHASE12_README.md`](PHASE12_README.md) — ナレッジ・コラボレーション・パターン・再構築ガイド
 
 ## 解析・デコンパイラ・検証仕様
 
@@ -29,6 +33,10 @@
 - [`SCPA_CONDITIONAL_MODELS.md`](SCPA_CONDITIONAL_MODELS.md) — SCPA 条件モデル定義
 - [`SCPA_FUNCTIONAL_ACCEPTANCE.md`](SCPA_FUNCTIONAL_ACCEPTANCE.md) — SCPA 機能受入基準
 - [`symbolic-proof-optimizer-v8.md`](symbolic-proof-optimizer-v8.md) — シンボリック証明オプティマイザ仕様
+- [`PHASE9_SOLVER_BACKED_VERIFICATION_IMPLEMENTATION_GUIDE.ja.md`](PHASE9_SOLVER_BACKED_VERIFICATION_IMPLEMENTATION_GUIDE.ja.md) — ソルバー検証（Solver-backed Verification）実装ガイド
+- [`PHASE9_SOLVER_BACKEND_ADR.md`](PHASE9_SOLVER_BACKEND_ADR.md) — ADR-0009: ソルバーバックエンド構成・プロバイダ選定
+- [`PHASE9_WORKER_PROMPTS.ja.md`](PHASE9_WORKER_PROMPTS.ja.md) — ソルバー検証モジュール・検証コマンド リファレンス
+- [`design/openjev-boundary-referee.md`](design/openjev-boundary-referee.md) — OpenJev アドバイザリ・境界レフェリー設計
 - [`PUBLIC_COMPETITOR_BENCHMARK.md`](PUBLIC_COMPETITOR_BENCHMARK.md) — 公開ベンチマーク仕様
 
 ## 開発プロセス・互換性ガードレール・CI
@@ -43,6 +51,7 @@
 - [`ai-analyst-ux.md`](ai-analyst-ux.md) — AI アナリスト UX 設計
 - [`ai-integration-contract.md`](ai-integration-contract.md) — AI 統合契約
 - [`ai-quality-gate.md`](ai-quality-gate.md) — AI 品質ゲート
+- [`improving-agent.md`](improving-agent.md) — 自律開発スーパーバイザ（Admin Dev Agent）運用契約
 - [`chatgpt-userscript.md`](chatgpt-userscript.md) — ChatGPT Userscript 連携ガイド
 - [`DISCORD_AUTH_LOCAL_SETUP.md`](DISCORD_AUTH_LOCAL_SETUP.md) — Discord 認証ローカルセットアップ
 - [`DISCORD_AUTH_IMPLEMENTATION_VERIFICATION.md`](DISCORD_AUTH_IMPLEMENTATION_VERIFICATION.md) — Discord 認証実装検証
@@ -52,3 +61,4 @@
 ## リファレンス
 
 - [`SOURCES.md`](SOURCES.md) — 一次技術ソース・外部リファレンス一覧
+- [`解析ツール改善.md.txt`](解析ツール改善.md.txt) — テスト契約維持用リファレンス案内

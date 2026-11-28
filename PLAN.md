@@ -22,7 +22,7 @@ Hex-IDA は、ブラウザおよび iPad Safari 上でネイティブ解析ツ�
 - `g_scratch_arena` は RAII（`ArenaScope`）と `hex_engine_scratch_reset()` で O(1) 回収し、`g_emit_arena` と物理分離することで出力バッファ破壊を防ぐ。
 
 ### Host 境界と Fail-Closed フォールバック
-- **境界**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` は内部エンジンモジュールを直接 import せず、`js/core/hex-engine-bridge.js` および `js/core/hex-engine-wasm.js` を経由する（`npm run module-boundaries:test` で強制）。
+- **境界**: `js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/` は内部エンジンモジュールおよび `js/core/hex-engine-wasm.js` を直接 import せず、`js/core/hex-engine-bridge.js` のみを経由する（`npm run performance:test` 内の `tests/performance/wave6-release-gates.test.mjs` で強制）。
 - **モード解決優先順位**: `opts._engine` > `globalThis.HEX_ENGINE` > `process.env.HEX_ENGINE` > `'auto'`（`'wasm' | 'js' | 'auto'`）。
 - **サイレントフォールバック禁止**: すべての JS フォールバック経路で `js/core/wasm-telemetry.js` の `recordFallback(...)` に構造化理由コードを記録する。
 
