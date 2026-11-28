@@ -30,7 +30,7 @@ async function fetchFixture(name, fixture) {
   const temp = target + `.tmp-${process.pid}`;
   await rm(temp, { force: true });
   const sourcePath = fixture.path.split('/').map(encodeURIComponent).join('/');
-  const url = `https://raw.githubusercontent.com/rhgrive3/hex/${manifest.sourceCommit}/${sourcePath}`;
+  const url = fixture.url || `https://raw.githubusercontent.com/rhgrive3/hex/${manifest.sourceCommit}/${sourcePath}`;
   const response = await fetch(url, { redirect: 'follow' });
   if (!response.ok || !response.body) throw new Error(`${name}: download failed (${response.status})`);
 
