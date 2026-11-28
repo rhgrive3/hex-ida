@@ -563,6 +563,7 @@ const WASM_GENERAL_LIBC_SPECS = {
   realloc: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(uintptr_t)realloc((void *)(uintptr_t)x0, (size_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
   free: { hdr: '<stdlib.h>', ret: 'void', call: 'free((void *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
   exit: { hdr: '<stdlib.h>', ret: 'void', call: 'exit((int)x0)', regs: ['x0'] },
+  _exit: { hdr: '<unistd.h>', ret: 'void', call: '_exit((int)x0)', regs: ['x0'] },
   abort: { hdr: '<stdlib.h>', ret: 'void', call: 'abort()', regs: [] },
   strlen: { hdr: '<string.h>', ret: 'x0', call: '(uint64)strlen((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
   strcpy: { hdr: '<string.h>', ret: 'x0', call: '(uint64)(uintptr_t)strcpy((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
@@ -598,8 +599,96 @@ const WASM_GENERAL_LIBC_SPECS = {
   abs: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)abs((int)x0)', regs: ['x0'], needInt64: true },
   labs: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)labs((long)x0)', regs: ['x0'], needInt64: true },
   qsort: { hdr: '<stdlib.h>', ret: 'void', call: 'qsort((void *)(uintptr_t)x0, (size_t)x1, (size_t)x2, (int (*)(const void *, const void *))(uintptr_t)x3)', regs: ['x0', 'x1', 'x2', 'x3'], needUintptr: true },
-  sprintf: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)sprintf((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1, x2, x3, x4, x5)', regs: ['x0', 'x1', 'x2', 'x3', 'x4', 'x5'], needUintptr: true, needInt64: true },
-  snprintf: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)snprintf((char *)(uintptr_t)x0, (size_t)x1, (const char *)(uintptr_t)x2, x3, x4, x5)', regs: ['x0', 'x1', 'x2', 'x3', 'x4', 'x5'], needUintptr: true, needInt64: true },
+  bsearch: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(uintptr_t)bsearch((const void *)(uintptr_t)x0, (const void *)(uintptr_t)x1, (size_t)x2, (size_t)x3, (int (*)(const void *, const void *))(uintptr_t)x4)', regs: ['x0', 'x1', 'x2', 'x3', 'x4'], needUintptr: true },
+  rand: { hdr: '<stdlib.h>', ret: 'x0', call: '(uint64)(int64_t)rand()', regs: ['x0'], needInt64: true },
+  srand: { hdr: '<stdlib.h>', ret: 'void', call: 'srand((unsigned int)x0)', regs: ['x0'] },
+  time: { hdr: '<time.h>', ret: 'x0', call: '(uint64)time((time_t *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
+  clock: { hdr: '<time.h>', ret: 'x0', call: '(uint64)clock()', regs: ['x0'] },
+  printf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)printf((const char *)(uintptr_t)x0)',
+    regs: ['x0'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 0, kind: 'printf', fn: 'printf', retCast: '(uint64)(int64_t)', fixedPrefix: '(const char *)(uintptr_t)x0', fixedRegs: ['x0'] },
+  },
+  fprintf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)fprintf((FILE *)(uintptr_t)x0, (const char *)(uintptr_t)x1)',
+    regs: ['x0', 'x1'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 1, kind: 'printf', fn: 'fprintf', retCast: '(uint64)(int64_t)', fixedPrefix: '(FILE *)(uintptr_t)x0, (const char *)(uintptr_t)x1', fixedRegs: ['x0', 'x1'] },
+  },
+  sprintf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)sprintf((char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)',
+    regs: ['x0', 'x1'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 1, kind: 'printf', fn: 'sprintf', retCast: '(uint64)(int64_t)', fixedPrefix: '(char *)(uintptr_t)x0, (const char *)(uintptr_t)x1', fixedRegs: ['x0', 'x1'] },
+  },
+  snprintf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)snprintf((char *)(uintptr_t)x0, (size_t)x1, (const char *)(uintptr_t)x2)',
+    regs: ['x0', 'x1', 'x2'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 2, kind: 'printf', fn: 'snprintf', retCast: '(uint64)(int64_t)', fixedPrefix: '(char *)(uintptr_t)x0, (size_t)x1, (const char *)(uintptr_t)x2', fixedRegs: ['x0', 'x1', 'x2'] },
+  },
+  vprintf: { hdr: '<stdio.h>', extraHdrs: ['<stdarg.h>'], ret: 'x0', call: '(uint64)(int64_t)vprintf((const char *)(uintptr_t)x0, *(va_list *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true, needInt64: true },
+  puts: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)puts((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  fputs: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)fputs((const char *)(uintptr_t)x0, (FILE *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true, needInt64: true },
+  putchar: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)putchar((int)x0)', regs: ['x0'], needInt64: true },
+  fputc: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)fputc((int)x0, (FILE *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true, needInt64: true },
+  getchar: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)getchar()', regs: ['x0'], needInt64: true },
+  fgets: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(uintptr_t)fgets((char *)(uintptr_t)x0, (int)x1, (FILE *)(uintptr_t)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true },
+  fread: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)fread((void *)(uintptr_t)x0, (size_t)x1, (size_t)x2, (FILE *)(uintptr_t)x3)', regs: ['x0', 'x1', 'x2', 'x3'], needUintptr: true },
+  fwrite: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)fwrite((const void *)(uintptr_t)x0, (size_t)x1, (size_t)x2, (FILE *)(uintptr_t)x3)', regs: ['x0', 'x1', 'x2', 'x3'], needUintptr: true },
+  fopen: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(uintptr_t)fopen((const char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true },
+  fclose: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)fclose((FILE *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  fflush: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)fflush((FILE *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  fseek: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)fseek((FILE *)(uintptr_t)x0, (long)x1, (int)x2)', regs: ['x0', 'x1', 'x2'], needUintptr: true, needInt64: true },
+  ftell: { hdr: '<stdio.h>', ret: 'x0', call: '(uint64)(int64_t)ftell((FILE *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  scanf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)scanf((const char *)(uintptr_t)x0)',
+    regs: ['x0'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 0, kind: 'scanf', fn: 'scanf', retCast: '(uint64)(int64_t)', fixedPrefix: '(const char *)(uintptr_t)x0', fixedRegs: ['x0'] },
+  },
+  sscanf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)sscanf((const char *)(uintptr_t)x0, (const char *)(uintptr_t)x1)',
+    regs: ['x0', 'x1'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 1, kind: 'scanf', fn: 'sscanf', retCast: '(uint64)(int64_t)', fixedPrefix: '(const char *)(uintptr_t)x0, (const char *)(uintptr_t)x1', fixedRegs: ['x0', 'x1'] },
+  },
+  fscanf: {
+    hdr: '<stdio.h>',
+    ret: 'x0',
+    call: '(uint64)(int64_t)fscanf((FILE *)(uintptr_t)x0, (const char *)(uintptr_t)x1)',
+    regs: ['x0', 'x1'],
+    needUintptr: true,
+    needInt64: true,
+    varargs: { fmtRegIndex: 1, kind: 'scanf', fn: 'fscanf', retCast: '(uint64)(int64_t)', fixedPrefix: '(FILE *)(uintptr_t)x0, (const char *)(uintptr_t)x1', fixedRegs: ['x0', 'x1'] },
+  },
+  perror: { hdr: '<stdio.h>', ret: 'void', call: 'perror((const char *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true },
+  pthread_mutex_lock: { hdr: '<pthread.h>', ret: 'x0', call: '(uint64)(int64_t)pthread_mutex_lock((pthread_mutex_t *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  pthread_mutex_unlock: { hdr: '<pthread.h>', ret: 'x0', call: '(uint64)(int64_t)pthread_mutex_unlock((pthread_mutex_t *)(uintptr_t)x0)', regs: ['x0'], needUintptr: true, needInt64: true },
+  pthread_create: { hdr: '<pthread.h>', ret: 'x0', call: '(uint64)(int64_t)pthread_create((pthread_t *)(uintptr_t)x0, (const pthread_attr_t *)(uintptr_t)x1, (void *(*)(void *))(uintptr_t)x2, (void *)(uintptr_t)x3)', regs: ['x0', 'x1', 'x2', 'x3'], needUintptr: true, needInt64: true },
+  pthread_join: { hdr: '<pthread.h>', ret: 'x0', call: '(uint64)(int64_t)pthread_join((pthread_t)x0, (void **)(uintptr_t)x1)', regs: ['x0', 'x1'], needUintptr: true, needInt64: true },
+  objc_msgSend: { hdr: null, proto: 'extern uint64 objc_msgSend(uint64, uint64, ...);', ret: 'x0', call: 'objc_msgSend(x0, x1)', regs: ['x0', 'x1'] },
+  objc_retain: { hdr: null, proto: 'extern uint64 objc_retain(uint64);', ret: 'x0', call: 'objc_retain(x0)', regs: ['x0'] },
+  objc_release: { hdr: null, proto: 'extern void objc_release(uint64);', ret: 'void', call: 'objc_release(x0)', regs: ['x0'] },
   __ctype_b_loc: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(uintptr_t)__ctype_b_loc()', regs: ['x0'], needUintptr: true },
   __ctype_tolower_loc: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(uintptr_t)__ctype_tolower_loc()', regs: ['x0'], needUintptr: true },
   __ctype_toupper_loc: { hdr: '<ctype.h>', ret: 'x0', call: '(uint64)(uintptr_t)__ctype_toupper_loc()', regs: ['x0'], needUintptr: true },
@@ -622,16 +711,74 @@ const WASM_GENERAL_LIBC_SPECS = {
   exp: { hdr: '<math.h>', ret: 'd0', call: 'exp(d0)', regs: ['d0'] },
 };
 
+const WASM_LIBC_ALIASES = {
+  __isoc99_scanf: 'scanf',
+  __isoc99_sscanf: 'sscanf',
+  __isoc99_fscanf: 'fscanf',
+  __isoc23_scanf: 'scanf',
+  __isoc23_sscanf: 'sscanf',
+  __isoc23_fscanf: 'fscanf',
+  __isoc23_strtol: 'strtol',
+  __isoc23_strtoul: 'strtoul',
+  __isoc23_strtoll: 'strtoll',
+};
+
 function normalizeLibcSymbolName(raw) {
   if (typeof raw !== 'string' || !raw) return null;
   let name = raw.trim();
   const at = name.indexOf('@');
   if (at > 0) name = name.slice(0, at);
+  if (WASM_LIBC_ALIASES[name]) name = WASM_LIBC_ALIASES[name];
   if (WASM_GENERAL_LIBC_SPECS[name]) return name;
   if (name.startsWith('_') && !name.startsWith('__') && WASM_GENERAL_LIBC_SPECS[name.slice(1)]) {
     return name.slice(1);
   }
   return null;
+}
+
+const C_RESERVED_IDENTIFIERS = new Set([
+  'auto', 'break', 'case', 'char', 'const', 'continue', 'default', 'do', 'double',
+  'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long',
+  'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct',
+  'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile', 'while', '_Alignas',
+  '_Alignof', '_Atomic', '_Bool', '_Complex', '_Generic', '_Imaginary', '_Noreturn',
+  '_Static_assert', '_Thread_local', 'bool', 'true', 'false', 'NULL',
+  'uint64', 'int64', 'uint32', 'int32', 'uint16', 'int16', 'uint8', 'int8',
+  'uint64_t', 'int64_t', 'uint32_t', 'int32_t', 'uint16_t', 'int16_t', 'uint8_t', 'int8_t',
+  'uintptr_t', 'intptr_t', 'size_t', 'ssize_t', 'uint128', 'vector128', 'id', 'sp',
+]);
+
+const STANDARD_C_POSIX_DECLARED = new Set([
+  'memchr', 'strtok', 'strtok_r', 'open', 'read', 'write', 'close', 'lseek', 'stat', 'fstat',
+  'tan', 'sin', 'cos', 'log', 'exp', 'atan', 'atan2', 'asin', 'acos', 'sinh', 'cosh', 'tanh',
+  'qsort', 'exit', 'abort', 'system', 'getenv', 'signal', 'raise', 'setjmp', 'longjmp',
+  'isalpha', 'isdigit', 'isspace', 'isalnum', 'toupper', 'tolower',
+  'atoi', 'atol', 'atof', 'strtol', 'strtoul', 'strtoll', 'strtoull', 'strtod', 'strtof',
+  'malloc', 'free', 'calloc', 'realloc', 'memcpy', 'memmove', 'memset', 'memcmp',
+  'strlen', 'strcmp', 'strncmp', 'strcpy', 'strncpy', 'strcat', 'strncat', 'strchr', 'strrchr', 'strstr',
+  'printf', 'fprintf', 'sprintf', 'snprintf', 'puts', 'putchar', 'fputs', 'fgets', 'fopen', 'fclose', 'fread', 'fwrite',
+]);
+
+function sanitizeCallSymbolName(raw, hex, usedNames) {
+  if (typeof raw !== 'string') return null;
+  let name = raw.trim();
+  if (!name) return null;
+  const at = name.indexOf('@');
+  if (at > 0) name = name.slice(0, at);
+  // Strip C++ parameter signature suffix if demangled name was provided
+  const paren = name.indexOf('(');
+  if (paren > 0) name = name.slice(0, paren).trim();
+  name = name.replace(/[^A-Za-z0-9_]/g, '_');
+  if (!name || /^_+$/.test(name)) return null;
+  if (/^[0-9]/.test(name)) name = `fn_${name}`;
+  if (C_RESERVED_IDENTIFIERS.has(name) || usedNames.has(name)) {
+    const candidate = `${name}_fn`;
+    name = (C_RESERVED_IDENTIFIERS.has(candidate) || usedNames.has(candidate))
+      ? `${name}_${hex}`
+      : candidate;
+  }
+  usedNames.add(name);
+  return name;
 }
 
 const ELF64_INFO_CACHE = new WeakMap();
@@ -696,7 +843,25 @@ function parseElf64SectionsAndSyms(fileBytes) {
       }
     }
   }
-  const info = { secs, syms };
+  const relativeRelocs = [];
+  for (const sec of secs) {
+    if (sec.type === 4) { // SHT_RELA
+      const entsize = sec.entsize >= 24 ? sec.entsize : 24;
+      const count = Math.floor(Number(sec.size) / entsize);
+      const base = Number(sec.offset);
+      for (let i = 0; i < count; i += 1) {
+        const ep = base + i * entsize;
+        if (ep + 24 > fileBytes.length) break;
+        const rOffset = dv.getBigUint64(ep, true);
+        const rInfo = dv.getBigUint64(ep + 8, true);
+        if ((rInfo & 0xFFFFFFFFn) === 1027n) { // R_AARCH64_RELATIVE
+          const rAddend = dv.getBigInt64(ep + 16, true);
+          relativeRelocs.push({ offset: rOffset, addend: rAddend });
+        }
+      }
+    }
+  }
+  const info = { secs, syms, relativeRelocs };
   ELF64_INFO_CACHE.set(fileBytes, info);
   return info;
 }
@@ -766,33 +931,704 @@ function readBinaryBytesAt(addr, len, { readBytes, fileBytes, sections }) {
   return null;
 }
 
-function readCStringFromElf(addr, fileBytes, elfInfo) {
-  if (!elfInfo || addr <= 0n) return null;
-  for (const sec of elfInfo.secs) {
-    if (sec.type === 8 || sec.size <= 0n || sec.addr <= 0n) continue;
-    if (sec.name !== '.rodata' && !sec.name.startsWith('.rodata.')) continue;
-    if (addr >= sec.addr && addr < sec.addr + sec.size) {
-      const off = Number(sec.offset + (addr - sec.addr));
-      const maxEnd = Math.min(fileBytes.length, Number(sec.offset + sec.size), off + 256);
-      let end = off;
-      while (end < maxEnd && fileBytes[end] !== 0) {
-        const ch = fileBytes[end];
-        if (ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && (ch < 0x20 || ch > 0x7e)) return null;
-        end++;
-      }
-      if (end < maxEnd && fileBytes[end] === 0) {
-        let s = '';
-        for (let k = off; k < end; k++) {
-          const ch = fileBytes[k];
-          if (ch === 0x5c) s += '\\\\';
-          else if (ch === 0x22) s += '\\"';
-          else if (ch === 0x0a) s += '\\n';
-          else if (ch === 0x0d) s += '\\r';
-          else if (ch === 0x09) s += '\\t';
-          else s += String.fromCharCode(ch);
+function formatCStringBytes(bytes, startOff, maxEnd, escape = true) {
+  let end = startOff;
+  while (end < maxEnd && bytes[end] !== 0) {
+    const ch = bytes[end];
+    if (ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && (ch < 0x20 || ch > 0x7e)) return null;
+    end++;
+  }
+  if (end >= maxEnd || bytes[end] !== 0) return null;
+  let s = '';
+  for (let k = startOff; k < end; k++) {
+    const ch = bytes[k];
+    if (!escape) {
+      s += String.fromCharCode(ch);
+    } else if (ch === 0x5c) s += '\\\\';
+    else if (ch === 0x22) s += '\\"';
+    else if (ch === 0x0a) s += '\\n';
+    else if (ch === 0x0d) s += '\\r';
+    else if (ch === 0x09) s += '\\t';
+    else s += String.fromCharCode(ch);
+  }
+  return s;
+}
+
+function isStringDataSectionName(name) {
+  if (typeof name !== 'string' || !name) return false;
+  return (
+    name === '.rodata'
+    || name.startsWith('.rodata.')
+    || name === '__cstring'
+    || name === '__const'
+    || name === '__data'
+    || name === '__cfstring'
+    || name === '.rdata'
+  );
+}
+
+function readCStringFromBinary(addr, { fileBytes, elfInfo, sections, readBytes, escape = true } = {}) {
+  if (addr <= 0n) return null;
+  if (elfInfo && fileBytes instanceof Uint8Array) {
+    for (const sec of elfInfo.secs) {
+      if (sec.type === 8 || sec.size <= 0n || sec.addr <= 0n) continue;
+      if (!isStringDataSectionName(sec.name)) continue;
+      if (addr >= sec.addr && addr < sec.addr + sec.size) {
+        const off = Number(sec.offset + (addr - sec.addr));
+        const maxEnd = Math.min(fileBytes.length, Number(sec.offset + sec.size), off + 256);
+        if (off >= 0 && off < maxEnd) {
+          return formatCStringBytes(fileBytes, off, maxEnd, escape);
         }
-        return s;
       }
+    }
+    return null;
+  }
+  if (fileBytes instanceof Uint8Array && Array.isArray(sections)) {
+    for (let i = 0; i < sections.length; i += 1) {
+      const sec = sections[i];
+      if (!sec || !isStringDataSectionName(sec.name)) continue;
+      let start, size, foff;
+      try {
+        start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
+        size = BigInt(sec.size ?? 0);
+        foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
+      } catch {
+        continue;
+      }
+      if (size <= 0n || foff == null || addr < start || addr >= start + size) continue;
+      const off = Number(foff + (addr - start));
+      const maxEnd = Math.min(fileBytes.length, Number(foff + size), off + 256);
+      if (off >= 0 && off < maxEnd) {
+        return formatCStringBytes(fileBytes, off, maxEnd, escape);
+      }
+    }
+  }
+  if (typeof readBytes === 'function') {
+    try {
+      const raw = readBytes(addr, 256);
+      if (raw && raw.length > 0) {
+        const u8 = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+        return formatCStringBytes(u8, 0, u8.length, escape);
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function unescapeCStringLiteral(lit) {
+  let out = '';
+  for (let i = 0; i < lit.length; i += 1) {
+    if (lit[i] === '\\' && i + 1 < lit.length) {
+      const nxt = lit[i + 1];
+      i += 1;
+      if (nxt === 'n') out += '\n';
+      else if (nxt === 'r') out += '\r';
+      else if (nxt === 't') out += '\t';
+      else if (nxt === '\\') out += '\\';
+      else if (nxt === '"') out += '"';
+      else out += nxt;
+    } else {
+      out += lit[i];
+    }
+  }
+  return out;
+}
+
+function parseFormatSpecifiers(fmt, kind, fmtRegIndex) {
+  const args = [];
+  const regs = [];
+  let needUintptr = false;
+  let gi = fmtRegIndex + 1;
+  let fi = 0;
+  let i = 0;
+  while (i < fmt.length) {
+    if (fmt[i] !== '%') {
+      i += 1;
+      continue;
+    }
+    i += 1;
+    if (i >= fmt.length) break;
+    if (fmt[i] === '%') {
+      i += 1;
+      continue;
+    }
+    if (kind === 'scanf') {
+      let suppressed = false;
+      if (fmt[i] === '*') {
+        suppressed = true;
+        i += 1;
+      }
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i += 1;
+      while (i < fmt.length && 'hljztL'.includes(fmt[i])) i += 1;
+      if (i < fmt.length) {
+        const conv = fmt[i];
+        i += 1;
+        if (conv === '[') {
+          if (i < fmt.length && fmt[i] === '^') i += 1;
+          if (i < fmt.length && fmt[i] === ']') i += 1;
+          while (i < fmt.length && fmt[i] !== ']') i += 1;
+          if (i < fmt.length) i += 1;
+        }
+        if (!suppressed && gi <= 7) {
+          args.push(`(void *)(uintptr_t)x${gi}`);
+          regs.push(`x${gi}`);
+          needUintptr = true;
+          gi += 1;
+        }
+      }
+      continue;
+    }
+    // printf family
+    while (i < fmt.length && "-+ #0'".includes(fmt[i])) i += 1;
+    if (i < fmt.length && fmt[i] === '*') {
+      if (gi <= 7) {
+        args.push(`(int)x${gi}`);
+        regs.push(`x${gi}`);
+        gi += 1;
+      }
+      i += 1;
+    } else {
+      while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i += 1;
+    }
+    if (i < fmt.length && fmt[i] === '.') {
+      i += 1;
+      if (i < fmt.length && fmt[i] === '*') {
+        if (gi <= 7) {
+          args.push(`(int)x${gi}`);
+          regs.push(`x${gi}`);
+          gi += 1;
+        }
+        i += 1;
+      } else {
+        while (i < fmt.length && fmt[i] >= '0' && fmt[i] <= '9') i += 1;
+      }
+    }
+    let lenMod = '';
+    while (i < fmt.length && 'hljztL'.includes(fmt[i])) {
+      lenMod += fmt[i];
+      i += 1;
+    }
+    if (i >= fmt.length) break;
+    const conv = fmt[i];
+    i += 1;
+    if ('fFeEgGaA'.includes(conv)) {
+      if (fi <= 7) {
+        args.push(`d${fi}`);
+        regs.push(`d${fi}`);
+        fi += 1;
+      }
+    } else if (conv === 's') {
+      if (gi <= 7) {
+        args.push(`(const char *)(uintptr_t)x${gi}`);
+        regs.push(`x${gi}`);
+        needUintptr = true;
+        gi += 1;
+      }
+    } else if (conv === 'p') {
+      if (gi <= 7) {
+        args.push(`x${gi}`);
+        regs.push(`x${gi}`);
+        gi += 1;
+      }
+    } else if ('diouxXc'.includes(conv)) {
+      if (gi <= 7) {
+        const isWide = lenMod.includes('l') || lenMod.includes('z') || lenMod.includes('j') || lenMod.includes('t');
+        args.push(isWide ? `x${gi}` : `(int)x${gi}`);
+        regs.push(`x${gi}`);
+        gi += 1;
+      }
+    } else if (conv === 'n') {
+      if (gi <= 7) {
+        args.push(`(int *)(uintptr_t)x${gi}`);
+        regs.push(`x${gi}`);
+        needUintptr = true;
+        gi += 1;
+      }
+    }
+  }
+  return { args, regs, needUintptr };
+}
+
+function resolveFormatStringBeforeLine(lines, lineIdx, fmtRegIndex, binaryCtx) {
+  const regName = `x${fmtRegIndex}`;
+  const assignRe = new RegExp(`^\\s*${regName}\\s*=\\s*(.+);\\s*$`);
+  const stopLine = Math.max(0, lineIdx - 16);
+  for (let i = lineIdx - 1; i >= stopLine; i -= 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (trimmed === '{' || trimmed === '}' || trimmed.startsWith('return ') || trimmed.startsWith('goto ')) break;
+    const m = trimmed.match(assignRe);
+    if (!m) {
+      if (trimmed.includes('sub_') && trimmed.includes('(')) break;
+      continue;
+    }
+    const rhs = m[1].trim();
+    const litM = rhs.match(/"((?:\\.|[^"\\])*)"/);
+    if (litM) return unescapeCStringLiteral(litM[1]);
+    const globM = rhs.match(/(?:__hex_)?global_([0-9A-Fa-f]+)(?:_buf)?\b/);
+    if (globM) {
+      const s = readCStringFromBinary(BigInt(`0x${globM[1]}`), { ...binaryCtx, escape: false });
+      if (s != null) return s;
+    }
+    const hexM = rhs.match(/\b0x([0-9A-Fa-f]+)(?:ULL|UL|LL|U|L)?\b/);
+    if (hexM) {
+      const s = readCStringFromBinary(BigInt(`0x${hexM[1]}`), { ...binaryCtx, escape: false });
+      if (s != null) return s;
+    }
+    break;
+  }
+  return null;
+}
+
+function inferCallerDefinedArgRegs(lines, lineIdx) {
+  let maxInt = -1;
+  let maxFp = -1;
+  const stopLine = Math.max(0, lineIdx - 16);
+  for (let i = lineIdx - 1; i >= stopLine; i -= 1) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    if (
+      trimmed === '{'
+      || trimmed === '}'
+      || trimmed.startsWith('return ')
+      || trimmed.startsWith('goto ')
+      || /^[A-Za-z_][A-Za-z0-9_]*:\s*$/.test(trimmed)
+    ) {
+      break;
+    }
+    // Stop at a prior call statement
+    if (/\b(?:sub_[0-9A-Fa-f]+|[A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*;$/.test(trimmed) && !trimmed.includes('__hex_')) {
+      break;
+    }
+    const xm = trimmed.match(/^x([0-7])\s*=/);
+    if (xm) {
+      const k = Number(xm[1]);
+      if (k > maxInt) maxInt = k;
+      continue;
+    }
+    const dm = trimmed.match(/^d([0-7])\s*=/);
+    if (dm) {
+      const k = Number(dm[1]);
+      if (k > maxFp) maxFp = k;
+    }
+  }
+  return {
+    intCount: maxInt >= 0 ? maxInt + 1 : 0,
+    fpCount: maxFp >= 0 ? maxFp + 1 : 0,
+    found: maxInt >= 0 || maxFp >= 0,
+  };
+}
+
+function scanArm64EntryArgRegs(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 4) return null;
+  const wordCount = Math.min(32, Math.floor(bytes.length / 4));
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let writtenInt = 0;
+  let readInt = 0;
+  let writtenFp = 0;
+  let readFp = 0;
+  let decoded = 0;
+
+  const markReadInt = (r) => {
+    if (r >= 0 && r <= 7 && (writtenInt & (1 << r)) === 0) readInt |= (1 << r);
+  };
+  const markWriteInt = (r) => {
+    if (r >= 0 && r <= 7) writtenInt |= (1 << r);
+  };
+  const markReadFp = (r) => {
+    if (r >= 0 && r <= 7 && (writtenFp & (1 << r)) === 0) readFp |= (1 << r);
+  };
+  const markWriteFp = (r) => {
+    if (r >= 0 && r <= 7) writtenFp |= (1 << r);
+  };
+
+  for (let i = 0; i < wordCount; i += 1) {
+    const w = dv.getUint32(i * 4, true) >>> 0;
+    if (w === 0 || w === 0xFFFFFFFF) break;
+    // NOP / PAC / BTI hints
+    if (((w & 0xFFFFF01F) >>> 0) === 0xD503201F) {
+      decoded += 1;
+      continue;
+    }
+    // BR / BRAA / BRAB / BRAAZ / BRABZ / BLR / BLRAA* / unconditional B:
+    // If reached before any x0..x7 / d0..d7 read, this is a .plt stub, Mach-O __stubs,
+    // or tail-call thunk rather than a proven 0-argument function body.
+    if (
+      ((w & 0xFFFFFC1F) >>> 0) === 0xD61F0000
+      || ((w & 0xFFFFF81F) >>> 0) === 0xD61F081F
+      || ((w & 0xFFFFF800) >>> 0) === 0xD71F0800
+      || ((w & 0xFFFFFC1F) >>> 0) === 0xD63F0000
+      || ((w & 0xFFFFF81F) >>> 0) === 0xD63F081F
+      || ((w & 0xFFFFF800) >>> 0) === 0xD73F0800
+      || ((w & 0xFC000000) >>> 0) === 0x14000000
+    ) {
+      if (readInt === 0 && readFp === 0) return null;
+      decoded += 1;
+      break;
+    }
+    // RET / RETAA / RETAB / BL
+    if (
+      w === 0xD65F03C0
+      || w === 0xD65F0BFF
+      || w === 0xD65F0FFF
+      || ((w & 0xFC000000) >>> 0) === 0x94000000
+    ) {
+      decoded += 1;
+      break;
+    }
+    const rd = w & 0x1F;
+    const rn = (w >>> 5) & 0x1F;
+    const rm = (w >>> 16) & 0x1F;
+    const ra = (w >>> 10) & 0x1F;
+    const op0 = (w >>> 25) & 0x0F;
+
+    // 1. PC-rel ADR / ADRP
+    if ((op0 & 0x0E) === 0x08 && ((w >>> 24) & 0x1F) === 0x10) {
+      markWriteInt(rd);
+      decoded += 1;
+      continue;
+    }
+    // 2. Data processing - Immediate
+    if ((op0 & 0x0E) === 0x08) {
+      const op23_25 = (w >>> 23) & 0x07;
+      if (op23_25 === 2 || op23_25 === 3) {
+        // ADD/ADDS/SUB/SUBS (imm): Rn=31 is SP
+        markReadInt(rn);
+        markWriteInt(rd);
+        decoded += 1;
+        continue;
+      }
+      if (op23_25 === 4) {
+        // Logical (imm): ORR/AND/EOR/ANDS
+        markReadInt(rn);
+        markWriteInt(rd);
+        decoded += 1;
+        continue;
+      }
+      if (op23_25 === 5) {
+        // Move wide (MOVN/MOVZ/MOVK)
+        const opc = (w >>> 29) & 0x03;
+        if (opc === 3) markReadInt(rd); // MOVK reads destination
+        markWriteInt(rd);
+        decoded += 1;
+        continue;
+      }
+      if (op23_25 === 6 || op23_25 === 7) {
+        // Bitfield / Extract
+        markReadInt(rn);
+        if (op23_25 === 7) markReadInt(rm);
+        markWriteInt(rd);
+        decoded += 1;
+        continue;
+      }
+    }
+    // 3. Branches: CBZ/CBNZ/TBZ/TBNZ
+    if ((op0 & 0x0E) === 0x0A) {
+      const top = (w >>> 24) & 0x7F;
+      if (top === 0x34 || top === 0x35 || top === 0x36 || top === 0x37) {
+        markReadInt(rd);
+        decoded += 1;
+        continue;
+      }
+      decoded += 1;
+      continue;
+    }
+    // 4. Loads and Stores
+    if ((op0 & 0x05) === 0x04) {
+      const isFp = ((w >>> 26) & 1) === 1;
+      const op28_29 = (w >>> 28) & 0x03;
+      const op23_25 = (w >>> 23) & 0x07;
+      // LDP / STP
+      if ((op28_29 === 2) && (op23_25 <= 3 || op23_25 === 5)) {
+        const isLoad = ((w >>> 22) & 1) === 1;
+        const rt2 = (w >>> 10) & 0x1F;
+        markReadInt(rn);
+        if (isLoad) {
+          if (isFp) { markWriteFp(rd); markWriteFp(rt2); }
+          else { markWriteInt(rd); markWriteInt(rt2); }
+        } else {
+          if (isFp) { markReadFp(rd); markReadFp(rt2); }
+          else { markReadInt(rd); markReadInt(rt2); }
+        }
+        decoded += 1;
+        continue;
+      }
+      // LDR/STR (imm/reg/unscaled)
+      if (op28_29 === 3) {
+        const opc = (w >>> 22) & 0x03;
+        const isStore = opc === 0;
+        markReadInt(rn);
+        if (isStore) {
+          if (isFp) markReadFp(rd);
+          else markReadInt(rd);
+        } else {
+          if (isFp) markWriteFp(rd);
+          else markWriteInt(rd);
+        }
+        decoded += 1;
+        continue;
+      }
+    }
+    // 5. Data processing - Register
+    if ((op0 & 0x07) === 0x05) {
+      const op21_24 = (w >>> 21) & 0x0F;
+      const op28 = (w >>> 28) & 1;
+      if (op28 === 1 && (op21_24 & 0x08) === 0x08) {
+        // 3-source (MADD/MSUB/SMADDL/UMADDL)
+        markReadInt(rn);
+        markReadInt(rm);
+        markReadInt(ra);
+        markWriteInt(rd);
+      } else {
+        // Logical, ADD/SUB shifted/extended, CSEL, UDIV/SDIV, LSLV/LSRV/ASRV
+        markReadInt(rn);
+        markReadInt(rm);
+        markWriteInt(rd);
+      }
+      decoded += 1;
+      continue;
+    }
+    // 6. Scalar FP data processing
+    if ((op0 & 0x07) === 0x07 && ((w >>> 24) & 0x1F) === 0x1E) {
+      const bit21 = (w >>> 21) & 1;
+      const op16_20 = (w >>> 16) & 0x1F;
+      const op10_15 = (w >>> 10) & 0x3F;
+      if (bit21 === 1 && (op10_15 & 0x03) === 0) {
+        // Conversion between FP and Int
+        const opcode = (op16_20 >>> 0) & 0x07;
+        if (opcode === 2 || opcode === 3 || opcode === 7) {
+          // SCVTF / UCVTF / FMOV (gp -> fp)
+          markReadInt(rn);
+          markWriteFp(rd);
+        } else {
+          // FCVTZS / FCVTZU / FMOV (fp -> gp)
+          markReadFp(rn);
+          markWriteInt(rd);
+        }
+      } else if (bit21 === 1 && (op10_15 & 0x0F) === 0x08) {
+        // FCMP
+        markReadFp(rn);
+        if ((rd & 0x08) === 0) markReadFp(rm);
+      } else if (bit21 === 1 && (op10_15 & 0x03) === 0x02) {
+        // 2-source FP arithmetic (FADD/FSUB/FMUL/FDIV)
+        markReadFp(rn);
+        markReadFp(rm);
+        markWriteFp(rd);
+      } else {
+        // 1-source FP (FMOV/FABS/FNEG/FSQRT/FCVT)
+        markReadFp(rn);
+        markWriteFp(rd);
+      }
+      decoded += 1;
+      continue;
+    }
+    decoded += 1;
+  }
+
+  if (decoded === 0) return null;
+  let intCount = 0;
+  for (let r = 0; r < 8; r += 1) {
+    if ((readInt & (1 << r)) !== 0) intCount = r + 1;
+  }
+  let fpCount = 0;
+  for (let r = 0; r < 8; r += 1) {
+    if ((readFp & (1 << r)) !== 0) fpCount = r + 1;
+  }
+  return { intCount, fpCount };
+}
+
+function extractIndirectBranchTableVas(words, baseAddr) {
+  if (!words || typeof words.length !== 'number' || words.length === 0) return [];
+  let baseAddrBig;
+  try {
+    baseAddrBig = BigInt(baseAddr ?? 0n);
+  } catch {
+    return [];
+  }
+  const prioritized = [];
+  const candidates = [];
+  const count = words.length >>> 0;
+  for (let i = 0; i < count; i += 1) {
+    const w = words[i] >>> 0;
+    const isBr = ((w & 0xFFFFFC1F) >>> 0) === 0xD61F0000
+      || ((w & 0xFFFFF81F) >>> 0) === 0xD61F081F
+      || ((w & 0xFFFFF800) >>> 0) === 0xD71F0800;
+    if (!isBr) continue;
+    const start = Math.max(0, i - 24);
+    const adrpPage = new Map();
+    const regVa = new Map();
+    for (let k = start; k < i; k += 1) {
+      const iw = words[k] >>> 0;
+      const ipc = baseAddrBig + BigInt(k * 4);
+      if (((iw & 0x9F000000) >>> 0) === 0x90000000) {
+        const rd = iw & 31;
+        const immhi = (iw >>> 5) & 0x7FFFF;
+        const immlo = (iw >>> 29) & 3;
+        const imm21 = (immhi << 2) | immlo;
+        const s21 = (imm21 & 0x100000) !== 0 ? (imm21 - 0x200000) : imm21;
+        const page = (ipc & ~0xFFFn) + (BigInt(s21) << 12n);
+        adrpPage.set(rd, page);
+        regVa.set(rd, page);
+      } else if (((iw & 0x9F000000) >>> 0) === 0x10000000) {
+        const rd = iw & 31;
+        const immhi = (iw >>> 5) & 0x7FFFF;
+        const immlo = (iw >>> 29) & 3;
+        const imm21 = (immhi << 2) | immlo;
+        const s21 = (imm21 & 0x100000) !== 0 ? (imm21 - 0x200000) : imm21;
+        const va = ipc + BigInt(s21);
+        regVa.set(rd, va);
+        candidates.push(va);
+      } else if (
+        ((iw & 0x1F800000) >>> 0) === 0x11000000
+        && ((iw >>> 30) & 1) === 0
+        && ((iw >>> 29) & 1) === 0
+      ) {
+        const rd = iw & 31;
+        const rn = (iw >>> 5) & 31;
+        const sh = (iw >>> 22) & 1;
+        const imm = BigInt(((iw >>> 10) & 0xFFF) << (sh ? 12 : 0));
+        if (adrpPage.has(rn)) {
+          const va = adrpPage.get(rn) + imm;
+          regVa.set(rd, va);
+          candidates.push(va);
+        }
+      } else if (((iw & 0x3B200C00) >>> 0) === 0x38200800 && ((iw >>> 26) & 1) === 0) {
+        const rn = (iw >>> 5) & 31;
+        if (regVa.has(rn)) {
+          prioritized.push(regVa.get(rn));
+        }
+      }
+    }
+    for (const va of adrpPage.values()) candidates.push(va);
+  }
+  const seen = new Set();
+  const out = [];
+  for (const va of [...prioritized, ...candidates]) {
+    const key = va.toString(16);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(va);
+    }
+  }
+  return out;
+}
+
+function findRodataSlice({ fileBytes, sections, readBytes, words, baseAddr }) {
+  const MAX_RODATA_BYTES = 256 * 1024;
+  const targetVas = extractIndirectBranchTableVas(words, baseAddr);
+  const elfInfo = parseElf64SectionsAndSyms(fileBytes);
+  if (elfInfo && fileBytes instanceof Uint8Array) {
+    const buildElfSlice = (sec, focusVa) => {
+      if (!sec || sec.type === 8 || sec.size <= 0n || sec.addr <= 0n) return null;
+      let baseDelta = 0n;
+      if (focusVa != null && Number(sec.size) > MAX_RODATA_BYTES && focusVa > sec.addr) {
+        const delta = focusVa - sec.addr;
+        baseDelta = delta > 4096n ? ((delta - 4096n) & ~0xFFFn) : 0n;
+      }
+      const sliceVaLo = sec.addr + baseDelta;
+      const off = Number(sec.offset + baseDelta);
+      const avail = Number(sec.size - baseDelta);
+      const len = Math.min(MAX_RODATA_BYTES, avail, Math.max(0, fileBytes.length - off));
+      if (off < 0 || len <= 0) return null;
+      const sliceVaHi = sliceVaLo + BigInt(len);
+      let sliceBytes = fileBytes.subarray(off, off + len);
+      const relocs = elfInfo.relativeRelocs;
+      if (Array.isArray(relocs) && relocs.length > 0) {
+        let writable = null;
+        let sdv = null;
+        for (const rel of relocs) {
+          if (rel.offset >= sliceVaLo && rel.offset + 8n <= sliceVaHi) {
+            if (!writable) {
+              writable = new Uint8Array(len);
+              writable.set(sliceBytes);
+              sdv = new DataView(writable.buffer, writable.byteOffset, writable.byteLength);
+            }
+            const relOff = Number(rel.offset - sliceVaLo);
+            if (relOff >= 0 && relOff + 8 <= len) {
+              sdv.setBigInt64(relOff, rel.addend, true);
+            }
+          }
+        }
+        if (writable) sliceBytes = writable;
+      }
+      return { vaLo: sliceVaLo, vaHi: sliceVaHi, bytes: sliceBytes };
+    };
+
+    for (const tva of targetVas) {
+      const matched = elfInfo.secs.find((s) => s.type !== 8 && s.size > 0n && s.addr > 0n && tva >= s.addr && tva < s.addr + s.size);
+      if (matched) {
+        const res = buildElfSlice(matched, tva);
+        if (res) return res;
+      }
+    }
+
+    const exact = elfInfo.secs.find((s) => s.name === '.rodata' && s.type !== 8 && s.size > 0n && s.addr > 0n);
+    const sec = exact || elfInfo.secs.find((s) => s.name.startsWith('.rodata') && s.type !== 8 && s.size > 0n && s.addr > 0n);
+    if (sec) {
+      const res = buildElfSlice(sec, null);
+      if (res) return res;
+    }
+  }
+  if (Array.isArray(sections)) {
+    const readGenericSec = (sec, focusVa) => {
+      if (!sec) return null;
+      let start, size, foff;
+      try {
+        start = BigInt(sec.address ?? sec.vmAddr ?? sec.addr ?? 0);
+        size = BigInt(sec.size ?? 0);
+        foff = sec.fileOffset != null ? BigInt(sec.fileOffset) : (sec.offset != null ? BigInt(sec.offset) : null);
+      } catch {
+        return null;
+      }
+      if (size <= 0n || start <= 0n) return null;
+      let baseDelta = 0n;
+      if (focusVa != null && Number(size) > MAX_RODATA_BYTES && focusVa > start) {
+        const delta = focusVa - start;
+        baseDelta = delta > 4096n ? ((delta - 4096n) & ~0xFFFn) : 0n;
+      }
+      const sliceStart = start + baseDelta;
+      const take = Math.min(MAX_RODATA_BYTES, Number(size - baseDelta));
+      if (fileBytes instanceof Uint8Array && foff != null) {
+        const off = Number(foff + baseDelta);
+        const len = Math.min(take, Math.max(0, fileBytes.length - off));
+        if (off >= 0 && len > 0) {
+          return { vaLo: sliceStart, vaHi: sliceStart + BigInt(len), bytes: fileBytes.subarray(off, off + len) };
+        }
+      }
+      if (typeof readBytes === 'function') {
+        try {
+          const raw = readBytes(sliceStart, take);
+          if (raw && raw.length > 0) {
+            const u8 = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+            return { vaLo: sliceStart, vaHi: sliceStart + BigInt(u8.length), bytes: u8 };
+          }
+        } catch {}
+      }
+      return null;
+    };
+
+    for (const tva of targetVas) {
+      const matched = sections.find((s) => {
+        if (!s) return false;
+        try {
+          const start = BigInt(s.address ?? s.vmAddr ?? s.addr ?? 0);
+          const size = BigInt(s.size ?? 0);
+          return size > 0n && start > 0n && tva >= start && tva < start + size;
+        } catch {
+          return false;
+        }
+      });
+      if (matched) {
+        const res = readGenericSec(matched, tva);
+        if (res) return res;
+      }
+    }
+
+    const priorityNames = ['.rodata', '.data.rel.ro', '__const', '__text'];
+    for (const targetName of priorityNames) {
+      const sec = sections.find((s) => s && (s.name === targetName || (targetName === '.rodata' && typeof s.name === 'string' && s.name.startsWith('.rodata.'))));
+      const res = readGenericSec(sec, null);
+      if (res) return res;
     }
   }
   return null;
@@ -800,17 +1636,32 @@ function readCStringFromElf(addr, fileBytes, elfInfo) {
 
 function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
   const isGeneral = text.includes('/* arguments unknown */') || text.includes('__hex_global_') || text.includes('static uint64 global_') || (typeof symbolFor === 'function' && text.includes('uint64 x0 = '));
-  if (!isGeneral) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1 };
+  if (!isGeneral) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1, hasUnprovenCallArgs: false };
 
   let out = text;
   const headers = new Set();
   const extraRegs = new Set();
+  const extraProtos = new Set();
   let needUintptr = false;
   let needInt64 = false;
   let needUint8 = false;
   let changed = false;
+  let hasUnprovenCallArgs = false;
+  const elfInfoShared = parseElf64SectionsAndSyms(fileBytes);
+  const binaryCtx = { fileBytes, elfInfo: elfInfoShared, sections, readBytes };
 
-  // 1. Resolve sub_<HEX> callees against libc symbols via symbolFor
+  const stripDummyProto = (codeStr, hex) => {
+    let res = codeStr;
+    const protoLine = `uint64 sub_${hex} (__HEX_ANY_ARGS);\n`;
+    if (res.includes(protoLine)) {
+      while (res.startsWith(protoLine)) res = res.slice(protoLine.length);
+      const nlProto = `\n${protoLine}`;
+      while (res.includes(nlProto)) res = res.replaceAll(nlProto, '\n');
+    }
+    return res;
+  };
+
+  // 1. Resolve sub_<HEX> callees against libc/runtime symbols via symbolFor (with varargs format parsing)
   if (typeof symbolFor === 'function' && out.includes('sub_')) {
     const resolvedHexes = new Map();
     const callRe = /sub_([0-9A-Fa-f]+)\(\/\* arguments unknown \*\/\)/g;
@@ -825,25 +1676,60 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
     }
     if (resolvedHexes.size > 0) {
       changed = true;
+      const outerIsVoid = /^void\s+[A-Za-z_][A-Za-z0-9_]*\(/m.test(out);
+      const voidTailRet = outerIsVoid ? 'return;' : 'return 0;';
       for (const [hex, spec] of resolvedHexes.entries()) {
-        headers.add(spec.hdr);
+        if (spec.hdr) headers.add(spec.hdr);
+        if (Array.isArray(spec.extraHdrs)) {
+          for (const eh of spec.extraHdrs) headers.add(eh);
+        }
+        if (spec.proto) extraProtos.add(spec.proto);
         if (spec.needUintptr) needUintptr = true;
         if (spec.needInt64) needInt64 = true;
         for (const r of spec.regs) extraRegs.add(r);
-        // Remove dummy prototype line
-        const protoLine = `uint64 sub_${hex} (__HEX_ANY_ARGS);\n`;
-        if (out.includes(protoLine)) {
-          while (out.startsWith(protoLine)) out = out.slice(protoLine.length);
-          const nlProto = `\n${protoLine}`;
-          while (out.includes(nlProto)) out = out.replaceAll(nlProto, '\n');
-        }
-        // Rewrite `x0 = sub_HEX(/* arguments unknown */);`
+        out = stripDummyProto(out, hex);
+
         const bareCall = `sub_${hex}(/* arguments unknown */);`;
         const assignCall = `x0 = ${bareCall}`;
         const retCall = `return ${bareCall}`;
-        if (spec.ret === 'void') {
+
+        if (spec.varargs) {
+          const va = spec.varargs;
+          const outLines = out.split('\n');
+          for (let li = 0; li < outLines.length; li += 1) {
+            if (!outLines[li].includes(bareCall)) continue;
+            const fmt = resolveFormatStringBeforeLine(outLines, li, va.fmtRegIndex, binaryCtx);
+            let vaArgs = [];
+            if (fmt != null) {
+              const parsed = parseFormatSpecifiers(fmt, va.kind, va.fmtRegIndex);
+              vaArgs = parsed.args;
+              if (parsed.needUintptr) needUintptr = true;
+              for (const r of parsed.regs) extraRegs.add(r);
+            } else {
+              hasUnprovenCallArgs = true;
+              const inferred = inferCallerDefinedArgRegs(outLines, li);
+              for (let k = va.fmtRegIndex + 1; k < inferred.intCount; k += 1) {
+                vaArgs.push(`x${k}`);
+                extraRegs.add(`x${k}`);
+              }
+              for (let f = 0; f < inferred.fpCount; f += 1) {
+                vaArgs.push(`d${f}`);
+                extraRegs.add(`d${f}`);
+              }
+            }
+            const fullArgs = vaArgs.length > 0 ? `${va.fixedPrefix}, ${vaArgs.join(', ')}` : va.fixedPrefix;
+            const callExpr = `${va.retCast}${va.fn}(${fullArgs})`;
+            if (outLines[li].includes(assignCall)) {
+              outLines[li] = outLines[li].replaceAll(assignCall, `x0 = ${callExpr};`);
+            } else if (outLines[li].includes(retCall)) {
+              outLines[li] = outLines[li].replaceAll(retCall, `return ${callExpr};`);
+            } else {
+              outLines[li] = outLines[li].replaceAll(bareCall, `x0 = ${callExpr};`);
+            }
+          }
+          out = outLines.join('\n');
+        } else if (spec.ret === 'void') {
           out = out.replaceAll(assignCall, `${spec.call};`);
-          const voidTailRet = /^void\s+[A-Za-z_][A-Za-z0-9_]*\(/m.test(out) ? 'return;' : 'return 0;';
           out = out.replaceAll(retCall, `${spec.call}; ${voidTailRet}`);
           out = out.replaceAll(bareCall, `${spec.call};`);
         } else if (spec.ret === 'd0') {
@@ -906,7 +1792,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
       while ((um = unresRe.exec(out)) !== null) unresolvedHexes.add(um[1]);
       let inlinedCount = 0;
       for (const hex of unresolvedHexes) {
-        if (inlinedCount >= 8) break;
+        if (inlinedCount >= 32) break;
         const hAddr = BigInt(`0x${hex}`);
         if (hAddr === baseAddr) continue;
         if (!textSec || hAddr < textSec.addr || hAddr >= textSec.addr + textSec.size) continue;
@@ -1046,20 +1932,137 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
     }
   }
 
-  // 2. Materialize .rodata / .data globals from binary bytes (including .data/.data.rel.ro string pointer tables)
+  // 1c. Resolve ALL remaining named & unnamed sub_<HEX>(/* arguments unknown */) calls
+  if (out.includes('sub_') && out.includes('/* arguments unknown */')) {
+    const remainingHexes = [];
+    const seenRem = new Set();
+    const remRe = /sub_([0-9A-Fa-f]+)\(\/\* arguments unknown \*\/\)/g;
+    let rm;
+    while ((rm = remRe.exec(out)) !== null) {
+      if (!seenRem.has(rm[1])) {
+        seenRem.add(rm[1]);
+        remainingHexes.push(rm[1]);
+      }
+    }
+    if (remainingHexes.length > 0) {
+      // Collect identifiers already used in this function (locals, params, outer name)
+      const usedNames = new Set();
+      for (let r = 0; r < 31; r += 1) usedNames.add(`x${r}`);
+      for (let r = 0; r < 32; r += 1) usedNames.add(`d${r}`);
+      for (let r = 1; r <= 8; r += 1) usedNames.add(`a${r}`);
+      const outerSigM = out.match(/^(void|int|uint64|float|double)\s+([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)\n\{/m);
+      const outerName = outerSigM ? outerSigM[2] : null;
+      const isCurrentFuncVoid = /^void\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/m.test(out);
+      if (outerName) usedNames.add(outerName);
+      for (const lm of out.matchAll(/^\s*(?:uint64|int64_t|uint32_t|int|double|float|uint128|char)\s+\*?([A-Za-z_][A-Za-z0-9_]*)\b/gm)) {
+        usedNames.add(lm[1]);
+      }
+
+      const outLines = out.split('\n');
+      for (const hex of remainingHexes) {
+        const callAddr = BigInt(`0x${hex}`);
+        const isSelfCall = baseAddr > 0n && callAddr === baseAddr && Boolean(outerName);
+        let rawSym = null;
+        if (!isSelfCall && typeof symbolFor === 'function') {
+          try { rawSym = symbolFor(callAddr); } catch {}
+        }
+        const cName = isSelfCall
+          ? outerName
+          : (rawSym ? sanitizeCallSymbolName(rawSym, hex, usedNames) : null);
+
+        // Priority 2: Callee entry ARM64 register-read scan
+        let argSpec = null;
+        if (isSelfCall && outerSigM) {
+          const pStr = outerSigM[3].trim();
+          const params = (!pStr || pStr === 'void') ? [] : pStr.split(',').map((s) => s.trim());
+          let intCount = 0;
+          let fpCount = 0;
+          for (const p of params) {
+            if (p.startsWith('float ') || p.startsWith('double ')) fpCount += 1;
+            else intCount += 1;
+          }
+          argSpec = { intCount, fpCount, proven: true };
+        } else {
+          const calleeBytes = readBinaryBytesAt(callAddr, 128, { readBytes, fileBytes, sections });
+          const scanned = scanArm64EntryArgRegs(calleeBytes);
+          if (scanned) {
+            argSpec = { intCount: scanned.intCount, fpCount: scanned.fpCount, proven: true };
+          }
+        }
+
+        // Priority 3: Caller-side defined argument registers before call site
+        if (!argSpec) {
+          const bareNeedle = `sub_${hex}(/* arguments unknown */)`;
+          let bestInt = 0;
+          let bestFp = 0;
+          let foundCaller = false;
+          for (let li = 0; li < outLines.length; li += 1) {
+            if (!outLines[li].includes(bareNeedle)) continue;
+            const inferred = inferCallerDefinedArgRegs(outLines, li);
+            if (inferred.found) {
+              foundCaller = true;
+              if (inferred.intCount > bestInt) bestInt = inferred.intCount;
+              if (inferred.fpCount > bestFp) bestFp = inferred.fpCount;
+            }
+          }
+          if (foundCaller) {
+            argSpec = { intCount: bestInt, fpCount: bestFp, proven: false };
+            hasUnprovenCallArgs = true;
+          } else if (cName) {
+            // Named symbol with no callee bytes and no caller-set regs -> heuristic 0-arg call
+            argSpec = { intCount: 0, fpCount: 0, proven: false };
+            hasUnprovenCallArgs = true;
+          }
+        }
+
+        if (!argSpec) continue;
+
+        const targetName = cName || `sub_${hex}`;
+        const callArgs = [];
+        const paramTypes = [];
+        for (let k = 0; k < argSpec.intCount; k += 1) {
+          callArgs.push(`x${k}`);
+          paramTypes.push('uint64');
+          extraRegs.add(`x${k}`);
+        }
+        for (let f = 0; f < argSpec.fpCount; f += 1) {
+          callArgs.push(`d${f}`);
+          paramTypes.push('double');
+          extraRegs.add(`d${f}`);
+        }
+        const paramTypesStr = paramTypes.length > 0 ? paramTypes.join(', ') : 'void';
+        const callExpr = `${targetName}(${callArgs.join(', ')})`;
+
+        changed = true;
+        out = stripDummyProto(out, hex);
+        if (!isSelfCall && !STANDARD_C_POSIX_DECLARED.has(targetName)) {
+          extraProtos.add(`extern uint64 ${targetName}(${paramTypesStr});`);
+        }
+        const bareCall = `sub_${hex}(/* arguments unknown */)`;
+        if (isSelfCall && isCurrentFuncVoid) {
+          out = out.replaceAll(`x0 = ${bareCall};`, `${callExpr};`);
+          out = out.replaceAll(`return ${bareCall};`, `${callExpr}; return;`);
+          out = out.replaceAll(bareCall, callExpr);
+        } else {
+          out = out.replaceAll(bareCall, callExpr);
+        }
+      }
+    }
+  }
+
+  // 2. Materialize .rodata / __const / .data globals from binary bytes (ELF + Mach-O string pointer tables)
   if ((readBytes || fileBytes) && out.includes('global_')) {
-    const elfInfo = parseElf64SectionsAndSyms(fileBytes);
     out = out.replace(/^static (?:_Alignas\(\d+\) )?uint64 __hex_global_([0-9A-Fa-f]+)_buf\[512\] = \{0\};$/gm, (full, hex) => {
       const gAddr = BigInt(`0x${hex}`);
       const bytes = readBinaryBytesAt(gAddr, 256, { readBytes, fileBytes, sections });
       if (!bytes || bytes.length === 0) return full;
-      // Check if this is an array of 64-bit pointers to NUL-terminated strings in .rodata
-      if (elfInfo && bytes.length >= 8) {
+      // Check if this is an array of 64-bit pointers to NUL-terminated strings in .rodata / __cstring / __const
+      if (bytes.length >= 8) {
         const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         const ptrStrings = [];
         for (let off = 0; off + 8 <= bytes.length; off += 8) {
           const ptrVal = dv.getBigUint64(off, true);
-          const strVal = readCStringFromElf(ptrVal, fileBytes, elfInfo);
+          const strVal = readCStringFromBinary(ptrVal, { ...binaryCtx, escape: true });
           if (strVal == null) break;
           ptrStrings.push(strVal);
         }
@@ -1095,7 +2098,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
     changed = true;
   }
 
-  if (!changed) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1 };
+  if (!changed) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1, hasUnprovenCallArgs };
 
   // Inject any missing local reg declarations inside function body `{`
   const missingLocals = [];
@@ -1160,6 +2163,17 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   hdrLines.push('#endif');
   for (const h of [...headers].sort()) hdrLines.push(`#include ${h}`);
   for (const td of extraTypedefs) hdrLines.push(td);
+  if (extraProtos.size > 0 && !extraTypedefs.includes('typedef __UINT64_TYPE__ uint64;') && !hdrLines.includes('typedef __UINT64_TYPE__ uint64;')) {
+    const hasUint64Proto = [...extraProtos].some((pr) => /\buint64\b/.test(pr));
+    if (hasUint64Proto) {
+      // Remove duplicate typedef __UINT64_TYPE__ uint64; from body if present, or emit guard-safe typedef before protos
+      out = out.replace(/^typedef __UINT64_TYPE__ uint64;\n/m, '');
+      hdrLines.push('typedef __UINT64_TYPE__ uint64;');
+    }
+  }
+  for (const pr of extraProtos) {
+    if (!out.includes(pr)) hdrLines.push(pr);
+  }
   const prefix = hdrLines.length > 0 ? `${hdrLines.join('\n')}\n` : '';
   if (inlinedHelpers.length > 0) {
     const rewrittenHelperDefs = inlinedHelpers.map((entry) => {
@@ -1223,7 +2237,7 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
   const finalSigLine = finalLinesArr.findIndex((l) => outerSigRe.test(l));
   const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : hdrLines.length;
   const bodyAdded = Math.max(0, (finalLinesArr.length - Math.max(0, finalSigLine)) - (rawLinesArr.length - Math.max(0, rawSigLine)));
-  return { text: finalText, lines: finalLinesArr, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine };
+  return { text: finalText, lines: finalLinesArr, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine, hasUnprovenCallArgs };
 }
 
 export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
@@ -1287,17 +2301,55 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       memView[nameLen] = 0;
     }
 
-    const status = ex.hex_engine_decompile_arm64(
-      wordsPtr,
-      count,
-      BigInt(baseAddr),
-      namePtr,
-      nameLen,
-      HEX_EMIT_FLAG_JS_PARITY,
-    );
+    let hasIndirectBranch = false;
+    for (let i = 0; i < count; i += 1) {
+      const w = wordsView[i];
+      if (
+        ((w & 0xFFFFFC1F) >>> 0) === 0xD61F0000
+        || ((w & 0xFFFFF81F) >>> 0) === 0xD61F081F
+        || ((w & 0xFFFFF800) >>> 0) === 0xD71F0800
+      ) {
+        hasIndirectBranch = true;
+        break;
+      }
+    }
+    let rodataSet = false;
+    if (hasIndirectBranch && typeof ex.hex_engine_decompile_set_rodata_slice === 'function') {
+      const roSlice = findRodataSlice({ fileBytes, sections, readBytes, words: wordsView, baseAddr });
+      if (roSlice && roSlice.bytes.length > 0) {
+        const roPtr = allocScratch(ex, roSlice.bytes.length);
+        if (roPtr) {
+          new Uint8Array(ex.memory.buffer, roPtr, roSlice.bytes.length).set(roSlice.bytes);
+          const roVa = BigInt(roSlice.vaLo);
+          const roVaLo = Number(roVa & 0xFFFFFFFFn) >>> 0;
+          const roVaHi = Number((roVa >> 32n) & 0xFFFFFFFFn) >>> 0;
+          ex.hex_engine_decompile_set_rodata_slice(roVaLo, roVaHi, roPtr, roSlice.bytes.length);
+          rodataSet = true;
+        }
+      }
+    }
+
+    let status;
+    try {
+      status = ex.hex_engine_decompile_arm64(
+        wordsPtr,
+        count,
+        BigInt(baseAddr),
+        namePtr,
+        nameLen,
+        HEX_EMIT_FLAG_JS_PARITY,
+      );
+    } finally {
+      if (rodataSet && typeof ex.hex_engine_decompile_clear_rodata_slice === 'function') {
+        ex.hex_engine_decompile_clear_rodata_slice();
+      }
+    }
     if (status !== HEX_OK) {
       return noteFallback('decompile', `wasm_status_${status}`);
     }
+    const rawLossFlags = typeof ex.hex_engine_decompile_get_loss_flags === 'function'
+      ? ((ex.hex_engine_decompile_get_loss_flags() ?? 0) >>> 0)
+      : 0;
 
     const getTP = ex.hex_engine_decompile_get_text_ptr || ex.hex_decomp_get_text_ptr;
     const getTL = ex.hex_engine_decompile_get_text_len || ex.hex_decomp_get_text_len;
@@ -1512,10 +2564,38 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       }
     }
 
+    const lossReasonSet = new Set();
+    let lossFlags = 0;
+    const hasUnknownCallArgs = pseudocode.includes('/* arguments unknown */') || post.hasUnprovenCallArgs === true;
+    const hasUnresolvedIndirectBranch = pseudocode.includes('/* unresolved indirect branch');
+    if ((rawLossFlags & 1) !== 0 || hasUnresolvedIndirectBranch) {
+      lossFlags |= 1;
+      lossReasonSet.add('unresolved-indirect-branch');
+    }
+    if (hasUnknownCallArgs) {
+      lossFlags |= 2;
+      lossReasonSet.add('unknown-call-arguments');
+    }
+    if ((rawLossFlags & 4) !== 0) {
+      lossFlags |= 4;
+      lossReasonSet.add('dropped-tail-call');
+    }
+    if ((rawLossFlags & 8) !== 0) {
+      lossFlags |= 8;
+      lossReasonSet.add('unsupported-instruction');
+    }
+    if ((rawLossFlags & 16) !== 0) {
+      lossFlags |= 16;
+      lossReasonSet.add('unresolved-indirect-call');
+    }
+    const lossReasons = Array.from(lossReasonSet);
+    const partial = lossReasons.length > 0;
+    const completeness = partial ? 'partial' : 'complete';
+
     recordWasmCall('decompile');
     return isLegacyOutput
-      ? { pseudocode, lines, sourceMap: undefined }
-      : { pseudocode, lines, sourceMap };
+      ? { pseudocode, lines, sourceMap: undefined, lossFlags, lossReasons, partial, completeness }
+      : { pseudocode, lines, sourceMap, lossFlags, lossReasons, partial, completeness };
   } catch {
     return noteFallback('decompile', 'wasm_exception');
   }

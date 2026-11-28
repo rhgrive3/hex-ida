@@ -22,7 +22,7 @@ export async function openProduct(binaryPath) {
   stage = performance.now();
   const sha = createHash('sha256').update(bytes).digest('hex');
   stages.binaryHashMs = performance.now() - stage;
-  const file = new File([bytes], `${sha}.bin`);
+  const file = typeof File === 'function' ? new File([bytes], `${sha}.bin`) : Object.assign(new Blob([bytes]), { name: `${sha}.bin`, lastModified: Date.now() });
   installNodeWorkerTransport();
   const runtime = new ArtifactAnalysisOrchestrator({store:new ArtifactStore({backend:new MemoryArtifactBackend()})});
   const backend = new Backend({artifactOrchestrator:runtime});

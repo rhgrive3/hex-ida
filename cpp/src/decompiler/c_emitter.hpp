@@ -15,6 +15,7 @@ static const uint32_t CEMIT_IR_NO_VAL = 0xFFFFFFFFu;
 // Emit flags for hex_decomp_emit_c_ex.
 static const uint32_t HEX_EMIT_FLAG_NONE = 0u;
 static const uint32_t HEX_EMIT_FLAG_JS_PARITY = 1u;
+static const uint32_t HEX_EMIT_FLAG_DISABLE_IR_PIPELINE = 2u;
 
 // C-Emitter POD IR opcodes (namespaced to avoid collision with resident_ir.hpp).
 typedef enum CEmitIrOp {

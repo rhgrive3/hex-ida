@@ -65,6 +65,7 @@ const HEX_ENGINE_CPP_SRCS = [
   'cpp/src/semantics/resident_ir.cpp',
   'cpp/src/decompiler/ir_optimizer.cpp',
   'cpp/src/decompiler/c_emitter.cpp',
+  'cpp/src/decompiler/passes/arm64_ir_pipeline.cpp',
 ];
 
 const OPTIONAL_TARGET_SRCS = [
@@ -238,7 +239,8 @@ function buildHexEngineUnified(tmpDir) {
       .map((entry) => entry.name)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     for (const name of passFiles) {
-      srcs.push(path.join(decompPassesDir, name));
+      const full = path.join(decompPassesDir, name);
+      if (!srcs.includes(full)) srcs.push(full);
     }
     hasDecompPasses = passFiles.length > 0;
   }

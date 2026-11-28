@@ -189,14 +189,22 @@ function tryWasmDecompile(model, opts) {
     sections: opts?.sections ?? model?.sections ?? null,
   });
   if (!wasmRes) return null;
+  const lossReasons = Array.isArray(wasmRes.lossReasons) ? wasmRes.lossReasons.slice() : [];
+  const partial = Boolean(wasmRes.partial);
+  const completeness = wasmRes.completeness || (partial ? 'partial' : 'complete');
+  const lossFlags = wasmRes.lossFlags ?? 0;
   return {
     pseudocode: wasmRes.pseudocode,
     lines: wasmRes.lines,
     sourceMap: wasmRes.sourceMap,
-    warnings: [],
+    warnings: lossReasons.length > 0 ? lossReasons.slice() : [],
     evidence: [],
     semantic: false,
     wasmAccelerated: true,
+    completeness,
+    partial,
+    lossFlags,
+    lossReasons,
   };
 }
 
