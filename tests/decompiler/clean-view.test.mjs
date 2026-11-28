@@ -148,3 +148,18 @@ test('formatCleanViewText end-to-end with hideTypedefPrelude on/off and ObjC/Swi
   assert.equal(keepTypedefs.stats.typedefsHidden, 0);
   assert.equal(keepTypedefs.stats.deadSpillsElided, 1);
 });
+
+test('formatCleanViewLines collapses consecutive identical semantic-v2 __asm lines', () => {
+  const lines = [
+    { kind: 'sig', indent: 0, text: 'void sub_4680(void)' },
+    { kind: 'ctrl', indent: 0, text: '{' },
+    { kind: 'stmt', indent: 1, text: '__asm("semantic-v2 function unknown: unresolved-indirect-control-flow");' },
+    { kind: 'stmt', indent: 1, text: '__asm("semantic-v2 function unknown: unresolved-indirect-control-flow");' },
+    { kind: 'stmt', indent: 1, text: '__asm("semantic-v2 function unknown: unresolved-indirect-control-flow");' },
+    { kind: 'ctrl', indent: 0, text: '}' },
+  ];
+  const { lines: out, stats } = formatCleanViewLines(lines);
+  assert.equal(stats.duplicateAsmCollapsed, 2);
+  assert.equal(out.length, 4);
+  assert.ok(out[2].text.includes('/* ×3 */'));
+});
