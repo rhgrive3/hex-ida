@@ -487,7 +487,7 @@ const FIELD_VOCAB = {
     type: 'number', prefer: ['plain', 'current'],
   },
   item: {
-      /\bad[\s_-]*inventory\b/i,
+    strong: [/\bitems?\b/, /\binventory\b/, /\bequip(ment)?\b/, /\bbag\b/, /アイテム/, /所持品/, /装備/],
     weak: [/\bcount\b/, /\bquantity\b/, /\bstock\b/, /\bmaterial\b/],
     type: 'any', prefer: ['plain'],
   },
