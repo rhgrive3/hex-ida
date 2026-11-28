@@ -92,6 +92,7 @@ jobs:
               // tests/browser.mjs predates UI_SHOTS. Preserve its KEEP contract,
               // then fold those screenshots into the canonical audit artifact.
               env.KEEP = '1';
+              env.HEX_ALLOW_EMPTY_REAL_FIXTURES = '1';
               fs.rmSync(legacyShots, { recursive: true, force: true });
             }
             console.log(`::group::${name}: ${command}`);

@@ -357,7 +357,12 @@ async function detectFile(msg, signal) {
     const prefix = await temporary.readExactly(0n, length, { signal });
     if (signal.aborted) throw new Error('Open cancelled');
     const detected = detectBinary(prefix, { probeLength: BigInt(length), totalSize: BigInt(candidate.size) });
-    return { formatId: detected.format, fat: !!detected.fat, size: BigInt(candidate.size), sourceBacked: true };
+    let formatId = detected.format;
+    if (formatId === 'unknown' && prefix.byteLength >= 4) {
+      if (prefix[0] === 0x00 && prefix[1] === 0x61 && prefix[2] === 0x73 && prefix[3] === 0x6d) formatId = 'wasm';
+      else if (prefix[0] === 0x64 && prefix[1] === 0x65 && prefix[2] === 0x78 && prefix[3] === 0x0a) formatId = 'dex';
+    }
+    return { formatId, fat: !!detected.fat, size: BigInt(candidate.size), sourceBacked: true };
   } finally { temporary.clear?.(); }
 }
 
@@ -383,7 +388,7 @@ async function openFile(msg, signal) {
       arm64e: candidateImage.arch === 'arm64e',
       verified: false,
     };
-    candidateDescriptor = describeBinaryImage(candidateImage, { name: candidateFile.name || 'binary', engine });
+    candidateDescriptor = describeBinaryImage(candidateImage, { name: candidateFile.name || 'binary', engine, managedFrontend: candidateImage.managedFrontend ?? null });
     candidateDescriptor.platform.vendorCandidates = fingerprintVendors({ libraries: candidateImage.libraries, imports: candidateImage.imports, symbols: candidateImage.symbols });
     const candidateRegions = new Map();
     for (const region of candidateDescriptor.slices.flatMap((s) => s.regions)) if (region?.id) candidateRegions.set(region.id, region);
@@ -484,6 +489,75 @@ async function getChunk({ regionId, chunk }, signal) {
   return { regionId, chunk, bytes: copy, mn: '', ops: '', rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
 }
 
+const DWARF_SECTION_KEYS = new Set([
+  'debug_info',
+  'debug_abbrev',
+  'debug_str',
+  'debug_str_offsets',
+  'debug_addr',
+  'debug_line_str',
+]);
+const DWARF_PREFETCH_MAX_BYTES = 64 * 1024 * 1024;
+
+function normalizeDwarfSectionKey(sec) {
+  if (!sec || typeof sec.name !== 'string') return null;
+  const raw = sec.name;
+  if (raw.startsWith('.debug_')) {
+    const key = raw.slice(1);
+    return DWARF_SECTION_KEYS.has(key) ? key : null;
+  }
+  if (raw.startsWith('__debug_')) {
+    if (sec.segment && sec.segment !== '__DWARF') return null;
+    const key = raw.slice(2);
+    return DWARF_SECTION_KEYS.has(key) ? key : null;
+  }
+  if (raw.startsWith('__DWARF,__debug_')) {
+    const key = raw.slice('__DWARF,__'.length);
+    return DWARF_SECTION_KEYS.has(key) ? key : null;
+  }
+  return null;
+}
+
+async function prefetchDwarfSections(selected, signal) {
+  const sections = Array.isArray(selected?.sections) ? selected.sections : [];
+  if (sections.length === 0) return null;
+  const matched = [];
+  let hasDebugInfo = false;
+  let totalBytes = 0n;
+  for (const sec of sections) {
+    const key = normalizeDwarfSectionKey(sec);
+    if (!key) continue;
+    const rawSize = sec.bytes instanceof Uint8Array
+      ? BigInt(sec.bytes.byteLength)
+      : BigInt(sec.fileSize ?? sec.size ?? 0);
+    if (rawSize <= 0n) continue;
+    totalBytes += rawSize;
+    if (totalBytes > BigInt(DWARF_PREFETCH_MAX_BYTES)) return null;
+    if (key === 'debug_info') hasDebugInfo = true;
+    matched.push({ key, sec, size: Number(rawSize) });
+  }
+  if (!hasDebugInfo || matched.length === 0) return null;
+
+  const dwarfSections = {};
+  try {
+    for (const { key, sec, size } of matched) {
+      if (signal?.aborted) throw new Error('Analysis cancelled');
+      if (sec.bytes instanceof Uint8Array) {
+        dwarfSections[key] = sec.bytes;
+        continue;
+      }
+      if (!source || sec.fileOffset == null) continue;
+      const bytes = await readFileRange(BigInt(sec.fileOffset), size, signal);
+      dwarfSections[key] = bytes;
+    }
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    console.warn('[hex-worker] DWARF section prefetch skipped:', err?.message || err);
+    return null;
+  }
+  return dwarfSections.debug_info ? dwarfSections : null;
+}
+
 async function analyzeImage(msg, signal) {
   if (!image) return emptyAnalysis();
   let selected = image;
@@ -492,7 +566,9 @@ async function analyzeImage(msg, signal) {
     if (!selected) return emptyAnalysis();
   }
   if (signal.aborted) throw new Error('Analysis cancelled');
-  return analysisFromBinaryImage(selected);
+  const dwarfSections = await prefetchDwarfSections(selected, signal);
+  if (signal.aborted) throw new Error('Analysis cancelled');
+  return analysisFromBinaryImage(selected, { dwarfSections });
 }
 
 function genericFunctionSeeds() {

@@ -368,6 +368,7 @@ export class InvestigationService {
     // pin entry; both are cleared and snapshot-synced together so the side
     // cache can never outlive its pin or grow unbounded.
     this.pinRequestIdentityCache = new Map();
+    this.functionModelCache = new Map();
     this.cacheEpoch = epochOf(app);
     this.cacheGeneration = 0;
     this.pinSnapshotId = undefined;
@@ -382,6 +383,7 @@ export class InvestigationService {
     this.shared.clear();
     this.pinCache.clear();
     this.pinRequestIdentityCache.clear();
+    this.functionModelCache.clear();
     this.pinSnapshotId = undefined;
     this.cacheGeneration++;
   }
@@ -398,6 +400,7 @@ export class InvestigationService {
     if (Object.is(snapshotId, this.pinSnapshotId)) return;
     this.pinCache.clear();
     this.pinRequestIdentityCache.clear();
+    this.functionModelCache.clear();
     this.pinSnapshotId = snapshotId;
   }
 
@@ -628,16 +631,59 @@ export class InvestigationService {
     }, options);
   }
 
-  #addressAwareAnalyzer(signal) {
+  #addressAwareAnalyzer(signal, sharedModelCache = null) {
     const cache = new Map();
-    return async (address, end, options = {}) => {
+    const LRU_LIMIT = 256;
+    const isCacheableOptions = (options) => {
+      if (options == null) return true;
+      if (typeof options !== 'object') return false;
+      for (const k of Object.keys(options)) {
+        if (k !== 'signal' && k !== 'perFunctionBudgetMs' && k !== 'yieldBetweenFunctions' && k !== 'useWorker') {
+          return false;
+        }
+      }
+      return true;
+    };
+    const modelCacheKey = (regionId, address, end) => {
+      const ta = typeof address;
+      if (ta !== 'bigint' && ta !== 'number' && ta !== 'string') return null;
+      const te = typeof end;
+      if (end != null && te !== 'bigint' && te !== 'number' && te !== 'string') return null;
+      return `${regionId}:${ta}:${String(address)}:${end == null ? 'null' : `${te}:${String(end)}`}`;
+    };
+    const fn = async (address, end, options = {}) => {
       abortIfNeeded(signal);
+      abortIfNeeded(options?.signal);
       const region = regionForAddress(this.app, address) || this.app.codeRegion?.();
       if (!region) return null;
+      const key = sharedModelCache && isCacheableOptions(options)
+        ? modelCacheKey(region.id, address, end)
+        : null;
+      if (key != null && sharedModelCache.has(key)) {
+        const hit = sharedModelCache.get(key);
+        sharedModelCache.delete(key);
+        sharedModelCache.set(key, hit);
+        return hit;
+      }
       let analyzer = cache.get(region.id);
       if (!analyzer) { analyzer = makePinpointAnalyzer(this.app, region, signal); cache.set(region.id, analyzer); }
-      return analyzer ? analyzer(address, end, options) : null;
+      const model = analyzer ? await analyzer(address, end, options) : null;
+      if (key != null && model != null) {
+        if (sharedModelCache.size >= LRU_LIMIT) {
+          const oldest = sharedModelCache.keys().next().value;
+          if (oldest !== undefined) sharedModelCache.delete(oldest);
+        }
+        sharedModelCache.set(key, model);
+      }
+      return model;
     };
+    fn.dispose = () => {
+      for (const analyzer of cache.values()) {
+        try { analyzer?.dispose?.(); } catch { /* best-effort cleanup */ }
+      }
+      cache.clear();
+    };
+    return fn;
   }
 
   #globalAccessScanner(signal) {
@@ -728,6 +774,7 @@ export class InvestigationService {
     const cachedIdentity = this.pinRequestIdentityCache.get(cacheKey) || null;
     let pin = cached && pinRequestMatches(cachedIdentity, request) ? cached : null;
     if (!pin) {
+      const analyzer = this.#addressAwareAnalyzer(options.signal || null, this.functionModelCache);
       const common = {
         goal,
         fields:context.fields,
@@ -741,7 +788,7 @@ export class InvestigationService {
         map:null,
         textAt:stringLookup(context.strings || []),
         signal:options.signal || null,
-        analyze:this.#addressAwareAnalyzer(options.signal || null),
+        analyze:analyzer,
         scanAccess:this.#globalAccessScanner(options.signal || null),
         budget:{ left:boundedBudget(options?.budget?.pinpoint, 48) },
         perFunctionBudgetMs:effectivePerFunctionBudgetMs(options),
@@ -754,17 +801,21 @@ export class InvestigationService {
         try { return await fn(); }
         catch (error) { if (options.signal?.aborted) throw error; return null; }
       };
-      if (context.fields?.classCount || context.cxxFields?.fieldCount) candidate = await attempt(() => pinpointField(common));
-      abortIfNeeded(options.signal);
-      const undecided = (value) => !value?.top || verdictRank(value.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
-      if (undecided(candidate) && (ranked.candidates.length || context.shapes?.size)) {
-        const location = await attempt(() => pinpointLocation({ ...common, ranked:ranked.candidates }));
-        if (beats(location, candidate)) candidate = location;
-      }
-      abortIfNeeded(options.signal);
-      if (undecided(candidate) && ranked.candidates.length) {
-        const fn = await attempt(() => pinpointFunction({ ...common, ranked:ranked.candidates }));
-        if (beats(fn, candidate)) candidate = fn;
+      try {
+        if (context.fields?.classCount || context.cxxFields?.fieldCount) candidate = await attempt(() => pinpointField(common));
+        abortIfNeeded(options.signal);
+        const undecided = (value) => !value?.top || verdictRank(value.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
+        if (undecided(candidate) && (ranked.candidates.length || context.shapes?.size)) {
+          const location = await attempt(() => pinpointLocation({ ...common, ranked:ranked.candidates }));
+          if (beats(location, candidate)) candidate = location;
+        }
+        abortIfNeeded(options.signal);
+        if (undecided(candidate) && ranked.candidates.length) {
+          const fn = await attempt(() => pinpointFunction({ ...common, ranked:ranked.candidates }));
+          if (beats(fn, candidate)) candidate = fn;
+        }
+      } finally {
+        analyzer.dispose?.();
       }
       pin = candidate;
       if (!options.signal?.aborted) {
@@ -813,21 +864,28 @@ export class InvestigationService {
         knowledgeLimit:512,
       });
     } catch (error) { if (options.signal?.aborted) throw error; }
-    const report = await autoAnalyze({
-      strings:context.strings,
-      program:context.program,
-      symbols:context.symbols,
-      region:context.region,
-      fields:context.fields,
-      cxxFields:context.cxxFields,
-      shapes:context.shapes,
-      cryptoScan:context.cryptoScan || null,
-      recognition,
-      analyze:this.#addressAwareAnalyzer(options.signal || null),
-      scanAccess:this.#globalAccessScanner(options.signal || null),
-      isCancelled:() => !!options.signal?.aborted,
-      onProgress:(value) => progress(options, value),
-    });
+    this.#syncPinSnapshot(context.snapshotId);
+    const overviewAnalyzer = this.#addressAwareAnalyzer(options.signal || null, this.functionModelCache);
+    let report;
+    try {
+      report = await autoAnalyze({
+        strings:context.strings,
+        program:context.program,
+        symbols:context.symbols,
+        region:context.region,
+        fields:context.fields,
+        cxxFields:context.cxxFields,
+        shapes:context.shapes,
+        cryptoScan:context.cryptoScan || null,
+        recognition,
+        analyze:overviewAnalyzer,
+        scanAccess:this.#globalAccessScanner(options.signal || null),
+        isCancelled:() => !!options.signal?.aborted,
+        onProgress:(value) => progress(options, value),
+      });
+    } finally {
+      overviewAnalyzer.dispose?.();
+    }
     await this.app.analysisQueries.binaryInfo(context.snapshot, {
       signal:options.signal,
       priority:priorityOf(options),

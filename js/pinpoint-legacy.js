@@ -36,7 +36,7 @@ import {
 } from './goals.js';
 import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT, verdictRank } from './evidence.js';
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
-import { findValueUpdates, constantComparisons } from './dataflow.js';
+import { findValueUpdates, constantComparisons, stripHeavyIrRefs } from './dataflow.js';
 import { plainFieldName } from './fields.js';
 import { isCxxMemberField } from './analysis/cxx/member-index.js';
 import { composePinpointFields } from './pinpoint-fields.js';
@@ -680,7 +680,7 @@ async function verifyCandidate(c, goal, o, how, fields = o.fields) {
       c.sites.push({
         addr: m.addr, sel: m.sel, className: c.className,
         loads: use.use.loads, stores: use.use.stores,
-        rmw: use.use.rmw.slice(0, 2), compares: use.use.compares.slice(0, 3),
+        rmw: use.use.rmw.slice(0, 2).map(stripHeavyIrRefs), compares: use.use.compares.slice(0, 3),
       });
       c.evidence.push(evidence('access-verified', 1, {
         sel: m.sel, addr: m.addr, className: c.className,
@@ -896,7 +896,7 @@ export async function pinpointLocation(opts) {
         if (goalStrings) e.goalStringRefs++;
       }
       if (u.kind === 'read-modify-write') {
-        if (e.updates.length < 4) e.updates.push(u);
+        if (e.updates.length < 4) e.updates.push(stripHeavyIrRefs(u));
         rmwTouched.push(e);
       }
     }
@@ -1985,7 +1985,7 @@ async function verifyFunctionCandidate(c, goal, o) {
         className: field.className, name: field.plain || field.name,
         loads: use.use.loads, stores: use.use.stores,
       }));
-      c.updates = use.use.rmw.slice(0, 3);
+      c.updates = use.use.rmw.slice(0, 3).map(stripHeavyIrRefs);
       c.verified = true;
     }
   }

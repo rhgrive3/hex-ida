@@ -637,13 +637,13 @@
 .product-ui-ready .ui-pseudocode-line.is-decl-last { padding-bottom: 4px; }
 .product-ui-ready .ui-pseudocode-line.is-case { color: #f0c674; }
 
-.row .tok-target {
+.rows .row .tok-target {
   cursor: pointer;
   text-decoration: underline;
   text-decoration-style: dotted;
   text-underline-offset: 2px;
 }
-.row .tok-target:hover { text-decoration-style: solid; }
+.rows .row .tok-target:hover { text-decoration-style: solid; }
 
 .product-ui-ready .ui-delta-strip {
   display: flex;
@@ -685,7 +685,7 @@
   box-shadow: inset 2px 0 0 #f5b942;
 }
 .tok-reg { cursor: pointer; }
-.row.bookmarked .c-addr::before {
+.rows .row.bookmarked .c-addr::before {
   content: "★ ";
   color: #f5b942;
 }

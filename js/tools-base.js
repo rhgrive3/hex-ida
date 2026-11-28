@@ -1240,6 +1240,9 @@ export function showRename(app, addr) {
     sheet.body.append(button(pick('付けた名前を消す', 'Remove custom name'), 'tb-btn danger', () => {
       const saved = app.notes.setName(addr, '');
       app.symbols.rename(addr, '');
+      if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+        try { document.dispatchEvent(new CustomEvent('hex:symbol-renamed', { detail: { addr } })); } catch { /* ignore */ }
+      }
       app.viewer.setSymbols(app.symbols);
       app.updateChrome?.();
       if (initialName) {
@@ -1256,6 +1259,9 @@ export function showRename(app, addr) {
     const v = nameIn.value.trim();
     const savedName = app.notes.setName(addr, v);
     app.symbols.rename(addr, v);
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+      try { document.dispatchEvent(new CustomEvent('hex:symbol-renamed', { detail: { addr } })); } catch { /* ignore */ }
+    }
     app.viewer.setSymbols(app.symbols);
     const nextComment = memo.value.trim();
     let savedComment = true;

@@ -385,6 +385,9 @@ function renameSymbol(app, args) {
     try { app.updateChrome?.(); } catch { /* ignore */ }
     throw error;
   }
+  if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+    try { document.dispatchEvent(new CustomEvent('hex:symbol-renamed', { detail: { addr: address } })); } catch { /* ignore */ }
+  }
   const refreshWarning = refreshDisplay(app);
   return { ok: true, address: address.toString(), value, ...(refreshWarning ? { refreshWarning } : {}) };
 }

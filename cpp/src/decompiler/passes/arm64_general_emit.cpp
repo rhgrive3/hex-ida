@@ -9672,13 +9672,714 @@ static void analyze_sp_promotion(
   }
 }
 
+
+// -----------------------------------------------------------------------------
+// Readability Pass Helpers: Strict Magic Constant Division Recovery,
+// Idempotent Double-Cast Reduction, and Safe Single-Use Temp Register Folding
+// -----------------------------------------------------------------------------
+
+struct U128Pair {
+  uint64_t hi;
+  uint64_t lo;
+};
+
+static U128Pair mul_u64_u64(uint64_t a, uint64_t b) {
+  const uint64_t a_lo = a & 0xFFFFFFFFULL;
+  const uint64_t a_hi = a >> 32u;
+  const uint64_t b_lo = b & 0xFFFFFFFFULL;
+  const uint64_t b_hi = b >> 32u;
+  const uint64_t p0 = a_lo * b_lo;
+  const uint64_t p1 = a_lo * b_hi;
+  const uint64_t p2 = a_hi * b_lo;
+  const uint64_t p3 = a_hi * b_hi;
+  const uint64_t mid = (p0 >> 32u) + (p1 & 0xFFFFFFFFULL) + (p2 & 0xFFFFFFFFULL);
+  const uint64_t lo = (p0 & 0xFFFFFFFFULL) | (mid << 32u);
+  const uint64_t hi = p3 + (p1 >> 32u) + (p2 >> 32u) + (mid >> 32u);
+  return U128Pair{hi, lo};
+}
+
+static uint64_t u128_shr_to_u64(U128Pair v, uint32_t shift) {
+  if (shift == 0u) return v.lo;
+  if (shift < 64u) return (v.lo >> shift) | (v.hi << (64u - shift));
+  if (shift < 128u) return v.hi >> (shift - 64u);
+  return 0ULL;
+}
+
+// Computes ceil(2^shift / m) for 32 <= shift <= 127 and m > 0, returning false if quotient >= 2^64.
+static bool ceil_pow2_div_u64(uint32_t shift, uint64_t m, uint64_t* out_q) {
+  if (m == 0ULL || shift < 32u || shift >= 128u) return false;
+  // Represent numerator N = 2^shift + (m - 1) as 129-bit? Easier: compute floor(2^shift / m) and remainder r;
+  // if r > 0, add 1.
+  uint64_t q_hi = 0ULL, q_lo = 0ULL;
+  uint64_t rem = 0ULL;
+  // Bitwise long division of 2^shift by m (bits from `shift` down to 0)
+  for (int bit = static_cast<int>(shift); bit >= 0; --bit) {
+    const uint64_t in_bit = (bit == static_cast<int>(shift)) ? 1ULL : 0ULL;
+    const bool carry = (rem >> 63u) != 0ULL;
+    rem = (rem << 1u) | in_bit;
+    uint64_t qbit = 0ULL;
+    if (carry || rem >= m) {
+      rem -= m;
+      qbit = 1ULL;
+    }
+    if (bit >= 64) {
+      if (qbit) q_hi |= (1ULL << (bit - 64));
+    } else {
+      if (qbit) q_lo |= (1ULL << bit);
+    }
+  }
+  if (q_hi != 0ULL) return false;
+  if (rem != 0ULL) {
+    if (q_lo == 0xFFFFFFFFFFFFFFFFULL) return false;
+    q_lo += 1ULL;
+  }
+  *out_q = q_lo;
+  return true;
+}
+
+static bool verify_magic_udiv(uint64_t magic, uint32_t shift, uint32_t bits, uint64_t* out_divisor) {
+  if (magic == 0ULL || shift < bits || shift >= 2u * bits) return false;
+  uint64_t d = 0ULL;
+  if (!ceil_pow2_div_u64(shift, magic, &d)) return false;
+  const uint64_t umax = (bits == 32u) ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+  if (d < 2ULL || d > umax) return false;
+  const uint64_t rem = umax % d;
+  const uint64_t x_hi = (rem == d - 1ULL) ? umax : (umax - rem - 1ULL);
+  const uint64_t probes[7] = {0ULL, 1ULL, d - 1ULL, d, d + 1ULL, x_hi, umax};
+  for (uint32_t k = 0u; k < 7u; ++k) {
+    const uint64_t x = probes[k];
+    if (x > umax) continue;
+    const uint64_t q_magic = u128_shr_to_u64(mul_u64_u64(magic, x), shift);
+    if (q_magic != (x / d)) return false;
+  }
+  *out_divisor = d;
+  return true;
+}
+
+static bool verify_magic_sdiv(uint64_t m_eff, uint32_t shift, uint32_t bits, uint64_t* out_divisor) {
+  if (m_eff == 0ULL || shift < bits || shift >= 2u * bits) return false;
+  uint64_t d_u = 0ULL;
+  if (!ceil_pow2_div_u64(shift, m_eff, &d_u)) return false;
+  const uint64_t smax_u = (bits == 32u) ? 0x7FFFFFFFULL : 0x7FFFFFFFFFFFFFFFULL;
+  if (d_u < 2ULL || d_u > smax_u) return false;
+  const int64_t d = static_cast<int64_t>(d_u);
+  const int64_t smax = static_cast<int64_t>(smax_u);
+  const int64_t smin = (bits == 32u) ? (-2147483648LL) : (-9223372036854775807LL - 1LL);
+
+  auto check_x = [&](int64_t x) -> bool {
+    if (x < smin || x > smax) return true;
+    int64_t q = 0;
+    if (x >= 0) {
+      const uint64_t mag_q = u128_shr_to_u64(mul_u64_u64(m_eff, static_cast<uint64_t>(x)), shift);
+      q = static_cast<int64_t>(mag_q);
+    } else {
+      // For negative x, m_eff * x = -(m_eff * |x|).
+      // Arithmetic shift right by `shift`: floor(-P / 2^shift) = -ceil(P / 2^shift).
+      // Adding 1 for negative sign correction gives: 1 - ceil(P / 2^shift).
+      // If P is an exact multiple of 2^shift: - (P >> shift) + 1; else -( (P >> shift) + 1 ) + 1 = -(P >> shift).
+      const uint64_t abs_x = (x == (-9223372036854775807LL - 1LL))
+          ? 0x8000000000000000ULL
+          : static_cast<uint64_t>(-x);
+      const U128Pair prod = mul_u64_u64(m_eff, abs_x);
+      const uint64_t q_abs = u128_shr_to_u64(prod, shift);
+      bool has_low_bits = false;
+      if (shift < 64u) {
+        has_low_bits = (prod.lo & ((1ULL << shift) - 1ULL)) != 0ULL;
+      } else if (shift == 64u) {
+        has_low_bits = prod.lo != 0ULL;
+      } else {
+        has_low_bits = (prod.lo != 0ULL) || ((prod.hi & ((1ULL << (shift - 64u)) - 1ULL)) != 0ULL);
+      }
+      const int64_t floor_neg = has_low_bits ? (-static_cast<int64_t>(q_abs) - 1LL) : (-static_cast<int64_t>(q_abs));
+      q = floor_neg + 1LL;
+    }
+    return q == (x / d);
+  };
+
+  const uint64_t rem_pos = smax_u % d_u;
+  const int64_t x_pos_hi = (rem_pos == d_u - 1ULL)
+      ? smax
+      : static_cast<int64_t>(smax_u - rem_pos - 1ULL);
+  const uint64_t smin_mag = smax_u + 1ULL;
+  const uint64_t rem_neg = smin_mag % d_u;
+  const int64_t x_neg_lo = (rem_neg == d_u - 1ULL)
+      ? smin
+      : (smin + static_cast<int64_t>(rem_neg) + 1LL);
+
+  const int64_t probes[13] = {
+    0, 1, -1, d - 1, d, d + 1, -(d - 1), -d, -(d + 1),
+    x_pos_hi, smax, x_neg_lo, smin
+  };
+  for (uint32_t k = 0u; k < 13u; ++k) {
+    if (!check_x(probes[k])) return false;
+  }
+  *out_divisor = d_u;
+  return true;
+}
+
+static bool decode_mov_const_seq(const uint32_t* words, uint32_t word_count, uint32_t start,
+                                 const uint8_t* is_label, bool has_pending_cmp, uint32_t pending_consumer,
+                                 uint32_t* out_rd, bool* out_is64, uint64_t* out_val, uint32_t* out_next) {
+  if (start >= word_count) return false;
+  const uint32_t w = words[start];
+  const uint32_t opc = (w >> 29u) & 3u;
+  if ((w & 0x1F800000u) != 0x12800000u || (opc != 0u && opc != 2u)) return false;
+  const uint32_t rd = w & 31u;
+  const bool is64 = ((w >> 31u) & 1u) != 0u;
+  const uint32_t hw = (w >> 21u) & 3u;
+  if (rd >= 31u || (!is64 && hw >= 2u)) return false;
+  const uint64_t imm16 = static_cast<uint64_t>((w >> 5u) & 0xFFFFu);
+  uint64_t val = imm16 << (hw * 16u);
+  if (opc == 0u) val = ~val;
+  if (!is64) val &= 0xFFFFFFFFULL;
+  uint32_t j = start + 1u;
+  while (j < word_count && is_label[j] == 0u && (!has_pending_cmp || j != pending_consumer)) {
+    const uint32_t wj = words[j];
+    if ((wj & 0x1F800000u) != 0x12800000u || ((wj >> 29u) & 3u) != 3u) break;
+    if ((wj & 31u) != rd) break;
+    if ((((wj >> 31u) & 1u) != 0u) != is64) break;
+    const uint32_t hw_j = (wj >> 21u) & 3u;
+    if (!is64 && hw_j >= 2u) break;
+    const uint64_t imm16_j = static_cast<uint64_t>((wj >> 5u) & 0xFFFFu);
+    const uint32_t shift_j = hw_j * 16u;
+    val = (val & ~(0xFFFFULL << shift_j)) | (imm16_j << shift_j);
+    if (!is64) val &= 0xFFFFFFFFULL;
+    ++j;
+  }
+  *out_rd = rd;
+  *out_is64 = is64;
+  *out_val = val;
+  *out_next = j;
+  return true;
+}
+
+static bool reg_is_redefined_before_use_or_dead(const uint32_t* words, uint32_t word_count,
+                                                uint32_t start, uint32_t reg) {
+  const uint32_t limit = (start + 16u < word_count) ? (start + 16u) : word_count;
+  for (uint32_t k = start; k < limit; ++k) {
+    const uint32_t w = words[k];
+    if (w == 0xD65F03C0u) return (reg >= 8u && reg <= 17u);
+    if (w == 0xD503201Fu) continue; // NOP
+    if ((w & 0xFC000000u) == 0x14000000u || (w & 0xFC000000u) == 0x94000000u ||
+        (w & 0xFF000010u) == 0x54000000u || (w & 0x7E000000u) == 0x34000000u ||
+        (w & 0x7E000000u) == 0x36000000u || (w & 0xFE1FFC1Fu) == 0xD61F0000u) {
+      return false;
+    }
+    // MOVZ / MOVN (no source register)
+    const uint32_t opc = (w >> 29u) & 3u;
+    if ((w & 0x1F800000u) == 0x12800000u && (opc == 0u || opc == 2u)) {
+      if ((w & 31u) == reg) return true;
+      continue;
+    }
+    // Epilogue SP adjust: ADD/SUB sp, sp, #imm (does not read GPR reg < 31)
+    if ((w & 0x7F8003FFu) == 0x110003FFu || (w & 0x7F8003FFu) == 0x510003FFu) {
+      continue;
+    }
+    // Epilogue LDP Rt1, Rt2, [sp, ...] (GPR)
+    if ((w & 0x3E4003E0u) == 0x284003E0u) {
+      const uint32_t ldp_opc = (w >> 30u) & 3u;
+      const uint32_t mode = (w >> 23u) & 7u;
+      if (ldp_opc != 3u && mode >= 1u && mode <= 3u) {
+        const uint32_t rt1 = w & 31u;
+        const uint32_t rt2 = (w >> 10u) & 31u;
+        if (rt1 == reg || rt2 == reg) return true;
+        continue;
+      }
+    }
+    // Epilogue LDP Dt1, Dt2, [sp, ...] (SIMD/FP, does not touch GPR)
+    if ((w & 0x3E4003E0u) == 0x2C4003E0u) {
+      const uint32_t mode = (w >> 23u) & 7u;
+      if (mode >= 1u && mode <= 3u) continue;
+    }
+    // Epilogue LDR Rt, [sp, ...] (unsigned offset or pre/post-index, GPR)
+    if ((w & 0xBFC003E0u) == 0xB94003E0u || (w & 0xBFE007E0u) == 0xB84007E0u) {
+      if ((w & 31u) == reg) return true;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+static bool try_emit_magic_div_seq(const uint32_t* words, uint32_t word_count, uint32_t start,
+                                   uint64_t base_addr, const uint8_t* is_label,
+                                   bool has_pending_cmp, uint32_t pending_consumer,
+                                   AnalysisCtx& ctx, TextBuf& tb, uint32_t* out_last_idx) {
+  uint32_t magic_reg = 31u;
+  bool magic_is64 = false;
+  uint64_t magic_val = 0ULL;
+  uint32_t pos = start;
+  if (!decode_mov_const_seq(words, word_count, start, is_label, has_pending_cmp, pending_consumer,
+                            &magic_reg, &magic_is64, &magic_val, &pos)) {
+    return false;
+  }
+  if (pos >= word_count || is_label[pos] != 0u || (has_pending_cmp && pos == pending_consumer)) {
+    return false;
+  }
+
+  // Decode high multiply: SMULL, UMULL, SMULH, UMULH
+  const uint32_t wm = words[pos];
+  bool is_64 = false;
+  bool is_unsigned = false;
+  uint32_t prod_reg = 31u;
+  uint32_t rn = 31u;
+  uint32_t rm = 31u;
+  if ((wm & 0xFFE0FC00u) == 0x9B207C00u) {
+    is_64 = false; is_unsigned = false;
+    rm = (wm >> 16u) & 31u; rn = (wm >> 5u) & 31u; prod_reg = wm & 31u;
+  } else if ((wm & 0xFFE0FC00u) == 0x9BA07C00u) {
+    is_64 = false; is_unsigned = true;
+    rm = (wm >> 16u) & 31u; rn = (wm >> 5u) & 31u; prod_reg = wm & 31u;
+  } else if ((wm & 0xFFE0FC00u) == 0x9B407C00u) {
+    is_64 = true; is_unsigned = false;
+    rm = (wm >> 16u) & 31u; rn = (wm >> 5u) & 31u; prod_reg = wm & 31u;
+  } else if ((wm & 0xFFE0FC00u) == 0x9BC07C00u) {
+    is_64 = true; is_unsigned = true;
+    rm = (wm >> 16u) & 31u; rn = (wm >> 5u) & 31u; prod_reg = wm & 31u;
+  } else {
+    return false;
+  }
+  if (prod_reg >= 31u || rn >= 31u || rm >= 31u) return false;
+  if (rn != magic_reg && rm != magic_reg) return false;
+  const uint32_t div_reg = (rn == magic_reg) ? rm : rn;
+  if (div_reg == magic_reg) return false;
+  ++pos;
+
+  auto can_step = [&](uint32_t idx) -> bool {
+    return idx < word_count && is_label[idx] == 0u && (!has_pending_cmp || idx != pending_consumer);
+  };
+
+  uint32_t cur_reg = prod_reg;
+  uint32_t total_shift = is_64 ? 64u : 0u;
+  bool has_overflow_add = false;
+  uint32_t intermediate_def_mask = (1u << prod_reg);
+
+  // Optional 32-bit shift >> 32 (or >> s >= 32)
+  // For 32-bit signed division, LSR #sh is only semantically equivalent to ASR #sh
+  // on the low 32 bits when sh == 32; sh > 32 MUST use ASR.
+  if (!is_64 && can_step(pos)) {
+    const uint32_t ws = words[pos];
+    const bool is_lsr64 = (ws & 0xFFC0FC00u) == 0xD340FC00u;
+    const bool is_asr64 = (ws & 0xFFC0FC00u) == 0x9340FC00u;
+    if (((ws >> 5u) & 31u) == cur_reg) {
+      const uint32_t sh = (ws >> 16u) & 63u;
+      const bool shift_ok = is_unsigned
+          ? (is_lsr64 && sh >= 32u)
+          : ((is_asr64 && sh >= 32u) || (is_lsr64 && sh == 32u));
+      if (shift_ok) {
+        cur_reg = ws & 31u;
+        if (cur_reg >= 31u) return false;
+        intermediate_def_mask |= (1u << cur_reg);
+        total_shift = sh;
+        ++pos;
+      }
+    }
+  }
+
+  // Optional overflow-correction ADD (signed division where magic >= 2^(W-1), e.g. / 7)
+  if (!is_unsigned && (intermediate_def_mask & (1u << div_reg)) == 0u && can_step(pos)) {
+    const uint32_t wa = words[pos];
+    if (!is_64) {
+      if (total_shift == 32u && (wa & 0xFFE0FC00u) == 0x0B000000u) {
+        const uint32_t am = (wa >> 16u) & 31u;
+        const uint32_t an = (wa >> 5u) & 31u;
+        const uint32_t ad = wa & 31u;
+        if (ad < 31u && ((an == cur_reg && am == div_reg) || (an == div_reg && am == cur_reg))) {
+          cur_reg = ad;
+          intermediate_def_mask |= (1u << cur_reg);
+          has_overflow_add = true;
+          ++pos;
+        }
+      } else if (total_shift == 0u && (wa & 0xFFE0FC00u) == 0x8B808000u) {
+        const uint32_t am = (wa >> 16u) & 31u;
+        const uint32_t an = (wa >> 5u) & 31u;
+        const uint32_t ad = wa & 31u;
+        if (ad < 31u && an == div_reg && am == cur_reg) {
+          cur_reg = ad;
+          intermediate_def_mask |= (1u << cur_reg);
+          total_shift = 32u;
+          has_overflow_add = true;
+          ++pos;
+        }
+      }
+    } else {
+      if ((wa & 0xFFE0FC00u) == 0x8B000000u) {
+        const uint32_t am = (wa >> 16u) & 31u;
+        const uint32_t an = (wa >> 5u) & 31u;
+        const uint32_t ad = wa & 31u;
+        if (ad < 31u && ((an == cur_reg && am == div_reg) || (an == div_reg && am == cur_reg))) {
+          cur_reg = ad;
+          intermediate_def_mask |= (1u << cur_reg);
+          has_overflow_add = true;
+          ++pos;
+        }
+      }
+    }
+  }
+
+  // Optional secondary right shift (ASR for signed, LSR for unsigned)
+  if (can_step(pos)) {
+    const uint32_t ws2 = words[pos];
+    if (!is_64 && total_shift == 32u) {
+      const bool ok_op = is_unsigned ? ((ws2 & 0xFFC0FC00u) == 0x53007C00u)
+                                     : ((ws2 & 0xFFC0FC00u) == 0x13007C00u);
+      if (ok_op && ((ws2 >> 5u) & 31u) == cur_reg) {
+        const uint32_t sh = (ws2 >> 16u) & 31u;
+        const uint32_t sd = ws2 & 31u;
+        if (sd < 31u && sh > 0u) {
+          cur_reg = sd;
+          intermediate_def_mask |= (1u << cur_reg);
+          total_shift += sh;
+          ++pos;
+        }
+      }
+    } else if (is_64) {
+      const bool ok_op = is_unsigned ? ((ws2 & 0xFFC0FC00u) == 0xD340FC00u)
+                                     : ((ws2 & 0xFFC0FC00u) == 0x9340FC00u);
+      if (ok_op && ((ws2 >> 5u) & 31u) == cur_reg) {
+        const uint32_t sh = (ws2 >> 16u) & 63u;
+        const uint32_t sd = ws2 & 31u;
+        if (sd < 31u && sh > 0u) {
+          cur_reg = sd;
+          intermediate_def_mask |= (1u << cur_reg);
+          total_shift += sh;
+          ++pos;
+        }
+      }
+    }
+  }
+
+  const uint32_t bits = is_64 ? 64u : 32u;
+  if (total_shift < bits || total_shift >= 2u * bits) return false;
+
+  uint32_t final_rd = cur_reg;
+  uint32_t last_idx = pos - 1u;
+
+  if (!is_unsigned) {
+    // Signed division REQUIRES exact negative-dividend rounding correction
+    if (!can_step(pos)) return false;
+    const uint32_t wc = words[pos];
+    bool matched_round = false;
+    const uint32_t sign_sh = is_64 ? 63u : 31u;
+    const uint32_t sf_bit = is_64 ? 0x80000000u : 0x00000000u;
+    const bool div_reg_alive = (intermediate_def_mask & (1u << div_reg)) == 0u;
+    const auto is_valid_sign_src = [&](uint32_t r) {
+      return r == cur_reg || (div_reg_alive && r == div_reg);
+    };
+
+    // Pattern A/B: ADD Rd, Rq, (Rq|Rdiv), LSR #(W-1)
+    if ((wc & 0xFFE0FC00u) == (sf_bit | 0x0B400000u | (sign_sh << 10u))) {
+      const uint32_t cm = (wc >> 16u) & 31u;
+      const uint32_t cn = (wc >> 5u) & 31u;
+      const uint32_t cd = wc & 31u;
+      if (cd < 31u && cn == cur_reg && is_valid_sign_src(cm)) {
+        final_rd = cd;
+        last_idx = pos;
+        matched_round = true;
+      }
+    }
+    // Pattern C: SUB Rd, Rq, Rdiv, ASR #(W-1)
+    if (!matched_round && (wc & 0xFFE0FC00u) == (sf_bit | 0x4B800000u | (sign_sh << 10u))) {
+      const uint32_t cm = (wc >> 16u) & 31u;
+      const uint32_t cn = (wc >> 5u) & 31u;
+      const uint32_t cd = wc & 31u;
+      if (cd < 31u && cn == cur_reg && is_valid_sign_src(cm)) {
+        final_rd = cd;
+        last_idx = pos;
+        matched_round = true;
+      }
+    }
+    // Pattern D/E: 2-instruction sign extract (LSR/ASR #(W-1)) + ADD/SUB
+    if (!matched_round && can_step(pos + 1u)) {
+      const bool is_lsr_sign = is_64 ? ((wc & 0xFFC0FC00u) == 0xD340FC00u && ((wc >> 16u) & 63u) == 63u)
+                                     : ((wc & 0xFFC0FC00u) == 0x53007C00u && ((wc >> 16u) & 31u) == 31u);
+      const bool is_asr_sign = is_64 ? ((wc & 0xFFC0FC00u) == 0x9340FC00u && ((wc >> 16u) & 63u) == 63u)
+                                     : ((wc & 0xFFC0FC00u) == 0x13007C00u && ((wc >> 16u) & 31u) == 31u);
+      const uint32_t sn = (wc >> 5u) & 31u;
+      const uint32_t sd = wc & 31u;
+      if ((is_lsr_sign || is_asr_sign) && sd < 31u && sd != cur_reg && is_valid_sign_src(sn)) {
+        const uint32_t wc2 = words[pos + 1u];
+        const uint32_t c2m = (wc2 >> 16u) & 31u;
+        const uint32_t c2n = (wc2 >> 5u) & 31u;
+        const uint32_t c2d = wc2 & 31u;
+        if (is_lsr_sign && (wc2 & 0xFFE0FC00u) == (sf_bit | 0x0B000000u) && c2d < 31u &&
+            ((c2n == cur_reg && c2m == sd) || (c2n == sd && c2m == cur_reg))) {
+          intermediate_def_mask |= (1u << sd);
+          final_rd = c2d;
+          last_idx = pos + 1u;
+          matched_round = true;
+        } else if (is_asr_sign && (wc2 & 0xFFE0FC00u) == (sf_bit | 0x4B000000u) && c2d < 31u &&
+                   c2n == cur_reg && c2m == sd) {
+          intermediate_def_mask |= (1u << sd);
+          final_rd = c2d;
+          last_idx = pos + 1u;
+          matched_round = true;
+        }
+      }
+    }
+    if (!matched_round) return false;
+  }
+
+  // Exact mathematical verification of (magic, shift, width, signedness, overflow_add)
+  uint64_t divisor = 0ULL;
+  if (is_unsigned) {
+    const uint64_t m_u = is_64 ? magic_val : (magic_val & 0xFFFFFFFFULL);
+    if (!verify_magic_udiv(m_u, total_shift, bits, &divisor)) return false;
+  } else {
+    uint64_t m_eff = 0ULL;
+    if (!is_64) {
+      const uint32_t m32 = static_cast<uint32_t>(magic_val & 0xFFFFFFFFULL);
+      const bool msb_set = (m32 & 0x80000000u) != 0u;
+      if (has_overflow_add != msb_set) return false;
+      m_eff = static_cast<uint64_t>(m32);
+    } else {
+      const bool msb_set = (magic_val & 0x8000000000000000ULL) != 0ULL;
+      if (has_overflow_add != msb_set) return false;
+      m_eff = magic_val;
+    }
+    if (!verify_magic_sdiv(m_eff, total_shift, bits, &divisor)) return false;
+  }
+
+  // Abort folding if any intermediate defined register (other than final_rd) may be live after last_idx.
+  intermediate_def_mask &= ~(1u << final_rd);
+  for (uint32_t r = 0u; r < 31u; ++r) {
+    if ((intermediate_def_mask & (1u << r)) != 0u) {
+      if (!reg_is_redefined_before_use_or_dead(words, word_count, last_idx + 1u, r)) {
+        return false;
+      }
+    }
+  }
+
+  const uint64_t pc = base_addr + static_cast<uint64_t>(start) * 4ULL;
+  if (magic_reg != final_rd && !reg_is_redefined_before_use_or_dead(words, word_count, last_idx + 1u, magic_reg)) {
+    tb.record_line(pc);
+    tb.put_str("    ");
+    tb.put_reg_x(magic_reg);
+    tb.put_str(" = ");
+    tb.put_imm(magic_val);
+    tb.put_str(";\n");
+    ctx.clear_adrp(magic_reg);
+  }
+
+  tb.record_line(base_addr + static_cast<uint64_t>(last_idx) * 4ULL);
+  tb.put_str("    ");
+  tb.put_reg_x(final_rd);
+  if (!is_64 && !is_unsigned) {
+    tb.put_str(" = (uint64)(uint32_t)((int32_t)");
+    tb.put_reg_x(div_reg);
+    tb.put_str(" / ");
+    tb.put_u64_dec(divisor);
+    tb.put_str(");\n");
+  } else if (!is_64 && is_unsigned) {
+    tb.put_str(" = (uint64)((uint32_t)");
+    tb.put_reg_x(div_reg);
+    tb.put_str(" / ");
+    tb.put_u64_dec(divisor);
+    tb.put_str("U);\n");
+  } else if (is_64 && !is_unsigned) {
+    tb.put_str(" = (uint64)((int64_t)");
+    tb.put_reg_x(div_reg);
+    tb.put_str(" / ");
+    tb.put_u64_dec(divisor);
+    tb.put_str("LL);\n");
+  } else {
+    tb.put_str(" = (");
+    tb.put_reg_x(div_reg);
+    tb.put_str(" / ");
+    tb.put_u64_dec(divisor);
+    tb.put_str("ULL);\n");
+  }
+  ctx.clear_adrp(final_rd);
+  *out_last_idx = last_idx;
+  return true;
+}
+
+static void simplify_idempotent_casts_in_body(TextBuf& tb, uint32_t body_start_off) {
+  if (tb.overflow || body_start_off >= tb.len) return;
+  static const struct { const char* from; uint32_t from_len; const char* to; uint32_t to_len; } kPairs[] = {
+    {"(uint64)(uint64)", 16u, "(uint64)", 8u},
+    {"(uint64_t)(uint64_t)", 20u, "(uint64_t)", 10u},
+    {"(int64_t)(int64_t)", 18u, "(int64_t)", 9u},
+    {"(uint32_t)(uint32_t)", 20u, "(uint32_t)", 10u},
+    {"(int32_t)(int32_t)", 18u, "(int32_t)", 9u},
+    {"(uint64)(uint64_t)", 18u, "(uint64)", 8u},
+    {"(uint64_t)(uint64)", 18u, "(uint64_t)", 10u},
+  };
+  bool any = true;
+  uint32_t rounds = 0u;
+  while (any && rounds < 4u) {
+    any = false;
+    ++rounds;
+    for (uint32_t k = 0u; k < sizeof(kPairs) / sizeof(kPairs[0]); ++k) {
+      const char* pat = kPairs[k].from;
+      const uint32_t plen = kPairs[k].from_len;
+      const char* rep = kPairs[k].to;
+      const uint32_t rlen = kPairs[k].to_len;
+      uint32_t read_pos = body_start_off;
+      uint32_t write_pos = body_start_off;
+      while (read_pos < tb.len) {
+        if (read_pos + plen <= tb.len && starts_with(tb.data + read_pos, plen, pat, plen)) {
+          for (uint32_t c = 0u; c < rlen; ++c) tb.data[write_pos++] = rep[c];
+          read_pos += plen;
+          any = true;
+        } else {
+          tb.data[write_pos++] = tb.data[read_pos++];
+        }
+      }
+      tb.len = write_pos;
+      tb.data[tb.len] = '\0';
+    }
+  }
+}
+
+static bool is_ident_char_simple(char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+}
+
+static uint32_t count_ident_occurrences(const char* buf, uint32_t start, uint32_t end,
+                                        const char* name, uint32_t name_len) {
+  uint32_t count = 0u;
+  for (uint32_t p = start; p + name_len <= end; ++p) {
+    if (buf[p] == name[0] && starts_with(buf + p, name_len, name, name_len)) {
+      const bool left_ok = (p == start) || !is_ident_char_simple(buf[p - 1u]);
+      const bool right_ok = (p + name_len == end) || !is_ident_char_simple(buf[p + name_len]);
+      if (left_ok && right_ok) {
+        ++count;
+        p += name_len - 1u;
+      }
+    }
+  }
+  return count;
+}
+
+static void fold_single_use_scratch_temps(TextBuf& tb, uint32_t body_start_off, uint32_t body_start_line,
+                                          hex::Arena& work_arena) {
+  if (tb.overflow || body_start_off >= tb.len) return;
+  const uint32_t max_lines = 4096u;
+  uint32_t* line_off = work_arena.alloc<uint32_t>(max_lines);
+  uint32_t* line_len = work_arena.alloc<uint32_t>(max_lines);
+  if (!line_off || !line_len) return;
+
+  uint32_t nlines = 0u;
+  uint32_t p = body_start_off;
+  while (p < tb.len && nlines < max_lines) {
+    const uint32_t s = p;
+    while (p < tb.len && tb.data[p] != '\n') ++p;
+    if (p < tb.len && tb.data[p] == '\n') ++p;
+    line_off[nlines] = s;
+    line_len[nlines] = p - s;
+    ++nlines;
+  }
+  if (nlines < 2u || p < tb.len) return;
+
+  char* out_buf = work_arena.alloc<char>(tb.cap);
+  if (!out_buf) return;
+  uint32_t out_len = 0u;
+  uint32_t removed_lines = 0u;
+  bool changed = false;
+
+  for (uint32_t li = 0u; li < nlines; ++li) {
+    const char* ln = tb.data + line_off[li];
+    const uint32_t ll = line_len[li];
+
+    bool folded = false;
+    if (li + 1u < nlines && ll > 8u && ll < 120u && ln[ll - 1u] == '\n' && ln[ll - 2u] == ';') {
+      uint32_t ind = 0u;
+      while (ind < ll && ln[ind] == ' ') ++ind;
+      if (ind + 6u < ll && ln[ind] == 'x' && ln[ind + 1u] >= '0' && ln[ind + 1u] <= '9') {
+        uint32_t reg = static_cast<uint32_t>(ln[ind + 1u] - '0');
+        uint32_t name_end = ind + 2u;
+        if (name_end < ll && ln[name_end] >= '0' && ln[name_end] <= '9') {
+          reg = reg * 10u + static_cast<uint32_t>(ln[name_end] - '0');
+          ++name_end;
+        }
+        const uint32_t name_len = name_end - ind;
+        if (reg >= 8u && reg <= 17u && name_end + 3u < ll &&
+            ln[name_end] == ' ' && ln[name_end + 1u] == '=' && ln[name_end + 2u] == ' ') {
+          const char* rhs = ln + name_end + 3u;
+          const uint32_t rhs_len = (ll - 2u) - (name_end + 3u);
+          bool pure = (rhs_len > 0u && rhs_len <= 72u);
+          for (uint32_t k = 0u; pure && k < rhs_len; ++k) {
+            const char c = rhs[k];
+            if (c == '=' || c == ',' || c == '?' || c == ':' || c == '*' || c == '[' || c == '"') {
+              pure = false;
+            }
+            if (c == '(' && k > 0u && is_ident_char_simple(rhs[k - 1u])) {
+              pure = false;
+            }
+          }
+          if (pure && count_ident_occurrences(rhs, 0u, rhs_len, ln + ind, name_len) == 0u) {
+            const char* nxt = tb.data + line_off[li + 1u];
+            const uint32_t nlen = line_len[li + 1u];
+            uint32_t nind = 0u;
+            while (nind < nlen && nxt[nind] == ' ') ++nind;
+            if (nind == ind && nlen > nind + 3u && nxt[nind] != '}' && nxt[nind] != '{' &&
+                !starts_with(nxt + nind, nlen - nind, "L_", 2u) &&
+                !starts_with(nxt + nind, nlen - nind, "while", 5u) &&
+                !starts_with(nxt + nind, nlen - nind, "for", 3u)) {
+              const uint32_t next_uses = count_ident_occurrences(nxt, 0u, nlen, ln + ind, name_len);
+              const uint32_t total_uses = count_ident_occurrences(tb.data, body_start_off, tb.len, ln + ind, name_len);
+              if (next_uses == 1u && total_uses == 2u) {
+                uint32_t occ_pos = 0u;
+                for (uint32_t q = 0u; q + name_len <= nlen; ++q) {
+                  if (nxt[q] == ln[ind] && starts_with(nxt + q, name_len, ln + ind, name_len) &&
+                      (q == 0u || !is_ident_char_simple(nxt[q - 1u])) &&
+                      (q + name_len == nlen || !is_ident_char_simple(nxt[q + name_len]))) {
+                    occ_pos = q;
+                    break;
+                  }
+                }
+                const bool is_lhs = (occ_pos + name_len + 2u < nlen &&
+                                     nxt[occ_pos + name_len] == ' ' &&
+                                     nxt[occ_pos + name_len + 1u] == '=' &&
+                                     nxt[occ_pos + name_len + 2u] != '=');
+                const uint32_t needed = nlen - name_len + rhs_len + 2u;
+                if (!is_lhs && out_len + needed < tb.cap - body_start_off) {
+                  hex::mem_copy(out_buf + out_len, nxt, occ_pos);
+                  out_len += occ_pos;
+                  out_buf[out_len++] = '(';
+                  hex::mem_copy(out_buf + out_len, rhs, rhs_len);
+                  out_len += rhs_len;
+                  out_buf[out_len++] = ')';
+                  hex::mem_copy(out_buf + out_len, nxt + occ_pos + name_len, nlen - (occ_pos + name_len));
+                  out_len += nlen - (occ_pos + name_len);
+                  const uint32_t removed_line_no = body_start_line + li - removed_lines;
+                  for (uint32_t k = 0u; k < tb.lm_count; ++k) {
+                    if (tb.lm[k].line_no > removed_line_no) tb.lm[k].line_no -= 1u;
+                  }
+                  ++removed_lines;
+                  ++li;
+                  changed = true;
+                  folded = true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (!folded) {
+      if (out_len + ll >= tb.cap - body_start_off) return;
+      hex::mem_copy(out_buf + out_len, ln, ll);
+      out_len += ll;
+    }
+  }
+
+  if (changed && body_start_off + out_len < tb.cap) {
+    hex::mem_copy(tb.data + body_start_off, out_buf, out_len);
+    tb.len = body_start_off + out_len;
+    tb.data[tb.len] = '\0';
+    if (tb.line_no > removed_lines) tb.line_no -= removed_lines;
+  }
+}
+
 HexStatus try_emit_arm64_general(
     const uint32_t* words,
     uint32_t word_count,
     uint64_t base_addr,
     const char* func_name_utf8,
     uint32_t func_name_len,
-    uint32_t /*emit_flags*/,
+    uint32_t emit_flags,
     hex::Arena& emit_arena,
     const char** out_text,
     uint32_t* out_text_len,
@@ -9686,6 +10387,12 @@ HexStatus try_emit_arm64_general(
     uint32_t* out_linemap_count) {
   if (!words || word_count < kMinGeneralWords || word_count > kMaxGeneralWords ||
       !out_text || !out_text_len || !out_linemap || !out_linemap_count) {
+    return HEX_ERR_UNSUPPORTED;
+  }
+  // In JS-parity mode, tiny 2-word `op; ret` stubs not matched by simple/IR emitters
+  // fall back to JS to preserve 0-diff parity (e.g. mov x0, x1; ret / add x0, x0, x9; ret).
+  if ((emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u &&
+      word_count == 2u && words[1] == 0xD65F03C0u) {
     return HEX_ERR_UNSUPPORTED;
   }
   // Preserve exact JS lines/sourceMap parity on 5-word synthetic framed single-ALU stubs
@@ -10426,6 +11133,20 @@ HexStatus try_emit_arm64_general(
         continue;
       }
     }
+    // Strict magic constant division recovery (32/64-bit signed/unsigned, with exact verification).
+    {
+      uint32_t magic_last = i;
+      if (try_emit_magic_div_seq(words, word_count, i, base_addr, is_label,
+                                 has_pending_cmp, pending_consumer, ctx, tb, &magic_last)) {
+        pending_label = false;
+        if (consumed_pending) {
+          cmp = ctx.uses_nzcv ? make_nzcv_cmp(false) : CmpState{};
+        }
+        if (tb.overflow) return HEX_ERR_OOM;
+        i = magic_last;
+        continue;
+      }
+    }
     // Fold adjacent MOVZ/MOVN + MOVK sequence targeting the same register and width.
     {
       const uint32_t w = words[i];
@@ -10511,6 +11232,8 @@ HexStatus try_emit_arm64_general(
     fallback_ret = ((ctx.gpr_used & 1u) != 0u) ? "    return x0;\n" : "    return 0;\n";
   }
   structurize_c_body(tb, body_start_off, body_start_line, base_addr, fallback_ret, work_arena, emit_arena);
+  simplify_idempotent_casts_in_body(tb, body_start_off);
+  fold_single_use_scratch_temps(tb, body_start_off, body_start_line, work_arena);
 
   // Post-structurize dead-local pruning: omit __hex_nzcv and unused zero-init scratch xN/dN.
   if (!tb.overflow && body_start_off < tb.len) {

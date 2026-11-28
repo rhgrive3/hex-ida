@@ -56,7 +56,7 @@ Projected from `currentSupportMatrix().managed` in `js/platform/capability-matur
 | `cil` | Supported | Supported | Supported | Supported | Supported | Supported | Unsupported | **M5** | **M5** |
 | `jvm` | Supported | Supported | Supported | Supported | Supported | Supported | Unsupported | **M5** | **M5** |
 
-Each managed frontend decodes VM operations into exact `VMEffects`, lowers to shared Semantic IR/CFG/SSA, and runs type/interprocedural analysis and decompilation through the shared middle-end. `M6` (runtime debugging / live provider integration) remains **Unsupported** in the base matrix.
+Each managed frontend decodes VM operations into exact `VMEffects`, lowers to shared Semantic IR/CFG/SSA, and runs type/interprocedural analysis and decompilation through the shared middle-end. `.wasm` and `.dex` binaries are wired directly into the asynchronous `openBinarySource` / platform worker open path via `js/managed/adapter.js` (exposing sections, functions, imports, exports, and `managedFrontend` truth without disturbing Mach-O `0xCAFEBABE` FAT detection). `M6` (runtime debugging / live provider integration) remains **Unsupported** in the base matrix.
 
 ## Knowledge, capability rules, collaboration, patterns & rebuild
 

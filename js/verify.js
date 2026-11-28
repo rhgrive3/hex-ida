@@ -2,7 +2,7 @@
  * 検証 — 「そう書いてある」を「本当にそう動く」に上げる層。
  * 実際の命令とdataflowで裏取りできないものは確定扱いしない。
  */
-import { findValueUpdates, constantComparisons, regKeyOf, selfRegisters } from './dataflow.js';
+import { findValueUpdates, constantComparisons, regKeyOf, selfRegisters, stripHeavyIrRefs } from './dataflow.js';
 
 const ARG2 = 'x2';
 const FP_ARG0 = 'v0';
@@ -251,7 +251,7 @@ export function fieldUse(model, offset, opts) {
   for (const u of findValueUpdates(model)) {
     if (u.kind !== 'read-modify-write' || !u.location || u.location.stack || u.location.disp !== want) continue;
     if (selfOnly && !u.location.self) continue;
-    out.rmw.push(u);
+    out.rmw.push(stripHeavyIrRefs(u));
   }
 
   const byRow = new Map(insns.map((i) => [i.row, i]));

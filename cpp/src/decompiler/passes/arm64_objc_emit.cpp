@@ -425,48 +425,58 @@ HexStatus try_emit_arm64_objc(
     cur_line++;
   };
 
+  const bool js_parity = (emit_flags & HEX_EMIT_FLAG_JS_PARITY) != 0u;
+
   if (pat == ObjcPattern::ConstReturn) {
     emit_line("/* hex: fixed-width integer types (self-contained; standard names stay identical to <stdint.h>). */", base_addr);
     emit_line("typedef __INT32_TYPE__ int32;", base_addr);
     emit_line("typedef __UINT64_TYPE__ uint64;", base_addr);
     emit_line("typedef void * id;", base_addr);
+    if (!js_parity) {
+      emit_line("typedef void * SEL;", base_addr);
+    }
 
     w.append_str("int32 ");
     w.append_bytes(func_name, func_name_len);
-    w.append_str("(void)\n");
+    w.append_str(js_parity ? "(void)\n" : "(id self, SEL _cmd)\n");
     push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
     cur_line++;
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+    if (js_parity) {
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    emit_line("    uint64 self;", base_addr);
+      emit_line("    uint64 self;", base_addr);
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_cmd_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_cmd_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    emit_line("    uint64 a2;", base_addr);
+      emit_line("    uint64 a2;", base_addr);
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(" = self;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 8ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(" = self;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 8ULL);
+      cur_line++;
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_cmd_mag, true);
-    w.append_str(" = a2;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 16ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_cmd_mag, true);
+      w.append_str(" = a2;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 16ULL);
+      cur_line++;
+    } else {
+      emit_line("    (void)self;", base_addr + 8ULL);
+      emit_line("    (void)_cmd;", base_addr + 16ULL);
+    }
 
     w.append_str("    return ");
     w.append_const_lit(ret_const);
@@ -487,6 +497,9 @@ HexStatus try_emit_arm64_objc(
     emit_line("typedef __INT64_TYPE__ int64_t;", base_addr);
     emit_line("typedef __UINTPTR_TYPE__ uintptr_t;", base_addr);
     emit_line("typedef void * id;", base_addr);
+    if (!js_parity) {
+      emit_line("typedef void * SEL;", base_addr);
+    }
     emit_line("/* hex: standalone external globals (stripped by translation unit packager). */", base_addr);
 
     w.append_str("static uint64 global_");
@@ -502,52 +515,60 @@ HexStatus try_emit_arm64_objc(
 
     w.append_str("int32 ");
     w.append_bytes(func_name, func_name_len);
-    w.append_str("(void)\n");
+    w.append_str(js_parity ? "(void)\n" : "(id self, SEL _cmd)\n");
     push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
     cur_line++;
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+    if (js_parity) {
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    emit_line("    uint64 self;", base_addr);
+      emit_line("    uint64 self;", base_addr);
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_cmd_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_cmd_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    emit_line("    uint64 a2;", base_addr);
+      emit_line("    uint64 a2;", base_addr);
 
-    w.append_str("    uint32 var_");
-    w.append_u64_hex(self_off, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+      w.append_str("    uint32 var_");
+      w.append_u64_hex(self_off, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(" = self;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 8ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(" = self;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 8ULL);
+      cur_line++;
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_cmd_mag, true);
-    w.append_str(" = a2;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 16ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_cmd_mag, true);
+      w.append_str(" = a2;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 16ULL);
+      cur_line++;
 
-    w.append_str("    return *(uint32_t *)(uintptr_t)(var_");
-    w.append_u64_hex(self_off, true);
-    w.append_str(" + (sext(global_");
-    w.append_u64_hex(global_addr, true);
-    w.append_str(")));\n");
+      w.append_str("    return *(uint32_t *)(uintptr_t)(var_");
+      w.append_u64_hex(self_off, true);
+      w.append_str(" + (sext(global_");
+      w.append_u64_hex(global_addr, true);
+      w.append_str(")));\n");
+    } else {
+      emit_line("    (void)_cmd;", base_addr + 16ULL);
+
+      w.append_str("    return *(uint32_t *)((uintptr_t)self + (sext(global_");
+      w.append_u64_hex(global_addr, true);
+      w.append_str(")));\n");
+    }
     push_linemap(lm_buf, &lm_count, cur_line, base_addr + 36ULL);
     push_linemap(lm_buf, &lm_count, cur_line, base_addr + 44ULL);
     cur_line++;
@@ -564,6 +585,9 @@ HexStatus try_emit_arm64_objc(
     emit_line("typedef __INT64_TYPE__ int64_t;", base_addr);
     emit_line("typedef __UINTPTR_TYPE__ uintptr_t;", base_addr);
     emit_line("typedef void * id;", base_addr);
+    if (!js_parity) {
+      emit_line("typedef void * SEL;", base_addr);
+    }
     emit_line("/* hex: standalone external globals (stripped by translation unit packager). */", base_addr);
 
     w.append_str("static uint64 global_");
@@ -572,60 +596,69 @@ HexStatus try_emit_arm64_objc(
     push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
-    w.append_str("uint64 ");
+    w.append_str(js_parity ? "uint64 " : "id ");
     w.append_bytes(func_name, func_name_len);
-    w.append_str("(uint64 a3)\n");
+    w.append_str(js_parity ? "(uint64 a3)\n" : "(id self, SEL _cmd, uint64 a3)\n");
     push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
     cur_line++;
 
     w.append_str("{\n");
     cur_line++;
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+    if (js_parity) {
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    emit_line("    uint64 self;", base_addr);
+      emit_line("    uint64 self;", base_addr);
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_cmd_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_cmd_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    emit_line("    uint64 a2;", base_addr);
+      emit_line("    uint64 a2;", base_addr);
 
-    w.append_str("    uint64 local_m");
-    w.append_u64_hex(local_arg_mag, true);
-    w.append_str(";\n");
-    push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
-    cur_line++;
+      w.append_str("    uint64 local_m");
+      w.append_u64_hex(local_arg_mag, true);
+      w.append_str(";\n");
+      push_linemap(lm_buf, &lm_count, cur_line, entry_addr);
+      cur_line++;
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(" = self;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 8ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(" = self;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 8ULL);
+      cur_line++;
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_cmd_mag, true);
-    w.append_str(" = a2;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 16ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_cmd_mag, true);
+      w.append_str(" = a2;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 16ULL);
+      cur_line++;
 
-    w.append_str("    local_m");
-    w.append_u64_hex(local_arg_mag, true);
-    w.append_str(" = a3;\n");
-    push_linemap(lm_buf, &lm_count, cur_line, base_addr + 20ULL);
-    cur_line++;
+      w.append_str("    local_m");
+      w.append_u64_hex(local_arg_mag, true);
+      w.append_str(" = a3;\n");
+      push_linemap(lm_buf, &lm_count, cur_line, base_addr + 20ULL);
+      cur_line++;
 
-    w.append_str("    *(uint32_t *)(uintptr_t)(local_m");
-    w.append_u64_hex(local_self_mag, true);
-    w.append_str(" + (int64_t)(int32_t)global_");
-    w.append_u64_hex(global_addr, true);
-    w.append_str(") = (uint32_t)a3;\n");
+      w.append_str("    *(uint32_t *)(uintptr_t)(local_m");
+      w.append_u64_hex(local_self_mag, true);
+      w.append_str(" + (int64_t)(int32_t)global_");
+      w.append_u64_hex(global_addr, true);
+      w.append_str(") = (uint32_t)a3;\n");
+    } else {
+      (void)local_arg_mag;
+      emit_line("    (void)_cmd;", base_addr + 16ULL);
+
+      w.append_str("    *(uint32_t *)((uintptr_t)self + (int64_t)(int32_t)global_");
+      w.append_u64_hex(global_addr, true);
+      w.append_str(") = (uint32_t)a3;\n");
+    }
     push_linemap(lm_buf, &lm_count, cur_line, base_addr + 44ULL);
     cur_line++;
 

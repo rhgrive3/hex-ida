@@ -336,7 +336,7 @@ button { font: inherit; color: inherit; }
    browser's scroll limit. Rows are absolutely positioned inside it. */
 .rows { position: relative; width: 100%; }
 
-.row {
+.rows > .row {
   position: absolute; left: 0; right: 0;
   height: var(--row-h);
   display: grid;
@@ -355,71 +355,71 @@ button { font: inherit; color: inherit; }
   :root.size-s { --line-h: 24px; }
   :root.size-m { --line-h: 28px; }
 }
-.row .c-addr  { color: var(--code-addr); }
-.row .c-hex   { color: var(--code-hex); }
-.row .c-mn    { color: var(--code-mn); font-weight: 600; }
-.row .c-ops   { color: var(--code-reg); overflow: hidden; text-overflow: clip; }
-.row .c-ascii { color: var(--code-addr); }
-.row.flow .c-mn { color: var(--code-mn-flow); }
-.row.data .c-mn { color: var(--code-mn-data); font-weight: 400; }
-.row.data .c-ops { color: var(--code-mn-data); }
-.row.data .c-ops .tok-imm { color: inherit; }   /* raw data stays quiet */
-.row.pending .c-hex, .row.pending .c-mn, .row.pending .c-ops { color: var(--label-3); }
-.row.sel { background: var(--selection); }
+.rows > .row .c-addr  { color: var(--code-addr); }
+.rows > .row .c-hex   { color: var(--code-hex); }
+.rows > .row .c-mn    { color: var(--code-mn); font-weight: 600; }
+.rows > .row .c-ops   { color: var(--code-reg); overflow: hidden; text-overflow: clip; }
+.rows > .row .c-ascii { color: var(--code-addr); }
+.rows > .row.flow .c-mn { color: var(--code-mn-flow); }
+.rows > .row.data .c-mn { color: var(--code-mn-data); font-weight: 400; }
+.rows > .row.data .c-ops { color: var(--code-mn-data); }
+.rows > .row.data .c-ops .tok-imm { color: inherit; }   /* raw data stays quiet */
+.rows > .row.pending .c-hex, .rows > .row.pending .c-mn, .rows > .row.pending .c-ops { color: var(--label-3); }
+.rows > .row.sel { background: var(--selection); }
 /* A multi-row selection is closed off top and bottom so its extent is obvious
    even when both ends are off screen. */
-.row.sel-first { box-shadow: inset 0 1px 0 var(--accent); }
-.row.sel-last  { box-shadow: inset 0 -1px 0 var(--accent); }
-.row.sel-first.sel-last { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
-.row.hit { box-shadow: inset 3px 0 0 var(--accent); }
-.row.hit.sel-first { box-shadow: inset 3px 0 0 var(--accent), inset 0 1px 0 var(--accent); }
-.row.hit.sel-last  { box-shadow: inset 3px 0 0 var(--accent), inset 0 -1px 0 var(--accent); }
-.row .tok-imm { color: var(--code-imm); }
-.row .tok-punct { color: var(--code-punct); }
-.row .tok-cmt { color: var(--code-cmt); }
+.rows > .row.sel-first { box-shadow: inset 0 1px 0 var(--accent); }
+.rows > .row.sel-last  { box-shadow: inset 0 -1px 0 var(--accent); }
+.rows > .row.sel-first.sel-last { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+.rows > .row.hit { box-shadow: inset 3px 0 0 var(--accent); }
+.rows > .row.hit.sel-first { box-shadow: inset 3px 0 0 var(--accent), inset 0 1px 0 var(--accent); }
+.rows > .row.hit.sel-last  { box-shadow: inset 3px 0 0 var(--accent), inset 0 -1px 0 var(--accent); }
+.rows > .row .tok-imm { color: var(--code-imm); }
+.rows > .row .tok-punct { color: var(--code-punct); }
+.rows > .row .tok-cmt { color: var(--code-cmt); }
 
 /* Column layouts.
    `.mode-asm` / `.mode-hex` live on the viewport, `.mode-*-head` on the
    column header, `.wide` on the app root (landscape / regular width). */
-.colhead, .row { grid-template-columns: var(--addr-w) 1fr; }
-.colhead .c-hex, .colhead .c-ascii, .row .c-hex, .row .c-ascii { display: none; }
-.colhead .c-ops, .row .c-ops { display: none; }
+.colhead, .rows > .row { grid-template-columns: var(--addr-w) 1fr; }
+.colhead .c-hex, .colhead .c-ascii, .rows > .row .c-hex, .rows > .row .c-ascii { display: none; }
+.colhead .c-ops, .rows > .row .c-ops { display: none; }
 
 /* assembly, compact: address | mnemonic+ops merged */
-.mode-asm .row, .mode-asm-head {
+.mode-asm .rows > .row, .mode-asm-head {
   grid-template-columns: var(--addr-w) var(--mn-w) 1fr;
 }
-.mode-asm .row .c-mn, .mode-asm-head .c-mn { display: block; }
-.mode-asm .row .c-ops, .mode-asm-head .c-ops { display: block; }
+.mode-asm .rows > .row .c-mn, .mode-asm-head .c-mn { display: block; }
+.mode-asm .rows > .row .c-ops, .mode-asm-head .c-ops { display: block; }
 
 /* assembly, wide: address | hex | mnemonic | ops */
-.wide .mode-asm .row, .wide .mode-asm-head {
+.wide .mode-asm .rows > .row, .wide .mode-asm-head {
   grid-template-columns: var(--addr-w) var(--hex-w) var(--mn-w) 1fr;
 }
-.wide .mode-asm .row .c-hex, .wide .mode-asm-head .c-hex { display: block; }
+.wide .mode-asm .rows > .row .c-hex, .wide .mode-asm-head .c-hex { display: block; }
 
 /* hex: address | hex | ascii */
-.mode-hex .row, .mode-hex-head {
+.mode-hex .rows > .row, .mode-hex-head {
   grid-template-columns: var(--addr-w) var(--hex-w) 1fr;
 }
-.mode-hex .row .c-hex, .mode-hex-head .c-hex { display: block; }
-.mode-hex .row .c-ascii, .mode-hex-head .c-ascii { display: block; }
-.mode-hex .row .c-mn, .mode-hex .row .c-ops,
+.mode-hex .rows > .row .c-hex, .mode-hex-head .c-hex { display: block; }
+.mode-hex .rows > .row .c-ascii, .mode-hex-head .c-ascii { display: block; }
+.mode-hex .rows > .row .c-mn, .mode-hex .rows > .row .c-ops,
 .mode-hex-head .c-mn, .mode-hex-head .c-ops { display: none; }
 
 /* ── 解説行（初心者モードの主役） ───────────────────────────
    命令の下にもう 1 段、日本語の意味を敷く。行の高さは JS が
    --line-h + --note-h で決めているので、ここは行の中の配置だけ。 */
 
-.row .c-note { display: none; }
+.rows > .row .c-note { display: none; }
 
-:root:not(.with-notes) .mode-asm .row.has-comment {
+:root:not(.with-notes) .mode-asm .rows > .row.has-comment {
   grid-template-columns: var(--addr-w) var(--mn-w) minmax(0, auto) minmax(0, 1fr);
 }
-:root:not(.with-notes) .wide .mode-asm .row.has-comment {
+:root:not(.with-notes) .wide .mode-asm .rows > .row.has-comment {
   grid-template-columns: var(--addr-w) var(--hex-w) var(--mn-w) minmax(0, auto) minmax(0, 1fr);
 }
-:root:not(.with-notes) .mode-asm .row.has-comment .c-note {
+:root:not(.with-notes) .mode-asm .rows > .row.has-comment .c-note {
   display: block;
   padding-left: 1.5ch;
   font-size: var(--note-size);
@@ -430,11 +430,11 @@ button { font: inherit; color: inherit; }
   text-overflow: ellipsis;
 }
 
-:root.with-notes .mode-asm .row {
+:root.with-notes .mode-asm .rows > .row {
   grid-template-rows: var(--line-h) var(--note-h);
   align-items: center;
 }
-:root.with-notes .mode-asm .row .c-note {
+:root.with-notes .mode-asm .rows > .row .c-note {
   display: block;
   grid-column: 1 / -1;
   grid-row: 2;
@@ -447,41 +447,41 @@ button { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   font-family: "Inter", "IBM Plex Sans JP", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
-:root.with-notes .mode-asm .row > .c-addr,
-:root.with-notes .mode-asm .row > .c-hex,
-:root.with-notes .mode-asm .row > .c-mn,
-:root.with-notes .mode-asm .row > .c-ops { grid-row: 1; }
+:root.with-notes .mode-asm .rows > .row > .c-addr,
+:root.with-notes .mode-asm .rows > .row > .c-hex,
+:root.with-notes .mode-asm .rows > .row > .c-mn,
+:root.with-notes .mode-asm .rows > .row > .c-ops { grid-row: 1; }
 
 /* 行の間に薄い区切りを入れないと、2 段になったときに続き具合が読みにくい */
-:root.with-notes .mode-asm .row {
+:root.with-notes .mode-asm .rows > .row {
   border-bottom: 0.5px solid var(--separator-2);
 }
 
-.row .c-note .fnname {
+.rows > .row .c-note .fnname {
   font-style: normal;
   font-weight: 600;
   color: var(--fn-accent);
   margin-right: .6em;
 }
-.row .c-note .fnname:empty { display: none; margin: 0; }
+.rows > .row .c-note .fnname:empty { display: none; margin: 0; }
 
 /* 関数の先頭は、上に線を引いて区切りを見せる */
-.mode-asm .row.fnstart { box-shadow: inset 0 1.5px 0 var(--fn-accent); }
-.mode-asm .row.fnstart .c-addr { color: var(--fn-accent); font-weight: 600; }
+.mode-asm .rows > .row.fnstart { box-shadow: inset 0 1.5px 0 var(--fn-accent); }
+.mode-asm .rows > .row.fnstart .c-addr { color: var(--fn-accent); font-weight: 600; }
 
 /* ── 処理のまとまり（Semantic Block） ───────────────────────
    行の高さも列も変えない。左端に帯を 1 本引くだけなので、
    仮想スクロールの前提（1 行 = --row-h）はそのまま。 */
 
-.row .c-note .sblkname {
+.rows > .row .c-note .sblkname {
   font-style: normal;
   font-weight: 600;
   color: var(--blk-accent);
   margin-right: .6em;
 }
-.row .c-note .sblkname:empty { display: none; margin: 0; }
+.rows > .row .c-note .sblkname:empty { display: none; margin: 0; }
 
-.mode-asm .row.sblk::before {
+.mode-asm .rows > .row.sblk::before {
   content: "";
   position: absolute;
   left: 3px; top: 0; bottom: 0; width: 3px;
@@ -489,27 +489,39 @@ button { font: inherit; color: inherit; }
   opacity: .7;
   pointer-events: none;
 }
-.mode-asm .row.sblk-first::before { top: 3px; border-radius: 3px 3px 0 0; }
-.mode-asm .row.sblk-last::before  { bottom: 3px; border-radius: 0 0 3px 3px; }
-.mode-asm .row.sblk-only::before  { top: 3px; bottom: 3px; border-radius: 3px; }
+.mode-asm .rows > .row.sblk-first::before { top: 3px; border-radius: 3px 3px 0 0; }
+.mode-asm .rows > .row.sblk-last::before  { bottom: 3px; border-radius: 0 0 3px 3px; }
+.mode-asm .rows > .row.sblk-only::before  { top: 3px; bottom: 3px; border-radius: 3px; }
 /* 確からしさが低いまとまりは帯を薄くする。「これは推測です」を色で伝える。 */
-.mode-asm .row.sblk-lv-inferred::before { opacity: .4; }
-.mode-asm .row.sblk-lv-unknown::before { opacity: .22; }
+.mode-asm .rows > .row.sblk-lv-inferred::before { opacity: .4; }
+.mode-asm .rows > .row.sblk-lv-unknown::before { opacity: .22; }
 
 /* 命令の種類ごとの、左端のごく細い色帯。目で追うための手掛かり。 */
-.mode-asm .row.cat-load  .c-mn { color: #0f7b6c; }
-.mode-asm .row.cat-store .c-mn { color: #b3541e; }
-.mode-asm .row.cat-compare .c-mn { color: #7a5cd6; }
-.mode-asm .row.cat-system  .c-mn { color: var(--label-2); font-weight: 500; }
+.mode-asm .rows > .row.cat-load  .c-mn { color: #0f7b6c; }
+.mode-asm .rows > .row.cat-store .c-mn { color: #b3541e; }
+.mode-asm .rows > .row.cat-compare .c-mn { color: #7a5cd6; }
+.mode-asm .rows > .row.cat-system  .c-mn { color: var(--label-2); font-weight: 500; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .mode-asm .row.cat-load  .c-mn { color: #6fdcc8; }
-  :root:not([data-theme="light"]) .mode-asm .row.cat-store .c-mn { color: #ffb27a; }
-  :root:not([data-theme="light"]) .mode-asm .row.cat-compare .c-mn { color: #c0a8ff; }
+  :root:not([data-theme="light"]) .mode-asm .rows > .row.cat-load  .c-mn { color: #6fdcc8; }
+  :root:not([data-theme="light"]) .mode-asm .rows > .row.cat-store .c-mn { color: #ffb27a; }
+  :root:not([data-theme="light"]) .mode-asm .rows > .row.cat-compare .c-mn { color: #c0a8ff; }
 }
-:root[data-theme="dark"] .mode-asm .row.cat-load  .c-mn { color: #6fdcc8; }
-:root[data-theme="dark"] .mode-asm .row.cat-store .c-mn { color: #ffb27a; }
-:root[data-theme="dark"] .mode-asm .row.cat-compare .c-mn { color: #c0a8ff; }
+:root[data-theme="dark"] .mode-asm .rows > .row.cat-load  .c-mn { color: #6fdcc8; }
+:root[data-theme="dark"] .mode-asm .rows > .row.cat-store .c-mn { color: #ffb27a; }
+:root[data-theme="dark"] .mode-asm .rows > .row.cat-compare .c-mn { color: #c0a8ff; }
 
+
+/* Investigation sheet layout rows (isolated from disassembly .rows > .row) */
+.inv-row,
+.inv-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.inv-row {
+  justify-content: space-between;
+}
 /* ── Scrubber (global position indicator) ──────────────────── */
 
 .scrubber {

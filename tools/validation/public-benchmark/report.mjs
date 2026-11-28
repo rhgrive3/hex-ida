@@ -12,6 +12,14 @@ export function formatReport(report) {
     ? `\nDirty entries: ${JSON.stringify(git.dirtyEntries)}`
     : '';
   const functionStates = JSON.stringify(report.functionStates ?? {});
+  const completeness = aggregate.completeness ?? {
+    completeStructuredCount: 0,
+    partialOrFallbackCount: 0,
+  };
+  const pseudoStackCount = aggregate.pseudoStackCount ?? 0;
+  const stateMachineCount = aggregate.stateMachineCount ?? 0;
+  const registerLeakRate = aggregate.registerLeakRate ?? 0;
+  const castDensity = aggregate.castDensity ?? 0;
 
   return `# ${report.suite}
 
@@ -29,6 +37,12 @@ Function-union denominator: ${aggregate.denominator ?? 0}
 Matched by address: ${aggregate.matched ?? 0}
 IDA artifact coverage: ${((aggregate.idaCoverage ?? 0) * 100).toFixed(2)}%
 Hex pseudocode coverage: ${((aggregate.hexCoverage ?? 0) * 100).toFixed(2)}%
+Complete structured pseudocode: ${completeness.completeStructuredCount ?? 0}
+Partial or fallback pseudocode: ${completeness.partialOrFallbackCount ?? 0}
+Pseudo-stack (4096B) fallbacks: ${pseudoStackCount}
+State-machine fallbacks: ${stateMachineCount}
+Register leak rate: ${(registerLeakRate * 100).toFixed(2)}%
+Cast density: ${castDensity.toFixed(3)} casts/line
 
 Semantic: UNMEASURED
 Recompilability: UNMEASURED

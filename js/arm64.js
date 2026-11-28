@@ -60,7 +60,7 @@ function memText(m) {
     const v = disp.value;
     const a = v < 0n ? -v : v;
     where = isJa()
-      ? base + ' から ' + a.toString(10) + ' バイト' + (v < 0n ? '手前' : '先') + 'のアドレス'
+      ? base + ' の ' + a.toString(10) + ' バイト' + (v < 0n ? '手前' : '先') + 'のアドレス'
       : base + (v < 0n ? ' − ' : ' + ') + a.toString(10);
   } else {
     where = isJa() ? base + ' が指しているアドレス' : 'the address in ' + base;
@@ -1178,7 +1178,7 @@ function loadStore(isLoad, options = {}) {
       ? opShort(dst) + ' = *(' + cType(size, signed) + '*)(' + memExpr(mem) + ')'
       : '*(' + cType(size, signed) + '*)(' + memExpr(mem) + ') = ' + opShort(dst);
     o.summary = isLoad
-      ? J(memText(mem) + 'から ' + sizeWord(size) + ' 読み込み、' + opShort(dst) + ' に入れる。',
+      ? J(memText(mem) + 'から ' + sizeWord(size) + 'を読み込み、' + opShort(dst) + ' に入れる。',
           'Read ' + sizeWord(size) + ' from ' + memText(mem) + ' into ' + opShort(dst) + '.')
       : J(opShort(dst) + ' の値（' + sizeWord(size) + '）を、' + memText(mem) + 'へ書き込む。',
           'Write ' + sizeWord(size) + ' from ' + opShort(dst) + ' to ' + memText(mem) + '.');

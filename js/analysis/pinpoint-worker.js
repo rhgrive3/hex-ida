@@ -13,14 +13,49 @@
 
 import { analyzeFunction } from '../analyze.js';
 import { CHUNK_ROWS } from '../backend.js';
+import { withLightweightIdentity } from '../core/identity/index.js';
+import { constantComparisons, constantComparisonsLegacy, dataflowEngine, findValueUpdates, findValueUpdatesLegacy, stripHeavyIrRefs } from '../dataflow.js';
 
-function stripNonCloneableModelFields(res) {
+export const WORKER_SEMANTIC_IR_MAX_INSNS = 160;
+
+function precomputeLightweightDataflow(model) {
+  if (!model || typeof model !== 'object') return null;
+  const insnCount = Array.isArray(model.instructions) ? model.instructions.length : 0;
+  if (insnCount > WORKER_SEMANTIC_IR_MAX_INSNS) {
+    const rawUpdates = findValueUpdatesLegacy(model, { includeGlobals: true });
+    const precomputedUpdates = Array.isArray(rawUpdates) ? rawUpdates.map(stripHeavyIrRefs) : [];
+    const rawConstants = constantComparisonsLegacy(model);
+    const precomputedConstants = Array.isArray(rawConstants) ? rawConstants : [];
+    return {
+      _precomputedEngine: 'legacy-fallback',
+      _precomputedUpdates: precomputedUpdates,
+      _precomputedConstants: precomputedConstants,
+    };
+  }
+  return withLightweightIdentity(() => {
+    const engine = dataflowEngine(model);
+    const rawUpdates = findValueUpdates(model, { includeGlobals: true });
+    const precomputedUpdates = Array.isArray(rawUpdates) ? rawUpdates.map(stripHeavyIrRefs) : [];
+    const rawConstants = constantComparisons(model, { allowUnscopedPropagated: true });
+    const precomputedConstants = Array.isArray(rawConstants) ? rawConstants : [];
+    return {
+      _precomputedEngine: engine,
+      _precomputedUpdates: precomputedUpdates,
+      _precomputedConstants: precomputedConstants,
+    };
+  });
+}
+
+function stripNonCloneableModelFields(res, precomputed = null) {
   if (!res || typeof res !== 'object') return res;
   const model = res.model;
-  if (!model || typeof model !== 'object' || typeof model.blockOfRow !== 'function') {
-    return res;
-  }
+  if (!model || typeof model !== 'object') return res;
   const { blockOfRow: _blockOfRow, ...cloneableModel } = model;
+  if (precomputed) {
+    cloneableModel._precomputedEngine = precomputed._precomputedEngine;
+    cloneableModel._precomputedUpdates = precomputed._precomputedUpdates;
+    cloneableModel._precomputedConstants = precomputed._precomputedConstants;
+  }
   return { ...res, model: cloneableModel };
 }
 
@@ -98,7 +133,11 @@ export async function handlePinpointWorkerMessage(payload) {
     const { backend, region, startRow, endRow, symbols } = buildWorkerBackendAndRange(addr, rows);
     const analyzeOpts = { ...(options && typeof options === 'object' ? options : {}), texts: false };
     const rawResult = await analyzeFunction(backend, region, startRow, endRow, symbols, null, analyzeOpts);
-    const result = stripNonCloneableModelFields(rawResult);
+    let precomputed = null;
+    if (rawResult?.model && typeof rawResult.model === 'object') {
+      try { precomputed = precomputeLightweightDataflow(rawResult.model); } catch { precomputed = null; }
+    }
+    const result = stripNonCloneableModelFields(rawResult, precomputed);
     return { id, ok: true, result };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err ?? 'Pinpoint worker analysis failed');

@@ -553,6 +553,12 @@ function classifyUnsupportedArm64Insn(word, insn) {
   if (((w & 0xffe0fc00) >>> 0) === 0x9b207c00) {
     return 'unsupported_insn:smull';
   }
+  if (((w & 0xff201fe0) >>> 0) === 0x1e201000) {
+    return 'unsupported_insn:fmov';
+  }
+  if (((w & 0x7f800000) >>> 0) === 0x12800000) {
+    return 'unsupported_insn:movn';
+  }
   return null;
 }
 
@@ -1634,11 +1640,400 @@ function findRodataSlice({ fileBytes, sections, readBytes, words, baseAddr }) {
   return null;
 }
 
-function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true } = {}) {
-  const isGeneral = text.includes('/* arguments unknown */') || text.includes('__hex_global_') || text.includes('static uint64 global_') || (typeof symbolFor === 'function' && text.includes('uint64 x0 = '));
-  if (!isGeneral) return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1, hasUnprovenCallArgs: false };
+function extractObjcIvarLabel(rawSym) {
+  if (typeof rawSym !== 'string' || !rawSym) return null;
+  const idx = rawSym.indexOf('OBJC_IVAR_$_');
+  if (idx < 0) return null;
+  return rawSym.slice(idx);
+}
 
+function resolveObjcIvarGlobals(text, symbolFor) {
+  if (typeof symbolFor !== 'function' || !text.includes('global_')) return text;
+  const replacements = new Map();
+  const re = /\bglobal_([0-9A-Fa-f]+)\b/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const hex = m[1];
+    if (replacements.has(hex)) continue;
+    let rawSym = null;
+    try { rawSym = symbolFor(BigInt(`0x${hex}`)); } catch {}
+    const ivar = extractObjcIvarLabel(rawSym);
+    if (ivar) replacements.set(hex, ivar);
+  }
+  if (replacements.size === 0) return text;
   let out = text;
+  for (const [hex, ivar] of replacements.entries()) {
+    const declRe = new RegExp(`^static\\s+(?:const\\s+)?uint64\\s+global_${hex}\\s*=\\s*0;\\n?`, 'gm');
+    out = out.replace(declRe, `/* ${ivar} @ 0x${hex} */\n`);
+    out = out.replace(new RegExp(`\\bglobal_${hex}\\b`, 'g'), ivar);
+  }
+  return out;
+}
+
+const OUTER_FN_SIG_LINE_RE = /^([A-Za-z_][A-Za-z0-9_\s*]*?)\s+([A-Za-z_][A-Za-z0-9_]*|[-+]\[[^\]]+\])\(([^)]*)\)$/;
+
+function formatGeneralObjcOutput(text, rawName) {
+  if (!rawName || (!rawName.startsWith('-[') && !rawName.startsWith('+['))) return text;
+  const lines = text.split('\n');
+  let sigIdx = -1;
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    if (lines[i + 1] === '{' && OUTER_FN_SIG_LINE_RE.test(lines[i])) {
+      sigIdx = i;
+      break;
+    }
+  }
+  if (sigIdx < 0) return text;
+  const sigMatch = lines[sigIdx].match(OUTER_FN_SIG_LINE_RE);
+  if (!sigMatch) return text;
+  const retType = sigMatch[1].trim();
+  const existingParams = sigMatch[3].trim();
+  if (existingParams.startsWith('id self, SEL _cmd')) return text;
+
+  const extraParams = [];
+  if (existingParams && existingParams !== 'void') {
+    const parts = existingParams.split(',').map((s) => s.trim()).filter(Boolean);
+    for (let i = 2; i < parts.length; i += 1) {
+      extraParams.push(parts[i]);
+    }
+  }
+  const objcParams = ['id self', 'SEL _cmd', ...extraParams].join(', ');
+  lines[sigIdx] = `${retType} ${rawName}(${objcParams})`;
+
+  for (let i = sigIdx + 2; i < lines.length; i += 1) {
+    let ln = lines[i];
+    if (/^\s*uint64\s+x0\s*=\s*a1;\s*$/.test(ln)) {
+      ln = ln.replace(/\ba1\b/, '(uint64)(uintptr_t)self');
+    } else if (/^\s*uint64\s+x1\s*=\s*a2;\s*$/.test(ln)) {
+      ln = ln.replace(/\ba2\b/, '(uint64)(uintptr_t)_cmd');
+    } else if (/\ba1\b/.test(ln) || /\ba2\b/.test(ln)) {
+      ln = ln.replace(/\ba1\b/g, 'self').replace(/\ba2\b/g, '_cmd');
+    }
+    lines[i] = ln;
+  }
+
+  const preludeAdds = [];
+  if (!text.includes('typedef __UINTPTR_TYPE__ uintptr_t;') && lines.some((l) => l.includes('uintptr_t'))) {
+    preludeAdds.push('typedef __UINTPTR_TYPE__ uintptr_t;');
+  }
+  if (!text.includes('typedef void * id;')) preludeAdds.push('typedef void * id;');
+  if (!text.includes('typedef void * SEL;')) preludeAdds.push('typedef void * SEL;');
+  if (preludeAdds.length > 0) {
+    lines.splice(sigIdx, 0, ...preludeAdds);
+  }
+  return lines.join('\n');
+}
+
+function isSafeCIdent(name) {
+  return typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !/^(?:void|int|char|short|long|float|double|return|if|else|for|while|do|switch|case|default|break|continue|goto|sizeof|typedef|struct|union|enum|const|volatile|static|extern|register|auto|signed|unsigned)$/.test(name);
+}
+
+const C_TYPE_IDENT_SET = new Set([
+  'void', 'int', 'char', 'short', 'long', 'float', 'double', 'signed', 'unsigned', 'bool', '_Bool',
+  'uint8_t', 'int8_t', 'uint16_t', 'int16_t', 'uint32_t', 'int32_t', 'uint64_t', 'int64_t',
+  'uintptr_t', 'intptr_t', 'size_t', 'ssize_t', 'ptrdiff_t',
+  'uint8', 'int8', 'uint16', 'int16', 'uint32', 'int32', 'uint64', 'int64', 'id', 'SEL',
+]);
+
+const PROTO_STD_TYPEDEFS = [
+  ['uint64_t', 'typedef __UINT64_TYPE__ uint64_t;', '<stdint.h>'],
+  ['int64_t', 'typedef __INT64_TYPE__ int64_t;', '<stdint.h>'],
+  ['uint32_t', 'typedef __UINT32_TYPE__ uint32_t;', '<stdint.h>'],
+  ['int32_t', 'typedef __INT32_TYPE__ int32_t;', '<stdint.h>'],
+  ['uint16_t', 'typedef __UINT16_TYPE__ uint16_t;', '<stdint.h>'],
+  ['int16_t', 'typedef __INT16_TYPE__ int16_t;', '<stdint.h>'],
+  ['uint8_t', 'typedef __UINT8_TYPE__ uint8_t;', '<stdint.h>'],
+  ['int8_t', 'typedef __INT8_TYPE__ int8_t;', '<stdint.h>'],
+  ['uintptr_t', 'typedef __UINTPTR_TYPE__ uintptr_t;', '<stdint.h>'],
+  ['intptr_t', 'typedef __INTPTR_TYPE__ intptr_t;', '<stdint.h>'],
+  ['size_t', 'typedef __SIZE_TYPE__ size_t;', '<stddef.h>'],
+  ['ptrdiff_t', 'typedef __PTRDIFF_TYPE__ ptrdiff_t;', '<stddef.h>'],
+  ['uint64', 'typedef __UINT64_TYPE__ uint64;', null],
+  ['int64', 'typedef __INT64_TYPE__ int64;', null],
+  ['uint32', 'typedef __UINT32_TYPE__ uint32;', null],
+  ['int32', 'typedef __INT32_TYPE__ int32;', null],
+  ['bool', 'typedef _Bool bool;', '<stdbool.h>'],
+];
+
+function extractCParamName(paramDecl) {
+  const s = String(paramDecl || '').replace(/\[[^\]]*\]/g, '').trim();
+  if (!s || s === 'void' || s === '...') return null;
+  const m = s.match(/^(?:.+?[\s*])([A-Za-z_][A-Za-z0-9_]*)$/);
+  if (!m) return null;
+  const name = m[1];
+  if (!isSafeCIdent(name) || C_TYPE_IDENT_SET.has(name)) return null;
+  return name;
+}
+
+function collectDeclaredLocalIdents(bodyLines) {
+  const declared = new Set();
+  const declRe = /^\s*(?:(?:const|volatile|static|register|unsigned|signed|struct\s+[A-Za-z_][A-Za-z0-9_]*|union\s+[A-Za-z_][A-Za-z0-9_]*|enum\s+[A-Za-z_][A-Za-z0-9_]*)\s+)*([A-Za-z_][A-Za-z0-9_]*)[\s*]+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|\[|,)/;
+  const nonDeclKw = new Set(['return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'goto', 'break', 'continue', 'typedef']);
+  for (const line of bodyLines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
+    const m = trimmed.match(declRe);
+    if (!m) continue;
+    if (nonDeclKw.has(m[1])) continue;
+    if (isSafeCIdent(m[2])) declared.add(m[2]);
+  }
+  return declared;
+}
+
+function replaceCIdentifiersSafely(code, renameMap) {
+  if (!renameMap || renameMap.size === 0) return code;
+  let out = '';
+  let i = 0;
+  const n = code.length;
+  let prevNonWs = '';
+  let prevWasArrow = false;
+  let prevIdent = '';
+  const isIdentStart = (ch) => (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch === '_';
+  const isIdentPart = (ch) => isIdentStart(ch) || (ch >= '0' && ch <= '9');
+
+  while (i < n) {
+    const ch = code[i];
+    // Line comment
+    if (ch === '/' && i + 1 < n && code[i + 1] === '/') {
+      const end = code.indexOf('\n', i + 2);
+      const next = end < 0 ? n : end + 1;
+      out += code.slice(i, next);
+      i = next;
+      continue;
+    }
+    // Block comment
+    if (ch === '/' && i + 1 < n && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const next = end < 0 ? n : end + 2;
+      out += code.slice(i, next);
+      i = next;
+      continue;
+    }
+    // String or char literal
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      while (j < n) {
+        if (code[j] === '\\' && j + 1 < n) {
+          j += 2;
+          continue;
+        }
+        if (code[j] === quote) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      out += code.slice(i, j);
+      i = j;
+      prevNonWs = quote;
+      prevWasArrow = false;
+      prevIdent = '';
+      continue;
+    }
+    // Identifier
+    if (isIdentStart(ch)) {
+      let j = i + 1;
+      while (j < n && isIdentPart(code[j])) j += 1;
+      const ident = code.slice(i, j);
+      const isMemberAccess = prevNonWs === '.' || prevWasArrow;
+      const isGotoTarget = prevIdent === 'goto';
+      if (!isMemberAccess && !isGotoTarget && renameMap.has(ident)) {
+        out += renameMap.get(ident);
+      } else {
+        out += ident;
+      }
+      i = j;
+      prevNonWs = 'I';
+      prevWasArrow = false;
+      prevIdent = ident;
+      continue;
+    }
+    // Arrow operator ->
+    if (ch === '-' && i + 1 < n && code[i + 1] === '>') {
+      out += '->';
+      i += 2;
+      prevNonWs = '>';
+      prevWasArrow = true;
+      prevIdent = '';
+      continue;
+    }
+    out += ch;
+    if (ch !== ' ' && ch !== '\t' && ch !== '\r' && ch !== '\n') {
+      prevNonWs = ch;
+      prevWasArrow = false;
+      prevIdent = '';
+    }
+    i += 1;
+  }
+  return out;
+}
+
+function sanitizeCPrototypeType(rawType, { allowVoid = false } = {}) {
+  const trimmed = typeof rawType === 'string' ? rawType.trim().replace(/\s+/g, ' ') : '';
+  if (!trimmed) return allowVoid ? 'void' : 'uint64';
+  if (trimmed === 'void') return allowVoid ? 'void' : 'uint64';
+  const isPointerLike = /\*\s*$/.test(trimmed);
+  if (
+    /[<>\[\]()&:]/.test(trimmed)
+    || /[^A-Za-z0-9_*\s]/.test(trimmed)
+    || /\b(?:unknown|subroutine|class)\b/.test(trimmed)
+  ) {
+    return isPointerLike ? 'void *' : 'uint64';
+  }
+  return trimmed;
+}
+
+function applyFunctionPrototypeToC(text, proto) {
+  if (!proto || typeof proto !== 'object') return text;
+  const retType = sanitizeCPrototypeType(proto.returnType, { allowVoid: true });
+  const params = Array.isArray(proto.params) ? proto.params : [];
+  const lines = text.split('\n');
+  let sigIdx = -1;
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    if (lines[i + 1] === '{' && OUTER_FN_SIG_LINE_RE.test(lines[i])) {
+      sigIdx = i;
+      break;
+    }
+  }
+  if (sigIdx < 0) return text;
+  const sigMatch = lines[sigIdx].match(OUTER_FN_SIG_LINE_RE);
+  if (!sigMatch) return text;
+  const rawProtoName = typeof proto.name === 'string' ? proto.name.trim() : '';
+  const fnName = (rawProtoName && isSafeCIdent(rawProtoName) && sigMatch[2].startsWith('sub_'))
+    ? rawProtoName
+    : sigMatch[2];
+
+  const origParamsRaw = sigMatch[3].trim();
+  const origParamDecls = (origParamsRaw && origParamsRaw !== 'void')
+    ? origParamsRaw.split(',').map((part) => part.trim()).filter(Boolean)
+    : [];
+  const origParamNames = origParamDecls.map((part) => extractCParamName(part));
+
+  let closeIdx = -1;
+  for (let i = lines.length - 1; i > sigIdx + 1; i -= 1) {
+    if (lines[i] === '}') {
+      closeIdx = i;
+      break;
+    }
+  }
+  const declaredLocals = closeIdx > sigIdx + 1
+    ? collectDeclaredLocalIdents(lines.slice(sigIdx + 2, closeIdx))
+    : new Set();
+
+  const usedParamNames = new Set();
+  const paramEntries = params.map((p, idx) => {
+    const pType = sanitizeCPrototypeType(p?.type, { allowVoid: false });
+    const origName = origParamNames[idx] || null;
+    let pName = isSafeCIdent(p?.name) ? p.name : (origName || `a${idx + 1}`);
+    if ((declaredLocals.has(pName) && pName !== origName) || usedParamNames.has(pName)) {
+      let cand = `${pName}_arg`;
+      while (declaredLocals.has(cand) || usedParamNames.has(cand)) cand = `${cand}_`;
+      pName = cand;
+    }
+    usedParamNames.add(pName);
+    return { type: pType, name: pName, origName };
+  });
+  // Preserve trailing original parameter declarations if the body still references them
+  // (e.g., partial DWARF / -gline-tables-only / variadic functions with fewer proto.params).
+  if (origParamDecls.length > params.length && closeIdx > sigIdx + 1) {
+    const rawBodyStr = lines.slice(sigIdx + 2, closeIdx).join('\n');
+    for (let idx = params.length; idx < origParamDecls.length; idx += 1) {
+      const origName = origParamNames[idx];
+      if (!origName || declaredLocals.has(origName) || usedParamNames.has(origName)) continue;
+      if (new RegExp(`\\b${origName}\\b`).test(rawBodyStr)) {
+        usedParamNames.add(origName);
+        paramEntries.push({ decl: origParamDecls[idx], type: null, name: origName, origName });
+      }
+    }
+  }
+  const paramListStr = paramEntries.length > 0
+    ? paramEntries.map((p) => (p.decl ? p.decl : `${p.type} ${p.name}`)).join(', ')
+    : 'void';
+  lines[sigIdx] = `${retType} ${fnName}(${paramListStr})`;
+
+  if (closeIdx > sigIdx + 1) {
+    const renameMap = new Map();
+    for (let idx = 0; idx < paramEntries.length; idx += 1) {
+      const { name: newName, origName } = paramEntries[idx];
+      if (origName && origName !== newName && !declaredLocals.has(origName)) {
+        renameMap.set(origName, newName);
+      }
+    }
+    if (renameMap.size > 0) {
+      const bodyStr = lines.slice(sigIdx + 2, closeIdx).join('\n');
+      const replacedBody = replaceCIdentifiersSafely(bodyStr, renameMap);
+      const replacedLines = replacedBody.split('\n');
+      lines.splice(sigIdx + 2, closeIdx - (sigIdx + 2), ...replacedLines);
+      closeIdx = sigIdx + 2 + replacedLines.length;
+    }
+
+    const bodyLines = lines.slice(sigIdx + 2, closeIdx);
+    const substantive = bodyLines
+      .map((l, idx) => ({ idx, trimmed: l.trim() }))
+      .filter(({ trimmed }) => trimmed.length > 0 && !trimmed.startsWith('//') && !trimmed.startsWith('/*'));
+    // Bug #5: `ret`-only identity function with non-void return type and >= 1 parameter
+    if (
+      retType !== 'void'
+      && paramEntries.length >= 1
+      && substantive.length === 1
+      && substantive[0].trimmed === 'return;'
+    ) {
+      const targetLineIdx = sigIdx + 2 + substantive[0].idx;
+      const indent = lines[targetLineIdx].match(/^\s*/)?.[0] || '    ';
+      lines[targetLineIdx] = `${indent}return ${paramEntries[0].name};`;
+    }
+  }
+
+  // Ensure standard-width integer/helper typedefs referenced by the prototype are defined
+  const protoTypeText = [retType, ...paramEntries.map((p) => p.type)].join(' ');
+  const preludeAdds = [];
+  for (const [typeName, typedefLine, headerName] of PROTO_STD_TYPEDEFS) {
+    if (!new RegExp(`\\b${typeName}\\b`).test(protoTypeText)) continue;
+    if (headerName && new RegExp(`^\\s*#\\s*include\\s*${headerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'm').test(text)) continue;
+    if (new RegExp(`\\btypedef\\b[^;]*\\b${typeName}\\s*;`).test(text)) continue;
+    preludeAdds.push(typedefLine);
+  }
+  if (preludeAdds.length > 0) {
+    lines.splice(sigIdx, 0, ...preludeAdds);
+  }
+  return lines.join('\n');
+}
+
+function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fileBytes, sections, allowHelperInlining = true, functionPrototype = null, allowGeneralObjcWasm = false, rawName = '' } = {}) {
+  const isObjcContext = (allowGeneralObjcWasm && (rawName.startsWith('-[') || rawName.startsWith('+[')))
+    || text.includes('typedef void * SEL;');
+  let preText = text;
+  if (isObjcContext) {
+    preText = resolveObjcIvarGlobals(preText, symbolFor);
+  }
+  const isGeneral = preText.includes('/* arguments unknown */') || preText.includes('__hex_global_') || preText.includes('static uint64 global_') || (typeof symbolFor === 'function' && preText.includes('uint64 x0 = '));
+  if (!isGeneral) {
+    let earlyOut = preText;
+    if (allowGeneralObjcWasm && (rawName.startsWith('-[') || rawName.startsWith('+['))) {
+      earlyOut = formatGeneralObjcOutput(earlyOut, rawName);
+    }
+    if (functionPrototype) {
+      earlyOut = applyFunctionPrototypeToC(earlyOut, functionPrototype);
+    }
+    if (earlyOut === text) {
+      return { text, addedLines: 0, bodyAddedLines: 0, rawSigLine: -1, outerSigLine: -1, hasUnprovenCallArgs: false };
+    }
+    const rawLinesArr = text.split('\n');
+    const finalLinesArr = earlyOut.split('\n');
+    const findSig = (arr) => {
+      for (let i = 0; i < arr.length - 1; i += 1) {
+        if (arr[i + 1] === '{' && OUTER_FN_SIG_LINE_RE.test(arr[i])) return i;
+      }
+      return -1;
+    };
+    const rawSigLine = findSig(rawLinesArr);
+    const finalSigLine = findSig(finalLinesArr);
+    const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : Math.max(0, finalLinesArr.length - rawLinesArr.length);
+    const bodyAdded = Math.max(0, (finalLinesArr.length - Math.max(0, finalSigLine)) - (rawLinesArr.length - Math.max(0, rawSigLine)));
+    return { text: earlyOut, lines: finalLinesArr, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine, hasUnprovenCallArgs: false };
+  }
+
+  let out = preText;
   const headers = new Set();
   const extraRegs = new Set();
   const extraProtos = new Set();
@@ -2229,18 +2624,25 @@ function postprocessWasmGeneralC(text, { baseAddr = 0n, symbolFor, readBytes, fi
       out = out.slice(0, fnSigIdx) + hBlock + out.slice(fnSigIdx);
     }
   }
-  const finalText = prefix + out;
+  let finalText = prefix + out;
+  if (allowGeneralObjcWasm && (rawName.startsWith('-[') || rawName.startsWith('+['))) {
+    finalText = formatGeneralObjcOutput(finalText, rawName);
+    finalText = resolveObjcIvarGlobals(finalText, symbolFor);
+  }
+  if (functionPrototype) {
+    finalText = applyFunctionPrototypeToC(finalText, functionPrototype);
+  }
   const outerSigRe = /^(?:void|int|uint64|float|double)\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*\)$/;
   const rawLinesArr = text.split('\n');
   const finalLinesArr = finalText.split('\n');
-  const rawSigLine = rawLinesArr.findIndex((l) => outerSigRe.test(l));
-  const finalSigLine = finalLinesArr.findIndex((l) => outerSigRe.test(l));
+  const rawSigLine = rawLinesArr.findIndex((l) => outerSigRe.test(l) || OUTER_FN_SIG_LINE_RE.test(l));
+  const finalSigLine = finalLinesArr.findIndex((l) => outerSigRe.test(l) || OUTER_FN_SIG_LINE_RE.test(l));
   const exactAdded = (rawSigLine >= 0 && finalSigLine >= 0) ? Math.max(0, finalSigLine - rawSigLine) : hdrLines.length;
   const bodyAdded = Math.max(0, (finalLinesArr.length - Math.max(0, finalSigLine)) - (rawLinesArr.length - Math.max(0, rawSigLine)));
   return { text: finalText, lines: finalLinesArr, addedLines: exactAdded, bodyAddedLines: bodyAdded, rawSigLine, outerSigLine: finalSigLine, hasUnprovenCallArgs };
 }
 
-export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true } = {}) {
+export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = '', insns = null, symbolFor = null, readBytes = null, fileBytes = null, sections = null, allowHelperInlining = true, functionPrototype = null, allowGeneralObjcWasm = false } = {}) {
   if (getEngineMode() === 'js') return noteFallback('decompile', 'wasm_disabled');
   const ex = getHexEngineExportsSafe();
   if (
@@ -2329,6 +2731,7 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       }
     }
 
+    const emitFlags = allowGeneralObjcWasm ? 0 : HEX_EMIT_FLAG_JS_PARITY;
     let status;
     try {
       status = ex.hex_engine_decompile_arm64(
@@ -2337,8 +2740,26 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
         BigInt(baseAddr),
         namePtr,
         nameLen,
-        HEX_EMIT_FLAG_JS_PARITY,
+        emitFlags,
       );
+      if (status !== HEX_OK && allowGeneralObjcWasm && (rawName.startsWith('-[') || rawName.startsWith('+['))) {
+        const fallbackIdent = `objc_${rawName.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'method'}`;
+        const fbBytes = textEncoder.encode(fallbackIdent);
+        const fbPtr = allocScratch(ex, fbBytes.length + 1);
+        if (fbPtr) {
+          const fbView = new Uint8Array(ex.memory.buffer, fbPtr, fbBytes.length + 1);
+          fbView.set(fbBytes, 0);
+          fbView[fbBytes.length] = 0;
+          status = ex.hex_engine_decompile_arm64(
+            wordsPtr,
+            count,
+            BigInt(baseAddr),
+            fbPtr,
+            fbBytes.length,
+            emitFlags,
+          );
+        }
+      }
     } finally {
       if (rodataSet && typeof ex.hex_engine_decompile_clear_rodata_slice === 'function') {
         ex.hex_engine_decompile_clear_rodata_slice();
@@ -2379,9 +2800,9 @@ export function wasmDecompileArm64Function({ words, baseAddr = 0n, funcName = ''
       }
     }
 
-    const post = postprocessWasmGeneralC(rawPseudocode, { baseAddr: BigInt(baseAddr), symbolFor, readBytes, fileBytes, sections, allowHelperInlining });
+    const post = postprocessWasmGeneralC(rawPseudocode, { baseAddr: BigInt(baseAddr), symbolFor, readBytes, fileBytes, sections, allowHelperInlining, functionPrototype, allowGeneralObjcWasm, rawName });
     const pseudocode = post.text;
-    if ((rawName.startsWith('-[') || rawName.startsWith('+[')) && !pseudocode.includes('typedef void * id;')) {
+    if (!allowGeneralObjcWasm && (rawName.startsWith('-[') || rawName.startsWith('+[')) && !pseudocode.includes('typedef void * id;')) {
       return noteFallback('decompile', 'unsupported_objc_name');
     }
 

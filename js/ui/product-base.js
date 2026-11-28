@@ -26,6 +26,7 @@ import {
   rankSearchResults, scoreSearchMatch, matchGoalForQuery,
 } from '../ai/interaction/omnibox.js';
 import { buildGoalCandidateSummary, findGoalHighlightLines } from './function-analysis-presentation.js';
+import { invalidateScopedAnalysis } from '../analysis/query/scoped-host.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
 import * as explorerIndex from './explorer-index.js';
@@ -1495,17 +1496,27 @@ function renderExplorer(app, router, route, routeContext = {}) {
     }
     const partialReason = items?.truncationReason || items?.status?.reason || null;
     if ((items?.completeness && items.completeness !== 'complete') || items?.complete === false) {
-      const codes = partialReason ? [partialReason] : ['function-discovery-incomplete'];
-      const canContinue = codes.some((c) => String(c).includes('function-discovery-incomplete'))
-        && (typeof app.discoverMoreFunctions === 'function' || typeof app.resumeDiscovery === 'function' || scope === 'functions');
-      content.append(statusNotice(codes, {
-        actionLabel: text('続きを調べる', 'Continue scanning'),
-        onAction: canContinue ? () => {
-          if (typeof app.discoverMoreFunctions === 'function') Promise.resolve(app.discoverMoreFunctions()).finally(() => void update());
-          else if (typeof app.resumeDiscovery === 'function') Promise.resolve(app.resumeDiscovery()).finally(() => void update());
-          else void update();
-        } : null,
-      }));
+      const v6State = app?.v6Workbench?.getAutoAnalysisState?.() ?? null;
+      const autoComplete = Boolean(
+        (v6State?.status === 'done' || v6State?.staged?.status === 'done')
+        && app?.store?.get?.('symbolsReady') !== false
+      );
+      const rawCodes = partialReason ? [partialReason] : (autoComplete ? [] : ['function-discovery-incomplete']);
+      const codes = autoComplete
+        ? rawCodes.filter((c) => !String(c).includes('function-discovery-incomplete') && c !== 'functions-partial')
+        : rawCodes;
+      if (codes.length > 0) {
+        const canContinue = codes.some((c) => String(c).includes('function-discovery-incomplete'))
+          && (typeof app.discoverMoreFunctions === 'function' || typeof app.resumeDiscovery === 'function' || scope === 'functions');
+        content.append(statusNotice(codes, {
+          actionLabel: text('続きを調べる', 'Continue scanning'),
+          onAction: canContinue ? () => {
+            if (typeof app.discoverMoreFunctions === 'function') Promise.resolve(app.discoverMoreFunctions()).finally(() => void update());
+            else if (typeof app.resumeDiscovery === 'function') Promise.resolve(app.resumeDiscovery()).finally(() => void update());
+            else void update();
+          } : null,
+        }));
+      }
     }
     if (!items || !Number(items.length)) {
       const q = String(search.value || '').trim();
@@ -2046,20 +2057,30 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   let activeFindBar = null;
   let activeDecompileCleanup = null;
   let unsubNotes = null;
-  const syncLiveName = () => {
+  let lastSyncedName = functionName(app, addr);
+  let refreshActiveTabOnRename = null;
+  const syncLiveName = (forceRefresh = false) => {
     if (disposed) return;
     const liveName = functionName(app, addr);
+    const nameChanged = liveName !== lastSyncedName;
+    lastSyncedName = liveName;
     if (s.heading) s.heading.textContent = liveName;
     updateScreenTitle(s.root);
     router.setCurrentLabel?.(liveName);
+    if (forceRefresh || nameChanged) {
+      try { invalidateScopedAnalysis(app, null); } catch { /* ignore */ }
+      refreshActiveTabOnRename?.();
+    }
   };
   const bindNotesSub = () => {
     if (typeof unsubNotes === 'function') { unsubNotes(); unsubNotes = null; }
-    unsubNotes = app.notes?.subscribe?.(syncLiveName) || null;
+    unsubNotes = app.notes?.subscribe?.(() => syncLiveName(false)) || null;
   };
   bindNotesSub();
-  const onNotesAttached = () => { if (!disposed) { bindNotesSub(); syncLiveName(); } };
+  const onNotesAttached = () => { if (!disposed) { bindNotesSub(); syncLiveName(false); } };
+  const onSymbolRenamed = () => { if (!disposed) syncLiveName(true); };
   document.addEventListener('hex:notes-attached', onNotesAttached);
+  document.addEventListener('hex:symbol-renamed', onSymbolRenamed);
   const viewEpoch = app.backend?.gen;
   const viewSlice = app.store.get('sliceIndex');
   const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
@@ -2350,7 +2371,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const sigIdx = findSignatureLineIndex(rawLines);
     const prelude = preludeLength(rawLines);
     const goalCtx = resolveMatchingGoalContext();
-    const highlightLines = goalCtx && rawText ? findGoalHighlightLines(rawText, goalCtx) : [];
+    const highlightLines = goalCtx && rawText ? findGoalHighlightLines(rawText, { ...goalCtx, functionAddr: addr }) : [];
     const highlightSet = new Set(highlightLines);
     const goalSummary = goalCtx
       ? buildGoalCandidateSummary({
@@ -2360,6 +2381,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         fields: goalCtx.fields,
         pseudocode: rawText || null,
         disasm: goalCtx.disasm ?? res?.model?.instructions ?? null,
+        functionAddr: addr,
       })
       : null;
     let firstGoalHighlight = null;
@@ -2646,7 +2668,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         if (goalCtx) {
           const lineNodes = [...code.querySelectorAll('.ui-pseudocode-line')].filter((n) => !n.classList.contains('is-fn-comment'));
           const renderedText = lineNodes.map((n) => String(n.textContent || '').replace(/\n$/, '')).join('\n');
-          const highlightLines = renderedText ? findGoalHighlightLines(renderedText, goalCtx) : [];
+          const highlightLines = renderedText ? findGoalHighlightLines(renderedText, { ...goalCtx, functionAddr: addr }) : [];
           let firstGoalHighlight = null;
           for (const idx of highlightLines) {
             const lineEl = lineNodes[idx];
@@ -2662,6 +2684,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
             fields: goalCtx.fields,
             pseudocode: renderedText || null,
             disasm: goalCtx.disasm ?? res?.value?.model?.instructions ?? null,
+            functionAddr: addr,
           });
           if (goalSummary) goalBanner = buildGoalBanner(goalSummary, highlightLines, firstGoalHighlight);
         }
@@ -3001,6 +3024,29 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       badge: evidenceBadge('confirmed'),
     })));
 
+    const goalCtx = resolveMatchingGoalContext();
+    if (goalCtx) {
+      const goalSummary = buildGoalCandidateSummary({
+        goal: goalCtx.goal,
+        candidate: goalCtx.candidate,
+        pinpoint: goalCtx.pinpoint,
+        fields: goalCtx.fields,
+        disasm: goalCtx.disasm ?? res?.model?.instructions ?? null,
+        functionAddr: addr,
+      });
+      if (goalSummary) {
+        const goalVerdict = goalSummary.verdict === 'confirmed'
+          ? 'confirmed'
+          : (goalSummary.verdict === 'likely' ? 'likely' : 'unverified');
+        stack.append(listRow({
+          title: goalSummary.goalLabel
+            ? text(`目的との関連: ${goalSummary.goalLabel}`, `Goal context: ${goalSummary.goalLabel}`)
+            : text('目的検索の根拠', 'Goal investigation evidence'),
+          subtitle: [goalSummary.headline, ...goalSummary.bullets].filter(Boolean).join(' · '),
+          badge: evidenceBadge(goalVerdict),
+        }));
+      }
+    }
     const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
     const nodes = [note.root, stack];
     if (Array.isArray(res.warnings) && res.warnings.length) {
@@ -3037,6 +3083,29 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
             badge: evidenceBadge(status),
           }));
         });
+        const goalCtx = resolveMatchingGoalContext();
+        if (goalCtx) {
+          const goalSummary = buildGoalCandidateSummary({
+            goal: goalCtx.goal,
+            candidate: goalCtx.candidate,
+            pinpoint: goalCtx.pinpoint,
+            fields: goalCtx.fields,
+            disasm: goalCtx.disasm ?? null,
+            functionAddr: addr,
+          });
+          if (goalSummary) {
+            const goalVerdict = goalSummary.verdict === 'confirmed'
+              ? 'confirmed'
+              : (goalSummary.verdict === 'likely' ? 'likely' : 'unverified');
+            stack.append(listRow({
+              title: goalSummary.goalLabel
+                ? text(`目的との関連: ${goalSummary.goalLabel}`, `Goal context: ${goalSummary.goalLabel}`)
+                : text('目的検索の根拠', 'Goal investigation evidence'),
+              subtitle: [goalSummary.headline, ...goalSummary.bullets].filter(Boolean).join(' · '),
+              badge: evidenceBadge(goalVerdict),
+            }));
+          }
+        }
         const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
         content.replaceChildren(note.root, stack);
         return;
@@ -3094,6 +3163,19 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
 
   const fallbackRouteController = routeContext.signal ? null : new AbortController();
   const routeSignal = routeContext.signal || fallbackRouteController.signal;
+
+  refreshActiveTabOnRename = () => {
+    if (!viewCurrent() || routeSignal.aborted) return;
+    if (tab === 'pseudocode') {
+      void renderPseudocodeTab().catch(() => {});
+    } else if (tab === 'evidence') {
+      void renderEvidenceTab().catch(() => {});
+    } else if (tab === 'overview' || !tab) {
+      void app.analyzeFunctionAt(addr, { signal: routeSignal })
+        .then((res) => { if (viewCurrent() && res?.model) renderOverview(res); })
+        .catch(() => {});
+    }
+  };
 
   (async () => {
     try {
@@ -3154,6 +3236,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       activeDecompileCleanup?.();
       activeDecompileCleanup = null;
       document.removeEventListener('hex:notes-attached', onNotesAttached);
+      document.removeEventListener('hex:symbol-renamed', onSymbolRenamed);
       if (typeof unsubBookmarks === 'function') unsubBookmarks();
       if (typeof unsubNotes === 'function') unsubNotes();
       fallbackRouteController?.abort('function-workspace-disposed');
@@ -3436,7 +3519,20 @@ function renderDiff(app,router,routeContext = {}) {
     if (state.completeness?.complete) {
       summary.body.append(h('p', 'ui-sub', text('すべての関数を比較しました。', 'Function sets and matching are complete.')));
     } else {
-      summary.body.append(statusNotice(state.completeness?.reasons || ['function-discovery-incomplete']));
+      const v6State = app?.v6Workbench?.getAutoAnalysisState?.() ?? null;
+      const autoComplete = Boolean(
+        (v6State?.status === 'done' || v6State?.staged?.status === 'done')
+        && app?.store?.get?.('symbolsReady') !== false
+      );
+      const rawReasons = Array.isArray(state.completeness?.reasons) ? state.completeness.reasons : [];
+      const reasons = autoComplete
+        ? rawReasons.filter((r) => !String(r).includes('function-discovery-incomplete') && r !== 'functions-partial')
+        : (rawReasons.length ? rawReasons : ['function-discovery-incomplete']);
+      if (reasons.length) {
+        summary.body.append(statusNotice(reasons));
+      } else if (!autoComplete) {
+        summary.body.append(statusNotice(['function-discovery-incomplete']));
+      }
     }
     host.append(summary.root);
     const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
