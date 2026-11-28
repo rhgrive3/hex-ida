@@ -69,6 +69,9 @@ const SP_DECL_INIT_RE = /^\s*(?:(?:const|register|static|unsigned|signed|long|sh
 const TYPE_BLOCK_HEAD_RE = /^\s*(?:typedef|struct|union|enum)\b/;
 const BRACELESS_CTRL_RE = /^\s*(?:(?:\}\s*)?else(?:\s+if\s*\(.+\))?|(?:if|while|for|switch)\s*\(.+\)|do)\s*$/;
 const RETURN_STMT_RE = /^\s*return(?:\s+[^;]+)?;\s*$/;
+const SSA_CALLEE_SAVE_RE = /^\s*(local_[mp][0-9A-Fa-f]+)\s*=(?!=)\s*(local_(?:x(?:19|2[0-9]|30)|fp|lr|d(?:[89]|1[0-5])))\s*;\s*$/;
+const SSA_CALLEE_RESTORE_RE = /^\s*(local_(?:x(?:19|2[0-9]|30)|fp|lr|d(?:[89]|1[0-5])))\s*=(?!=)\s*(local_[mp][0-9A-Fa-f]+)\s*;\s*$/;
+const SIMPLE_LOCAL_DECL_NAME_RE = /^\s*(?!return\b|goto\b|break\b|continue\b|case\b|else\b|typedef\b|delete\b|struct\b|union\b|enum\b)(?:(?:const|register|static|unsigned|signed|long|short)\s+)*[A-Za-z_][A-Za-z0-9_]*(?:\s*\*+\s*|\s+)([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$/;
 
 const REG_ALIAS_CACHE = new Map();
 const REG_WRITE_RE_CACHE = new Map();
@@ -273,6 +276,9 @@ function isEarlyReturnRestore(sanitizedLines, restoreIdx) {
     if (restoreMatch && CALLEE_SAVED_REGS.has(restoreMatch[1])) {
       continue;
     }
+    if (SSA_CALLEE_RESTORE_RE.test(trimmed)) {
+      continue;
+    }
     return false;
   }
   return seenReturn;
@@ -411,7 +417,7 @@ export function foldCalleeSavedStackSpills(lines) {
   if (!Array.isArray(lines) || lines.length === 0) {
     return {
       lines: Array.isArray(lines) ? [] : [],
-      stats: { calleeSavedSpillsFolded: 0 },
+      stats: { calleeSavedSpillsFolded: 0, deadDeclsElided: 0 },
     };
   }
 
@@ -544,33 +550,28 @@ export function foldCalleeSavedStackSpills(lines) {
     }
   }
 
-  if (spEscaped || slotOps.size === 0) {
-    return {
-      lines: lines.slice(),
-      stats: { calleeSavedSpillsFolded: 0 },
-    };
-  }
-
-  const allSlotOffsets = Array.from(slotOps.keys());
-  const allExternalOffsets = Array.from(externalAccessOffsets);
-
-  const hasOverlappingAccess = (off) => {
-    for (const extOff of allExternalOffsets) {
-      if (extOff >= off - 15 && extOff <= off + 7) {
-        return true;
-      }
-    }
-    for (const otherOff of allSlotOffsets) {
-      if (otherOff !== off && otherOff >= off - 7 && otherOff <= off + 7) {
-        return true;
-      }
-    }
-    return false;
-  };
-
   const foldIndices = new Set();
+  const elideDeclIndices = new Set();
 
-  for (const [offset, ops] of slotOps.entries()) {
+  if (!spEscaped && slotOps.size > 0) {
+    const allSlotOffsets = Array.from(slotOps.keys());
+    const allExternalOffsets = Array.from(externalAccessOffsets);
+
+    const hasOverlappingAccess = (off) => {
+      for (const extOff of allExternalOffsets) {
+        if (extOff >= off - 15 && extOff <= off + 7) {
+          return true;
+        }
+      }
+      for (const otherOff of allSlotOffsets) {
+        if (otherOff !== off && otherOff >= off - 7 && otherOff <= off + 7) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    for (const [offset, ops] of slotOps.entries()) {
     if (hasOverlappingAccess(offset)) continue;
 
     const regs = new Set(ops.map((op) => op.reg));
@@ -647,13 +648,119 @@ export function foldCalleeSavedStackSpills(lines) {
       }
       foldIndices.add(saveIdx);
     }
+    }
+  }
+
+  // Independent SSA callee-saved spill folding (`local_[mp]<hex> = local_<reg>;`)
+  const funcOpenBraces = [];
+  const seenOpenBraces = new Set();
+  for (let i = 0; i < lineFuncOpenBrace.length; i++) {
+    const ob = lineFuncOpenBrace[i];
+    if (ob !== -1 && !seenOpenBraces.has(ob)) {
+      seenOpenBraces.add(ob);
+      funcOpenBraces.push(ob);
+    }
+  }
+
+  const ssaSaveCandidates = [];
+  for (const funcOpenBrace of funcOpenBraces) {
+    for (let i = funcOpenBrace + 1; i < sanitizedLines.length; i++) {
+      if (lineFuncOpenBrace[i] !== funcOpenBrace || lineDepth[i] === 0) break;
+      if (lineDepth[i] !== 1 || lineAfterBracelessCtrl[i]) break;
+      const clean = sanitizedLines[i];
+      const trimmed = clean.trim();
+      if (!trimmed) continue;
+      if (isRecognizedSpAdjustmentOrDecl(clean)) continue;
+      if (CALLEE_SAVE_RE.test(clean)) continue;
+
+      const ssaSaveMatch = SSA_CALLEE_SAVE_RE.exec(clean);
+      if (ssaSaveMatch) {
+        ssaSaveCandidates.push({
+          saveIdx: i,
+          slotVar: ssaSaveMatch[1],
+          regVar: ssaSaveMatch[2],
+          funcOpenBrace,
+        });
+        continue;
+      }
+
+      const item = lines[i];
+      const isDeclObj = usesLineObjects && item !== null && typeof item === 'object' && item.kind === 'decl';
+      if (isDeclObj || ANY_LOCAL_DECL_RE.test(clean)) continue;
+      break;
+    }
+  }
+
+  for (const { saveIdx, slotVar, regVar, funcOpenBrace } of ssaSaveCandidates) {
+    const matchedRestores = new Set();
+    for (let rIdx = saveIdx + 1; rIdx < sanitizedLines.length; rIdx++) {
+      if (lineFuncOpenBrace[rIdx] !== funcOpenBrace) continue;
+      if (lineAfterBracelessCtrl[rIdx]) continue;
+      const rm = SSA_CALLEE_RESTORE_RE.exec(sanitizedLines[rIdx]);
+      if (!rm || rm[1] !== regVar || rm[2] !== slotVar) continue;
+      const isTopLevel = lineDepth[rIdx] === 1;
+      const isEarlyReturn =
+        !isTopLevel &&
+        lineDepth[rIdx] >= 2 &&
+        isEarlyReturnRestore(sanitizedLines, rIdx);
+      if (isTopLevel || isEarlyReturn) {
+        matchedRestores.add(rIdx);
+      }
+    }
+
+    const verifySsaVarSound = (varName) => {
+      const tokenRe = new RegExp(`\\b${varName}\\b`);
+      const addrRe = new RegExp(`&\\s*${varName}\\b`);
+      let declIdx = -1;
+      let declCount = 0;
+
+      for (let k = 0; k < sanitizedLines.length; k++) {
+        const clean = sanitizedLines[k];
+        if (!tokenRe.test(clean)) continue;
+        if (addrRe.test(clean)) return { ok: false, declIdx: -1 };
+        if (k === saveIdx || matchedRestores.has(k)) continue;
+
+        const dm = SIMPLE_LOCAL_DECL_NAME_RE.exec(clean);
+        if (
+          dm &&
+          dm[1] === varName &&
+          lineDepth[k] === 1 &&
+          lineFuncOpenBrace[k] === funcOpenBrace &&
+          !lineAfterBracelessCtrl[k]
+        ) {
+          declCount++;
+          declIdx = k;
+          if (declCount > 1) return { ok: false, declIdx: -1 };
+          continue;
+        }
+        return { ok: false, declIdx: -1 };
+      }
+
+      return { ok: true, declIdx };
+    };
+
+    const slotCheck = verifySsaVarSound(slotVar);
+    if (!slotCheck.ok) continue;
+    const regCheck = verifySsaVarSound(regVar);
+    if (!regCheck.ok) continue;
+
+    foldIndices.add(saveIdx);
+    for (const rIdx of matchedRestores) {
+      foldIndices.add(rIdx);
+    }
+    if (slotCheck.declIdx !== -1) {
+      elideDeclIndices.add(slotCheck.declIdx);
+    }
+    if (regCheck.declIdx !== -1) {
+      elideDeclIndices.add(regCheck.declIdx);
+    }
   }
 
   const count = foldIndices.size;
   if (count === 0) {
     return {
       lines: lines.slice(),
-      stats: { calleeSavedSpillsFolded: 0 },
+      stats: { calleeSavedSpillsFolded: 0, deadDeclsElided: 0 },
     };
   }
 
@@ -663,7 +770,7 @@ export function foldCalleeSavedStackSpills(lines) {
   const outLines = [];
   let openBraceIdxInOut = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (foldIndices.has(i)) continue;
+    if (foldIndices.has(i) || elideDeclIndices.has(i)) continue;
     if (i === origOpenBraceIdx) {
       openBraceIdxInOut = outLines.length;
     }
@@ -711,7 +818,7 @@ export function foldCalleeSavedStackSpills(lines) {
 
   return {
     lines: outLines,
-    stats: { calleeSavedSpillsFolded: count },
+    stats: { calleeSavedSpillsFolded: count, deadDeclsElided: elideDeclIndices.size },
   };
 }
 
@@ -798,6 +905,7 @@ export function formatCleanViewLines(lines, options = {}) {
     const calleeResult = foldCalleeSavedStackSpills(current);
     current = calleeResult.lines;
     stats.calleeSavedSpillsFolded = calleeResult.stats.calleeSavedSpillsFolded;
+    stats.deadDeclsElided += calleeResult.stats.deadDeclsElided ?? 0;
   }
 
   // 4. Apple ObjC / Swift / ARC / 4-ABI demangle pass (preserving line metadata)

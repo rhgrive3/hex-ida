@@ -8,6 +8,7 @@ import {
   formatCleanViewLines,
   formatCleanViewText,
 } from '../../js/decompiler/clean-view.js';
+import { refineAppleSwiftDecompile } from '../../js/decompiler/apple-arc-swift-pass.js';
 
 test('isTypedefPreludeLine hides primitive and id typedefs while keeping typedef struct', () => {
   assert.equal(isTypedefPreludeLine('typedef unsigned char uint8;'), true);
@@ -673,4 +674,244 @@ test('foldCalleeSavedStackSpills preserves braceless conditionals with nested pa
     '}',
   ].join('\n');
   assert.equal(formatCleanViewText(nestedFor).stats.calleeSavedSpillsFolded, 0);
+});
+
+test('foldCalleeSavedSpills folds SSA-only callee-saved prologue saves (virtual_call style) and elides dead decls separately', () => {
+  const input = [
+    'int64 virtual_call(void * a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_m8;',
+    '  uint64 local_x29;',
+    '  uint64 local_x30;',
+    '  uint64 vtable;',
+    '  local_m10 = local_x29;',
+    '  local_m8 = local_x30;',
+    '  vtable = *(uint64 *)a1;',
+    '  return (*(int64 (**)(void *))(vtable + 0x10))(a1);',
+    '}',
+  ];
+
+  const { lines, stats } = formatCleanViewLines(input);
+  assert.equal(stats.calleeSavedSpillsFolded, 2);
+  assert.equal(stats.deadDeclsElided, 4);
+  assert.deepEqual(lines, [
+    'int64 virtual_call(void * a1) {',
+    '  uint64 vtable;',
+    '  /* [Clean View: folded 2 callee-saved prologue/epilogue spill ops] */',
+    '  vtable = *(uint64 *)a1;',
+    '  return (*(int64 (**)(void *))(vtable + 0x10))(a1);',
+    '}',
+  ]);
+});
+
+test('foldCalleeSavedSpills folds paired SSA prologue/epilogue and early-return restores, and merges mixed raw+SSA prologues', () => {
+  const ssaWithEarlyReturn = [
+    'int64 sub_7000(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x19;',
+    '  local_m10 = local_x19;',
+    '  if (a1 == 0) {',
+    '    local_x19 = local_m10;',
+    '    return 0;',
+    '  }',
+    '  int64 r = helper(a1);',
+    '  local_x19 = local_m10;',
+    '  return r;',
+    '}',
+  ];
+  const ssaRes = formatCleanViewLines(ssaWithEarlyReturn);
+  assert.equal(ssaRes.stats.calleeSavedSpillsFolded, 3);
+  assert.equal(ssaRes.stats.deadDeclsElided, 2);
+  assert.ok(ssaRes.lines.some((l) => l.includes('/* [Clean View: folded 3 callee-saved prologue/epilogue spill ops] */')));
+  assert.ok(!ssaRes.lines.join('\n').includes('local_m10'));
+  assert.ok(!ssaRes.lines.join('\n').includes('local_x19'));
+
+  // Mixed raw sp + SSA prologue
+  const mixed = [
+    'int64 sub_7001(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  *(uint64 *)(sp + 0x10) = x19;',
+    '  local_m10 = local_x29;',
+    '  int64 r = helper(a1);',
+    '  x19 = *(uint64 *)(sp + 0x10);',
+    '  local_x29 = local_m10;',
+    '  return r;',
+    '}',
+  ];
+  const mixedRes = formatCleanViewLines(mixed);
+  assert.equal(mixedRes.stats.calleeSavedSpillsFolded, 4);
+  assert.equal(mixedRes.stats.deadDeclsElided, 2);
+  assert.ok(mixedRes.lines.some((l) => l.includes('/* [Clean View: folded 4 callee-saved prologue/epilogue spill ops] */')));
+
+  // SSA folding still works independently even when sp escapes
+  const spEscapedWithSsa = [
+    'int64 sub_7002(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  local_m10 = local_x29;',
+    '  take_ptr(&sp);',
+    '  return a1;',
+    '}',
+  ];
+  const escRes = formatCleanViewLines(spEscapedWithSsa);
+  assert.equal(escRes.stats.calleeSavedSpillsFolded, 1);
+  assert.equal(escRes.stats.deadDeclsElided, 2);
+});
+
+test('foldCalleeSavedSpills SSA soundness rejects param local_x19, body read/write, &local_m10, shadowed decl, and respects word boundaries (local_m1 vs local_m10)', () => {
+  // Parameter named local_x19 at depth 0
+  const paramCase = [
+    'int64 sub_7100(uint64 local_x19) {',
+    '  uint64 local_m10;',
+    '  local_m10 = local_x19;',
+    '  return 1;',
+    '}',
+  ];
+  assert.equal(foldCalleeSavedStackSpills(paramCase).stats.calleeSavedSpillsFolded, 0);
+
+  // Read/write of slotVar in body
+  const bodyReadCase = [
+    'int64 sub_7101(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  local_m10 = local_x29;',
+    '  return local_m10 + a1;',
+    '}',
+  ];
+  assert.equal(foldCalleeSavedStackSpills(bodyReadCase).stats.calleeSavedSpillsFolded, 0);
+
+  // Write of regVar in body
+  const bodyWriteCase = [
+    'int64 sub_7102(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  local_m10 = local_x29;',
+    '  local_x29 = a1;',
+    '  return a1;',
+    '}',
+  ];
+  assert.equal(foldCalleeSavedStackSpills(bodyWriteCase).stats.calleeSavedSpillsFolded, 0);
+
+  // Address-taken &local_m10
+  const addrTakenCase = [
+    'int64 sub_7103(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  local_m10 = local_x29;',
+    '  take_ptr(&local_m10);',
+    '  return a1;',
+    '}',
+  ];
+  assert.equal(foldCalleeSavedStackSpills(addrTakenCase).stats.calleeSavedSpillsFolded, 0);
+
+  // Shadowed decl in nested block
+  const shadowedCase = [
+    'int64 sub_7104(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  local_m10 = local_x29;',
+    '  if (a1) {',
+    '    uint64 local_m10;',
+    '    helper(a1);',
+    '  }',
+    '  return a1;',
+    '}',
+  ];
+  assert.equal(foldCalleeSavedStackSpills(shadowedCase).stats.calleeSavedSpillsFolded, 0);
+
+  // Initializer or array decl rejected
+  const initDeclCase = [
+    'int64 sub_7105(int64 a1) {',
+    '  uint64 local_m10 = 0;',
+    '  uint64 local_x29;',
+    '  local_m10 = local_x29;',
+    '  return a1;',
+    '}',
+  ];
+  assert.equal(foldCalleeSavedStackSpills(initDeclCase).stats.calleeSavedSpillsFolded, 0);
+
+  // Word-boundary check: live local_m1 must NOT block folding dead local_m10
+  const wordBoundaryCase = [
+    'int64 sub_7106(int64 a1) {',
+    '  uint64 local_m10;',
+    '  uint64 local_x29;',
+    '  uint64 local_m1;',
+    '  local_m10 = local_x29;',
+    '  local_m1 = a1 + 1;',
+    '  return local_m1;',
+    '}',
+  ];
+  const wbRes = formatCleanViewLines(wordBoundaryCase);
+  assert.equal(wbRes.stats.calleeSavedSpillsFolded, 1);
+  assert.equal(wbRes.stats.deadDeclsElided, 2);
+  const wbJoined = wbRes.lines.join('\n');
+  assert.ok(!wbJoined.includes('local_m10'));
+  assert.ok(wbJoined.includes('local_m1 = a1 + 1;'));
+  assert.ok(wbJoined.includes('return local_m1;'));
+});
+
+test('refineAppleSwiftDecompile demangles _-stripped Itanium C++ signatures, calls, operators, and templates with balanced-paren stripping', () => {
+  const pseudoC = [
+    'int32 ZNK5Thing6updateEi(Thing * this, uint64 a2) {',
+    '  ZN5ThingD0Ev(this);',
+    '  ZN4BaseD2Ev(this);',
+    '  void * p = Znwm(0x20);',
+    '  ZdlPv(p);',
+    '  int32 v = Z3fooi(a2);',
+    '  int32 c = ZNK3FooclEi(this, v);',
+    '  return c;',
+    '}',
+    'int64 ZNK3Foo3barIiEEvT_(Foo * this, int64 a2) {',
+    '  return a2;',
+    '}',
+  ].join('\n');
+
+  const { code, stats } = refineAppleSwiftDecompile(pseudoC);
+  assert.equal(stats.symbolsDemangled, 8);
+  assert.ok(code.includes('int32 Thing::update(Thing * this, uint64 a2) {'), `got:\n${code}`);
+  assert.ok(code.includes('Thing::~Thing(this);'), `got:\n${code}`);
+  assert.ok(code.includes('Base::~Base(this);'), `got:\n${code}`);
+  assert.ok(code.includes('void * p = operator new(0x20);'), `got:\n${code}`);
+  assert.ok(code.includes('operator delete(p);'), `got:\n${code}`);
+  assert.ok(code.includes('int32 v = foo(a2);'), `got:\n${code}`);
+  assert.ok(code.includes('int32 c = Foo::operator()(this, v);'), `got:\n${code}`);
+  assert.ok(code.includes('int64 Foo::bar<int>(Foo * this, int64 a2) {'), `got:\n${code}`);
+});
+
+test('refineAppleSwiftDecompile preserves strings, comments, identifier boundaries, and rejects short false positives (Z1a, Z2ab, Z3foo, Zdl)', () => {
+  const pseudoC = [
+    'void sub_8000(void) {',
+    '  const char * s1 = "ZNK5Thing6updateEi and \\"ZN5ThingD0Ev\\"";',
+    "  char c1 = 'Z'; // ZNK5Thing6updateEi",
+    '  /* ZN5ThingD0Ev and ZdlPv */',
+    '  int Z1a = 1;',
+    '  int Z2ab = 2;',
+    '  int Z3foo = 3;',
+    '  int Zdl = 4;',
+    '  prefixZNK5Thing6updateEi(Z1a, Z2ab, Z3foo, Zdl);',
+    '  foo_ZNK5Thing6updateEi(Z1a);',
+    '}',
+  ].join('\n');
+
+  const { code, stats } = refineAppleSwiftDecompile(pseudoC);
+  assert.equal(stats.symbolsDemangled, 0);
+  assert.equal(code, pseudoC);
+});
+
+test('refineAppleSwiftDecompile demangles _-stripped std:: nested Itanium C++ symbols (ZNSt, ZNKSt, ZNSa) while rejecting bare prefixes', () => {
+  const input = [
+    'void ZNSt3__16vectorIiNS_9allocatorIiEEE9push_backERKi(void *vec, const int *val);',
+    'uint64 ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4sizeEv(void *s);',
+    'void ZNSaIiED1Ev(void *alloc);',
+    'int ZNSt = 1;',
+    'int ZNSa = 2;',
+  ].join('\n');
+  const res = refineAppleSwiftDecompile(input);
+  assert.match(res.code, /push_back\(void \*vec, const int \*val\);/);
+  assert.match(res.code, /size\(void \*s\);/);
+  assert.match(res.code, /~allocator\(void \*alloc\);/);
+  assert.match(res.code, /int ZNSt = 1;/);
+  assert.match(res.code, /int ZNSa = 2;/);
+  assert.equal(res.stats.symbolsDemangled, 3);
 });
