@@ -1,88 +1,60 @@
 # Universal Binary Platform
 
+Last updated: 2026-11-28
+
 ## Scope
 
-This layer is deliberately independent from Semantic IR, decompiler, Objective-C and Swift recovery. Its job is to make binary I/O, format metadata, architecture capability, projects, diffing, local knowledge and memory behavior reliable before semantic analysis runs.
+The universal binary platform layer (`js/binary/`, `js/platform/`) owns format-neutral binary I/O, container metadata, architecture capability detection, `.hexproj` persistence, binary diffing, local knowledge storage, and iPad-safe memory management independently from Semantic IR, decompilation, and Objective-C/Swift recovery.
 
-## File-open pipeline
+## File-Open Pipeline
 
-Browser files enter through one format-neutral facade:
+Browser files enter through a single format-neutral facade:
 
 `File/Blob -> ByteSource -> CachedByteSource -> detectBinary -> format engine -> capability -> Backend`
 
-`js/platform/worker.js` owns ByteSource-backed format detection. ELF/PE continue through `openBinarySource -> BinaryImage`; the existing `js/worker.js` remains the ARM64 compatibility engine for legacy/product surfaces that still require it. For ARM64 ELF/PE, the format-neutral regions produced by `BinaryImage` are registered into that worker, so its disassembly/search/scans can operate without pretending the file is Mach-O.
+- `js/platform/worker.js` owns `ByteSource`-backed format detection.
+- ELF and PE continue through `openBinarySource -> BinaryImage`; ARM64 ELF/PE regions are registered into `js/worker.js` so disassembly, search, and scans operate without assuming Mach-O.
+- Mach-O is detected through the same `ByteSource` stage and handed to the multi-slice compatibility parser without constructing a duplicate universal `BinaryImage` graph at startup, preserving chained fixups, function starts (`LC_FUNCTION_STARTS`), `MH_OBJECT` function recovery (including `0x0`), and selector metadata while respecting iPad memory limits.
+- Node CLI and benchmark tools use `NodeFileByteSource` over the same `js/binary/*` core.
 
-Mach-O is detected through the same ByteSource stage but intentionally handed to the mature multi-slice compatibility parser without also creating a second universal `BinaryImage` at startup. This preserves chained fixups/function starts/selector metadata and avoids retaining two large metadata graphs on iPad.
+## Supported Container Formats (`js/binary/`)
 
-The Node CLI uses `NodeFileByteSource` and the same `js/binary/*` parser core; only I/O differs.
+- **Mach-O 32/64 & Universal/Fat (`macho.js`, `macho-core.js`, `macho-dyld.js`, `macho-fat.js`)**: Multi-slice images, `MH_OBJECT` relocatable objects, chained fixups (including ARM64e PAC pointer formats), `LC_FUNCTION_STARTS`, indirect symbols, TLV initializers, and `LC_CODE_SIGNATURE` metadata.
+- **dyld shared cache (`dyld-shared-cache.js`, `dyld-shared-cache-core.js`, `dyld-shared-cache-slide-v5.js`)**: Mapping tables and slide info decoding (including v2 and v5).
+- **ELF32/ELF64 (`elf.js`, `elf-core.js`, `elf-dynamic.js`, `elf-unwind.js`, `elf-gnu-property.js`)**: Including sectionless and stripped images, dynamic imports/exports, relocations, unwind-derived function seeds, GNU property notes (PAC/BTI/GCS), and executable mappings.
+- **PE32/PE32+ (`pe.js`, `pe-loader.js`, `pe-chpe.js`, `pe-armnt-exception.js`, `pe-safeseh.js`)**: Imports/exports, delay imports, base relocations, `.pdata`/exception-directory function seeds, CHPE/SafeSEH metadata, and executable mappings.
 
-## Supported formats
+Malformed range arithmetic is rejected before allocation. Source reads use `BigInt` offsets and bounded `Number` lengths.
 
-- Mach-O 32/64 and universal/fat through the compatibility multi-slice UI path. Modern chained fixups/function starts remain owned by the existing parser path.
-- ELF32/ELF64, including sectionless and stripped images. Dynamic imports/exports, relocations, unwind-derived function seeds and executable mappings come from `js/binary/*`.
-- PE32/PE32+, including imports/exports, **delay imports**, base relocations, exception-directory/.pdata function seeds and executable mappings.
+## Architecture Capability
 
-Malformed range arithmetic is rejected before allocation. Source reads use BigInt offsets and bounded Number lengths.
+- `js/architecture/index.js` defines the platform-facing architecture boundary (instruction alignment/size, control-flow, call, and return categories). ARM64 is fixed-width; x86-64 and RISC-V64 (with C extension) are variable-width.
+- `js/platform/capstone-probe-worker.js` probes the deployed Capstone runtime; `Backend.disassembleAt()` provides range disassembly for neutral ranges when supported.
+- ARM64/ARM64e, x86-64, and RISC-V64 all have implemented Semantic IR, CFG, SSA, MemorySSA, and shared decompiler verticals. Authoritative capability maturity grades are maintained in [`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md), `js/platform/capability-maturity.js`, and `js/platform/stage2-capability-maturity.js`.
 
-## Architecture capability
+## Memory & Streaming Policy (iPad / WebKit)
 
-`js/architecture/index.js` defines the platform-facing architecture boundary: instruction alignment/size information, control-flow category, call category and return category. ARM64 is fixed-width. x86-64 and RISC-V64 must not be forced into a four-byte-row assumption; RISC-V64 is variable-width when the C extension is enabled.
+- Browser `File`/`Blob` inputs are never copied into a single whole-file `ArrayBuffer` by the platform path.
+- Content hashing (`js/platform/hash.js` / WASM SHA-256 streaming for `> 1 MiB` inputs) is lazy and streaming, not a prerequisite for header/section display.
+- Runtime byte pages use a bounded LRU (`CachedByteSource`) with `Transferable` `ArrayBuffer` chunks.
+- ELF/PE metadata parsing enforces bounded source-range budgets and adaptive prefetching.
+- Stale UI epochs reject late worker results; file changes cancel in-flight worker requests; hidden-page cleanup drops queued chunks and caches.
+- `Backend.memoryStats()` exposes cached bytes/chunks, indexed functions, and estimated memory.
 
-`capstone-probe-worker.js` checks what the deployed Capstone build can actually open. `Backend.disassembleAt()` exposes independent range disassembly for neutral ranges when the runtime probe succeeds. Product-viewer support and semantic-analysis support are separate capability dimensions.
+## Progressive Analysis & Caching
 
-x86-64 is **not** decode-only: Phase 5 carries its mandatory corpus through exact MachineEffects, Semantic IR, CFG, SSA, MemorySSA and the shared decompiler (implemented depth A6). The frozen RISC-V64 Phase 6 profile does the same through A6. Neither target is promoted cumulatively beyond A1 because complete whole-contract A2 exact MachineEffects coverage remains Partial. `SUPPORT_MATRIX.md` and `js/platform/capability-maturity.js` are the authority for the exact current grades.
+- The neutral ELF/PE worker emits `analysisProgress` phases (`header`, `sections`, `symbols/imports`, `deferred strings`, `functions`, `deferred expensive analysis`) via `Backend.onAnalysisProgress`, with paged `binaryMetadata(kind, start, limit)` fetches.
+- `AnalysisCache` stores only schema-versioned derived products (format metadata, function seeds, string indexes, imports, analysis summaries) keyed by streaming content hash; raw binary bytes are never cached.
 
-## iPad memory policy
+## `.hexproj`, Binary Diff, Knowledge DB & Plugin API
 
-- Browser `File`/`Blob` objects are never converted to one whole-file ArrayBuffer by the platform path.
-- Format detection reads through a bounded ByteSource cache.
-- ELF/PE parser metadata has a bounded source-range budget and adaptive reads to avoid small-page restart storms.
-- Mach-O startup avoids a duplicate universal parse; only the compatibility parser owns the large function/import metadata graph.
-- Runtime byte pages use a bounded LRU (`CachedByteSource`).
-- Chunk results use Transferable ArrayBuffers.
-- Stale UI epochs reject results even if an older worker request completes later.
-- Worker requests accept cancellation; File changes cancel relevant workers.
-- Hidden-page cleanup drops queued chunks and bounded source caches.
-- `Backend.memoryStats()` reports platform cached bytes/chunks, indexed functions and estimated memory.
-- Strings and content hashing are lazy jobs, not prerequisites for header/section display.
+- **`.hexproj` (v1, `application/vnd.hex.project+json`)**: Tagged-`BigInt` JSON storing binary hash/metadata, names, comments, types, structs, bookmarks, patches, confirmed findings, agent answers, evidence, settings, cache references, and navigation state without embedding binary bytes.
+- **Binary Diff**: Relocation-normalized byte/shape/IR/string/import/call fingerprints with sparse-token one-to-one matching (`identical`, `moved`, `slightly changed`, `new`, `deleted`).
+- **Knowledge DB & Vendor Hints**: Local IndexedDB (or in-memory test backend) `FunctionKnowledge` storage with ambiguity-window reidentification; vendor/SDK fingerprinting (Firebase, Unity, IL2CPP, libSystem, Foundation, Swift runtime, etc.) is strictly evidence-only.
+- **Plugin API (`js/platform/plugin-api.js`)**: Supports `registerFormat`, `registerArchitecture`, `registerAnalyzer`, `registerKnowledgeProvider`, `registerSignatureProvider`, `registerRecognitionProvider`, `registerViewContribution`, and `registerGoalProvider` (plus `registerPlugin` manifest registration) over a narrow frozen host context with per-contribution exception isolation.
 
-Exact byte budgets are implementation values and should be read from current source/tests rather than copied into long-lived architecture prose unless a public contract requires them.
+## Remaining Platform Limits
 
-## Progressive analysis
-
-The neutral ELF/PE worker emits `analysisProgress` phases in this order: header, sections, symbols/imports, deferred strings, functions, deferred expensive analysis. `Backend.onAnalysisProgress` is the stable UI hook. Large neutral metadata collections are fetched through bounded `binaryMetadata(kind,start,limit)` requests instead of cloning every object to the UI thread on open. Mach-O keeps the compatibility metadata surface where duplicating a full second graph would waste iPad memory.
-
-## Analysis cache
-
-`AnalysisCache` stores only allowed derived products: format metadata, function seeds, string indexes, imports and analysis summaries. Entries are keyed by a lazily computed streaming content hash and carry a schema version. Binary bytes are never accepted into the cache. Stale schemas are invalidated explicitly.
-
-## `.hexproj`
-
-Version 1 is JSON (`application/vnd.hex.project+json`) with tagged BigInt values. It stores binary hash/metadata, names, comments, types, structs, bookmarks, patches, confirmed findings, agent answers, evidence, analysis settings, cache references and navigation state. The binary itself is not embedded. Import validates size/version/shape and rejects future or corrupted projects without mutating app state.
-
-## Binary diff
-
-Function matching does not use addresses as identity. Fingerprints combine relocation-normalized bytes, a bounded byte sample, optional normalized IR hash, CFG-ish shape, strings, imports, calls, constants and size. Matching is sparse-token seeded and one-to-one. Results are `identical`, `moved`, `slightly changed`, `new` or `deleted`, with confidence, reasons and near-tie candidates.
-
-## Knowledge DB and vendor hints
-
-`KnowledgeDB` stores FunctionKnowledge locally in IndexedDB (or an in-memory backend for tests): fingerprints, names, roles, types, semantic labels, source binary hash, versions, confidence and evidence. Reidentification returns an accepted result only above threshold and outside an ambiguity window.
-
-Vendor/runtime fingerprinting is evidence-only. Firebase, Unity, IL2CPP, ad SDKs, libSystem, Foundation and Swift runtime are returned as unconfirmed candidates with confidence and matching evidence; the platform never converts a weak hint into a confirmed vendor identity.
-
-## Plugin API
-
-The stable registry currently supports `registerFormat`, `registerArchitecture`, `registerAnalyzer`, `registerKnowledgeProvider`, `registerSignatureProvider`, `registerRecognitionProvider`, `registerViewContribution`, and `registerGoalProvider`. Plugins receive a narrow frozen context rather than mutable parser internals. Exceptions are captured per contribution and never propagate into the host app.
-
-New contribution categories are additive contract work; they must not be inferred from aspirational architecture prose before they exist in `js/platform/plugin-api.js` and tests.
-
-## Benchmark interpretation
-
-`npm run binary:benchmark` may deliberately parse real Mach-O fixtures through the universal source-backed parser to stress its range-read path. The browser startup path does not retain that universal Mach-O image alongside the compatibility worker. Benchmark heap deltas therefore measure parser metadata cost, not duplicated browser binary buffers.
-
-## Remaining platform limits
-
-- Variable-length architecture product/viewer integration is still less uniform than ARM64's fixed-width path even though x86-64/RISC-V64 semantic pipelines exist.
-- Semantic IR v2 compatibility is the production default behind `js/ir-core.js`; the legacy ARM64/AAPCS64 implementation remains an explicit oracle/compatibility path. The important remaining semantic limitation is incomplete exact MachineEffects coverage and residual architecture/ABI assumptions in generic consumers, not the absence of Semantic IR/dataflow.
-- Universal Mach-O UI intentionally uses the existing multi-slice compatibility parser; neutral paged metadata collections remain ELF/PE-first where duplicating the full Mach-O metadata graph would violate the iPad memory policy.
-- Content hashing is streaming and lazy; first cache/project hash creation reads the file sequentially but does not require a whole-file buffer.
+- Variable-length architecture product/viewer integration remains less uniform than ARM64's fixed-width path.
+- Semantic IR v2 compatibility is the production default behind `js/ir-core.js`; the primary remaining semantic limit is complete exact MachineEffects coverage across all ISA contracts rather than missing IR/dataflow pipelines.
+- Universal Mach-O UI intentionally retains the multi-slice compatibility parser so iPad memory budgets are not doubled by a second full metadata graph.

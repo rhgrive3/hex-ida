@@ -1,68 +1,62 @@
 # Migration Guardrails
 
-This document records compatibility contracts that protect the current Hex implementation while it migrates toward `HEX_MASTER_ARCHITECTURE.md`.
+This document records compatibility and boundary contracts that protect the Hex codebase as it evolves toward [`HEX_MASTER_ARCHITECTURE.md`](HEX_MASTER_ARCHITECTURE.md).
 
-The guardrails are intentionally narrow. They protect proven public seams and safety properties without freezing the temporary implementation layout.
+The guardrails are intentionally narrow: they protect proven public seams, module boundaries, and safety invariants without freezing internal implementation layouts.
 
 ## Protected compatibility contracts
 
 | Area | Contract | Gate |
 |---|---|---|
-| Semantic facade | `js/ir.js` remains the public compatibility boundary and keeps the selected legacy semantic query exports | `tests/migration-guardrails.mjs` |
-| Alias safety | Unknown memory locations are never `MustAlias`, but remain `MayAlias`; an unknown store between a proof source and sink is a barrier | migration guardrail + `semantic:test` |
-| Decompiler | `js/decompiler/pipeline-core.js` consumes semantic analysis and does not read instruction mnemonic/operand text or decoder/backend internals | dependency/static guardrail + `decompiler:test` |
-| Project exchange | `.hexproj` v1 import/export remains supported; derived cache state stays referenced rather than owned by the exchange layer | migration guardrail + `project-roundtrip.mjs` |
-| Plugin API v1 | Existing registration entry points remain available. New contribution types may be additive | migration guardrail + `plugin-platform.mjs` |
-| Runtime evidence | Runtime evidence refines/contradicts a static candidate without mutating the static candidate | migration guardrail + `runtime-evidence-fusion.mjs` |
-| AI mutation | Mutation remains evidence-backed proposal -> explicit approval token -> approval-gated `CapabilityExecutor` -> mutation adapter | migration guardrail + `ai:test` |
-| Source-backed loader | Native loaders continue to support bounded range reads without retaining a whole-file byte array | `binary:source-test` |
-| ARM64 behavior | Current semantic/decompiler/compiler-truth regressions remain mandatory during migration | `semantic:test` + `decompiler:test` |
+| Semantic facade | `js/ir.js` remains the public compatibility boundary and retains required semantic query exports | `tests/migration-guardrails.mjs` |
+| Alias safety | Unknown memory locations are never `MustAlias` (remain `MayAlias`); unknown stores between proof source and sink act as barriers | `npm run migration:test` + `npm run semantic:test` |
+| Decompiler core | `js/decompiler/pipeline-core.js` consumes semantic analysis and does not read instruction mnemonic/operand text or decoder/backend internals | `npm run migration:test` + `npm run decompiler:test` |
+| Host / WASM boundary | `js/ui/`, `js/ai/`, `js/auth/`, and `js/userscript/` do not import internal engine modules or `js/core/hex-engine-wasm.js` directly; all WASM access goes exclusively through `js/core/hex-engine-bridge.js` | `npm run performance:test` (`tests/performance/wave6-release-gates.test.mjs`) |
+| Project exchange | `.hexproj` v1 import/export remains supported; derived cache state stays referenced rather than owned by the exchange layer | `npm run migration:test` + `tests/project-roundtrip.mjs` |
+| Plugin API v1 | Existing registration entry points in `js/platform/plugin-api.js` remain available; new contribution categories are additive | `npm run migration:test` + `tests/plugin-platform.mjs` |
+| Runtime evidence | Runtime evidence refines or contradicts static candidates without mutating static truth | `npm run migration:test` + `tests/runtime-evidence-fusion.mjs` |
+| AI mutation | Mutation remains evidence-backed proposal → explicit approval token → approval-gated `CapabilityExecutor` → mutation adapter | `npm run migration:test` + `npm run ai:test` |
+| Source-backed loader | Native loaders continue to support bounded range reads without retaining a whole-file byte array | `npm run binary:source-test` |
+| Multi-arch & ARM64 parity | Semantic, decompiler, compiler-truth, and C++/WASM differential regressions remain mandatory | `npm run semantic:test` + `npm run decompiler:test` + `npm run performance:test` |
 
 ## Dependency boundary checks
 
-`tests/migration-guardrails.mjs` rejects these new direct dependencies:
+`tests/migration-guardrails.mjs` and `npm run module-boundaries:test` reject forbidden direct dependencies:
 
-- generic semantic facade/dataflow modules -> architecture-specific target implementations;
-- `js/project/**` -> derived cache or ArtifactStore implementation;
-- UI modules -> `js/ir-core.js` or `js/decompiler/pipeline-core.js` private internals;
-- AI modules other than the existing approval-gated `js/ai/capabilities/executor.js` -> direct binary patch implementation;
-- semantic decompiler core -> architecture decoder/backend implementation.
+- generic semantic facade/dataflow modules → architecture-specific target implementations;
+- `js/project/**` → derived cache or ArtifactStore implementation;
+- UI modules → `js/ir-core.js` or `js/decompiler/pipeline-core.js` private internals;
+- AI modules other than approval-gated `js/ai/capabilities/executor.js` → direct binary patch implementation;
+- semantic decompiler core → architecture decoder/backend implementation.
 
-The sanctioned AI mutation executor is separately checked for `requiresApproval` and proposal-scoped authorization before execution. These checks inspect narrow module dependencies and concrete authorization behavior instead of broad keywords. This limits false positives.
+Separately, `tests/performance/wave6-release-gates.test.mjs` (`npm run performance:test`) enforces the Host-layer → WASM boundary:
 
-## Deliberate migration exceptions
+- Host layers (`js/ui/`, `js/ai/`, `js/auth/`, `js/userscript/`) must not directly import `js/core/hex-engine-wasm.js` or internal engine modules bypassing `js/core/hex-engine-bridge.js`.
 
-These are current debt or compatibility seams, not approved patterns for new code:
+The sanctioned AI mutation executor is separately verified for `requiresApproval` and proposal-scoped authorization before execution.
 
-- `js/ir-core.js` is now a **compatibility facade** whose production default is Semantic IR v2 compatibility. The legacy ARM64/AAPCS64 implementation remains available only as an explicit compatibility/oracle path through `js/architecture/compat/ir-core-arm64-aapcs64-v1.js`. The old exception that treated `js/ir-core.js` itself as the temporary mixed legacy core is retired. New generic code MUST NOT import the architecture-specific compatibility implementation directly; compatibility exports may remain at the public facade until their tested consumers are migrated.
-- Architecture/compiler-specific decompiler idioms may remain refinement providers. They must not become a second instruction-decoding path.
-- `analysis.cacheReferences` in `.hexproj` v1 is allowed. It is a reference to derived analysis, not ownership of an ArtifactStore.
-- Public API tests assert required exports, not the complete export set. Additive compatibility changes therefore remain possible.
+## Deliberate compatibility exceptions
 
-## CI
+These are bounded compatibility seams, not approved patterns for new code:
 
-`npm run migration:test` runs the focused contracts.
+- `js/ir-core.js` is a **compatibility facade** whose production default is Semantic IR v2. The legacy ARM64/AAPCS64 implementation remains available only as an explicit compatibility/oracle path via `js/architecture/compat/ir-core-arm64-aapcs64-v1.js`. New generic code MUST NOT import that architecture-specific compatibility module directly.
+- Architecture/compiler-specific decompiler idioms (e.g., Apple ARC/Swift passes) may act as refinement providers, but must not become a second instruction-decoding path.
+- `analysis.cacheReferences` in `.hexproj` v1 is permitted as a reference to derived analysis, not ownership of an ArtifactStore.
+- Public API tests assert required exports rather than freezing the complete export set, allowing additive extensions.
 
-`npm run check` includes `migration:test`, so every existing general check also enforces the guardrails.
+## CI enforcement
 
-The `Migration guardrails` workflow additionally runs the migration test, the required semantic/decompiler/platform/runtime/AI suites, and the source-backed binary loader regression on pull requests that touch migration-sensitive paths.
+- Focused contracts: `npm run migration:test`, `npm run module-boundaries:test`, and `npm run performance:test`
+- Full repository gate: `npm run check` (includes `migration:test`, `module-boundaries:test`, and `performance:test` via `npm test`)
 
-## Engineering-process guardrails
+## Relationship to process guardrails
 
-Architecture compatibility is not sufficient by itself. Phase 3, Phase 4, and Phase 5 showed that a correct implementation can still lose large amounts of time through late integration, contradictory ownership, stale generated output, weak exact-head evidence, moving-main churn, target-platform assumptions, or a verifier that matures only at final release.
+Architecture and boundary compatibility alone are not sufficient. [`ENGINEERING_PROCESS_GUARDRAILS.md`](ENGINEERING_PROCESS_GUARDRAILS.md) is the companion normative contract:
 
-`docs/ENGINEERING_PROCESS_GUARDRAILS.md` is therefore a second normative migration contract. Master-phase, integration, release, generated-output, exact-SHA verification, Dev Supervisor, and iOS/browser work MUST follow it.
-
-In particular:
-
-- a migration guardrail MUST NOT be weakened to work around an ownership, generated-output, workflow-trigger, or integration-process defect;
-- repeated process defects MUST gain permanent automated regressions where technically possible;
-- component correctness does not substitute for candidate-merge-tree and living-integration correctness;
-- a final verifier change that changes acceptance semantics invalidates affected historical evidence;
-- a source merge is not proof that the deployed/in-memory runtime has activated that source.
+- never weaken a migration guardrail to work around an ownership, generated-output, workflow-trigger, or integration defect;
+- add permanent automated regressions for repeated process defects;
+- verify candidate merge trees and exact-head builds rather than relying on stale or isolated branch runs.
 
 ## Review rule
 
-A migration change may update a guardrail only when the old contract has a tested compatibility adapter or a completed differential cutover. Do not delete a failing guardrail only to make a migration PR green.
-
-When a protected public seam is intentionally retired, first add the replacement compatibility test, prove the required corpus on the replacement path, and only then narrow or remove the old guardrail.
+Update a guardrail only when the old contract has a tested compatibility adapter or a completed differential cutover. Never delete a failing guardrail just to turn a PR green.

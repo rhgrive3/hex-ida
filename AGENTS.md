@@ -1,20 +1,19 @@
 ## Engineering process safety
 
-For any master-phase, component-lane, living-integration, release/cutover, generated-output, ownership/governance, CI, moving-main reconciliation, Dev Supervisor, or iOS/browser automation work, read `docs/ENGINEERING_PROCESS_GUARDRAILS.md` before acting.
+For any architecture, integration, release/cutover, generated-output, ownership/governance, CI, moving-main reconciliation, Dev Supervisor, or iOS/browser automation work, read `docs/ENGINEERING_PROCESS_GUARDRAILS.md` before acting.
 
-Its `MUST` / `MUST NOT` rules are merge-blocking. Do not replace an exact-head, candidate-merge-tree, generated-output, independent-verifier, active-runtime, or target-device requirement with a weaker proxy. A repeated process failure must gain a permanent automated regression where technically possible. A phase is not done until the applicable completion checklist in that document is satisfied.
+Its `MUST` / `MUST NOT` rules are merge-blocking. Do not replace an exact-head, candidate-merge-tree, generated-output, independent-verifier, active-runtime, or target-device requirement with a weaker proxy. A repeated process failure must gain a permanent automated regression where technically possible. Work is not done until the applicable completion checklist in that document is satisfied.
 
 ## Low-token test execution
 
 When an agent needs a broad test or release-gate run, suppress successful chatter instead of sending thousands of passing lines back into model context.
 
 - Run heavy repository suites, real-game checks, and performance benchmarks on `rhgrive3/actions` GitHub Actions at the **exact pushed Hex commit SHA**. Dispatch independent checks as parallel Actions runs/jobs, with bounded fanout that respects runner limits (`docs/ENGINEERING_PROCESS_GUARDRAILS.md` EP-014). Keep focused local tests local when they are cheap.
-- Use the existing `hex-suite-runner.yml` for broad suites and `hex-lane-{quality,realgames,perf}.yml` or the dedicated exact-SHA workflows for their respective evidence. Run the canonical full gate as one unchanged command, `node scripts/run-quiet-command.mjs --label check -- npm run check`; parallel supplemental commands never replace that gate or an independent verifier.
+- Use `hex-suite-runner.yml` for broad suites and `hex-lane-{quality,realgames,perf}.yml` or dedicated exact-SHA workflows for their respective evidence. Run the canonical full gate as one unchanged command: `node scripts/run-quiet-command.mjs --label check -- npm run check`; parallel supplemental commands never replace that gate or an independent verifier.
 - Record the target SHA, workflow/run IDs, conclusions, and validated artifacts. A queued, failed, cancelled, stale-SHA, or missing-artifact run is not passing evidence. Do not run several heavy suites locally when Actions can run them in parallel.
-
 - Full repository gate: `node scripts/run-quiet-command.mjs --label check -- npm run check`
 - Full regression chain: `node scripts/run-quiet-command.mjs --label test -- npm test`
-- Shared Phase 8–10 runners are quiet by default; use the whole-command wrapper for other broad suites.
+- Shared runners are quiet by default; use `scripts/run-quiet-command.mjs` for other broad suites.
 - A successful quiet run prints only its bounded summary. A failed whole-command run prints a bounded failure tail and retains the complete local log path.
 - For diagnosis, rerun the smallest failing command with `HEX_TEST_OUTPUT=verbose` to restore full output.
 - Do not replace the canonical `npm run check`, verifier, denominator, exact-head, or release semantics. Quiet execution changes presentation only, never what is tested.
@@ -52,7 +51,7 @@ Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` de
 
 ### Freebuff (`./freebuff-<N>`)
 
-- **Numbers:** `1`–`9`. Independent tasks may run on several numbers in parallel. Do not put several agents on the same file or the same fix area without a plan.
+- **Numbers:** `1`–`12` (`./freebuff-1` through `./freebuff-12` exist in the repository root). Independent tasks may run on several numbers in parallel. Do not put several agents on the same file or the same fix area without a plan.
 - **Model by wallet balance:**
   - Comfortable balance → `DeepSeek v4.1 Flash` — `high`.
   - Balance including savings down to about 10 → `MiMo 2.6 Flash`. DeepSeek v4.1 Flash costs about 10 even off-peak, so never spend the last ~10 on DeepSeek.
@@ -62,7 +61,7 @@ Priority: **explicit user choice > Cline / Freebuff rules > `opencode --auto` de
 - **The parent agent keeps final responsibility.** Never mark work done on a subagent's claim alone; verify with `git diff`, `git status`, the changed files, test results, CI results, and benchmark results as needed.
 - **Task brief:** include, as far as possible, the goal, the scope, what is allowed, what is forbidden, the required tests, and the completion criteria.
 - **Split work into independent pieces** (implementation, adversarial review, counterexample search, testing, benchmark analysis, a separate issue, …). Do not hand the same problem to several agents for no reason and waste free quota; intentional duplication for independent verification is allowed.
-- **Stopped subagent → hand off, do not restart.** Whether Cline, Freebuff, or OpenCode, collect what exists (completed work, remaining work, changed files, git diff, test status, important findings) and pass it to the next agent, for example:
+- **Stopped subagent → hand off, do not restart.** Whether Cline, Freebuff, or OpenCode, collect what exists (completed work, remaining work, changed files, git diff, test status, important findings) and pass it to the next agent:
 
   ```
   TASK
@@ -81,55 +80,14 @@ This subsection applies **only when Codex or Claude Code is the parent coordinat
 - **Resume from durable state.** Read the latest session, checkpoint, lane prompts, runner scripts, logs, and worktree state before launching anything. Keep a persistent roster of the authorized lanes, each lane's runner or task ID, worktree, evidence path, completion marker, and current owner. Do not create extra lanes when the user has limited the set.
 - **Actually launch and watch.** Start each authorized unfinished lane once, using the method selected above. Confirm that the runner started. Attach a completion or exit wakeup (the tool's reactive task notification, a wait on the child process, or an event-driven watcher for a detached runner's terminal marker). A detached launch without a wakeup is not supervision. Never clear a lease or restart a lane until its prior process is confirmed dead.
 - **No frequent polling.** While lanes run, do useful parent work. Do not repeatedly query `manage_task status`, process lists, logs, or pool leases. A specific dependency, a credible stall, or a completion/exit notification may justify a check. If a runner cannot send a notification, use a watcher that wakes on completion or a meaningful stall threshold, not a short-interval status loop.
-- **One batch on each wakeup.** When any lane finishes, exits, or stalls, inspect its result and take **one combined status snapshot of every other active lane**: runner alive, terminal marker, recent progress, artifacts, and lease/account state where relevant. This catches silently stopped Cline/Freebuff/OpenCode work without separate repeated checks. Hand off unfinished work with the common handoff fields above, then relaunch an authorized replacement and watch it.
+- **One batch on each wakeup.** When any lane finishes, exits, or stalls, inspect its result and take **one combined status snapshot of every other active lane**: runner alive, terminal marker, recent progress, artifacts, and lease/account state where relevant. Hand off unfinished work with the common handoff fields above, then relaunch an authorized replacement and watch it.
 - **Parent verifies and integrates.** Check changed files, tests, CI, and evidence before accepting a lane. Update the persistent roster and integrate verified results; keep the remaining lanes watched until they finish or have an explicit blocker.
 
-
 <!-- graft:start -->
-## Graft — repo context graph
+## Graft — repo context graph (VS Code only)
 
-### Environment gate — VS Code only
+The Graft workflow in this section applies **only** when the task is running inside VS Code and a `graft/` index is available.
 
-The Graft workflow in this section applies **only** when the task is running inside VS Code.
-
-- **Inside VS Code:** use Graft first for repository context as described below. If Graft is unexpectedly unavailable, continue with the normal repository tools available in that VS Code environment rather than blocking the task.
-- **Outside VS Code:** do **not** install, invoke, emulate, or require Graft. Do not treat Graft's absence as a blocker. Use the repository inspection/search tools available in the current environment instead.
-
-This repo is indexed in `graft/`: small linked markdown nodes that explain each
-system and carry exact file:line spans, kept in sync with the code through git.
-
-When running inside VS Code, for ANY task here — understanding how something works, finding where code lives,
-or scoping a change — get context from the graph before grepping or opening
-source files. Re-ask freely (it's cheap) and reuse literal identifiers you
-already have (symbol, error string, file name) as the query. New to this repo?
-Run `graft map` first — a token-budgeted orientation (dir clusters, hubs,
-hotspots), no LLM, no key.
-
-- Run `graft ask "<your question>" --source` → ranked nodes with the relevant
-  code spans inlined (each hit's ≤8-line crux by default; `--full` for whole
-  definitions when the crux isn't enough). Match the tool to the task shape:
-  for understanding or editing, the top node IS the answer — cite its
-  `covers:` file:line spans and edit straight from `--source`. For
-  exhaustive tasks ("every occurrence / every caller of this pattern"), ranked
-  results are top-N, not complete — run `graft grep "<literal>"` instead
-  (exhaustive over indexed files, grouped by enclosing symbol), falling back
-  to raw `grep -rn` only for unindexed files.
-- `graft skeleton <file>` → every definition's signature + span, ~10× cheaper
-  than reading the file; use it to skim an API surface.
-- `graft callers <symbol>` gives precomputed, exact edges — who calls this.
-  Add `--direction out` for what it calls, or `--depth N` to walk
-  transitively for the full blast radius. For structural questions, skip
-  ranking and use this directly.
-- Or browse: `graft/INDEX.md` lists every node; follow the links.
-- Monorepos and folders of multiple repos rank fairly across sub-projects —
-  hits carry `[scope/]` labels naming which one they're from. Narrow with
-  `graft ask "<task>" --in <scope>/` once you know where you're working.
-
-If a returned span is truncated ("+N more lines"), open the file at that exact
-range before finalizing. Only open source files when a node genuinely lacks a
-needed detail, and then at the exact file:line the node points to — never
-re-read whole files.
-
-After big code changes, refresh the graph with `graft build` (deterministic,
-no API key, $0).
+- **Inside VS Code (when `graft/` exists):** use `graft map`, `graft ask "<question>" --source`, `graft grep "<literal>"`, `graft skeleton <file>`, `graft callers <symbol>`, and refresh with `graft build` after large changes.
+- **Outside VS Code or when `graft/` is absent:** do **not** install, invoke, emulate, or require Graft. Use normal repository inspection/search tools instead.
 <!-- graft:end -->
