@@ -131,6 +131,10 @@ async function readBoundedResponseText(response, maxBytes, deadline = null) {
       } catch { }
     }
     throw error;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch { }
   }
 }
 

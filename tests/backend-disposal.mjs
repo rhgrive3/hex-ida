@@ -38,7 +38,7 @@ const { Backend }=await import('../js/backend.js');
   await assert.rejects(decodeFailure,(error)=>error?.code==='WORKER_FAILED');
   assert.equal(b.pending.size,0,'messageerror must not orphan transport requests');
 
-  b.legacyWorker.throwNext=new Error('post failed');
+  b._worker('legacy').throwNext=new Error('post failed');
   const postFailure=b._callTo('legacy','probe',{});
   await assert.rejects(postFailure,/post failed/);
   assert.equal(b.pending.size,0,'synchronous postMessage failure must remove pending state');

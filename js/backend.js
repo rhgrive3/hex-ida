@@ -286,6 +286,12 @@ export class Backend {
     if (worker) {
       worker.onmessage = (event) => this._onMessage(event.data, 'legacy');
       const failed = (event) => {
+        if (this._legacyWorker !== worker) return;
+        worker.onmessage = null;
+        worker.onerror = null;
+        worker.onmessageerror = null;
+        try { worker.terminate(); } catch {}
+        this._legacyWorker = null;
         const error = workerFailureError('legacy', event, 'The analysis worker failed.');
         this._rejectWorkerPending('legacy', error);
         if (this.onFatal) this.onFatal(error.message);
@@ -304,6 +310,12 @@ export class Backend {
     if (worker) {
       worker.onmessage = (event) => this._onMessage(event.data, 'platform');
       const failed = (event) => {
+        if (this._platformWorker !== worker) return;
+        worker.onmessage = null;
+        worker.onerror = null;
+        worker.onmessageerror = null;
+        try { worker.terminate(); } catch {}
+        this._platformWorker = null;
         const error = workerFailureError('platform', event, 'The analysis worker failed.');
         this._rejectWorkerPending('platform', error);
         if (this.onFatal) this.onFatal(error.message);

@@ -13,7 +13,7 @@ const Harness = new Function(
   'EMPTY_INDEX',
   'SymbolIndex',
   'FUNCTION_DISCOVERY_GLOBAL_CAP',
-  `return class Harness {\n${methodSource}\n}`,
+  `return class Harness {\n  syncSymbolsStore() {}\n${methodSource}\n}`,
 )(EMPTY_INDEX, UnusedSymbolIndex, 400_000);
 
 function makeHarness(responses) {

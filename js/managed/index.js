@@ -1,4 +1,3 @@
-import { deepFreeze } from '../core/identity/index.js';
 import { CilFrontend } from './cil/frontend.js';
 import { DexFrontend } from './dex/frontend.js';
 import { JvmFrontend } from './jvm/frontend.js';
@@ -10,6 +9,7 @@ import {
   createManagedModuleId,
   createManagedTargetProfileId,
   createManagedTypeId,
+  createManagedCallSiteId,
   createVMFrameStateId,
   createVMOperationId,
   createVMValueId,
@@ -58,6 +58,7 @@ export {
   createVMOperationId,
   createVMValueId,
   createVMFrameStateId,
+  createManagedCallSiteId,
   createManagedExceptionRegionId,
   createManagedTargetProfileId,
   MANAGED_FRONTEND_IDS,

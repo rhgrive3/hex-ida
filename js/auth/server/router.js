@@ -4,14 +4,50 @@ import { AuthRepository } from './repository.js';
 import { mintAICapability } from './ai-capability.js';
 import { ADMIN_HTML, ADMIN_CSS } from './admin-site.js';
 import { authorizationUrl, completionPage, fetchDiscordIdentity, oauthConfig } from './oauth.js';
-import { AuthError, SESSION_COOKIE, OAUTH_COOKIE, SESSION_TTL_MS, TRANSACTION_TTL_MS, PROOF_TTL_MS, SECRET_RE, cookie, cookieValue, discordId, equalHash, hash, headers, json, objectShape, randomSecret, readJson, requireMethod, requireSameOrigin, secret } from './primitives.js';
+import { AuthError, SESSION_COOKIE, OAUTH_COOKIE, SESSION_TTL_MS, TRANSACTION_TTL_MS, PROOF_TTL_MS, SECRET_RE, cookie, cookieValue, deriveSecret, discordId, equalHash, hash, headers, json, objectShape, randomSecret, readJson, requireMethod, requireSameOrigin, secret } from './primitives.js';
 
 const RETURN_PATHS = new Set(['/', '/admin/']);
 const ADMIN_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 export function isAuthRoute(path) {
   return path === '/auth' || path.startsWith('/auth/') || path === '/admin' || path.startsWith('/admin/') || path === '/api/auth' || path.startsWith('/api/auth/') || path === '/api/admin' || path.startsWith('/api/admin/') || path === '/_privileged' || path.startsWith('/_privileged/');
 }
-export function createAuthHandler({ privileged = null, aiCapability = null, fetchRef = (...args) => fetch(...args), now = Date.now, discordTimeoutMs = 8000 } = {}) {
+const DEFAULT_OAUTH_START_RATE_LIMIT = Object.freeze({ windowMs: 60_000, maxRequests: 30, maxEntries: 2048 });
+export function createAuthHandler({ privileged = null, aiCapability = null, fetchRef = (...args) => fetch(...args), now = Date.now, discordTimeoutMs = 8000, oauthStartRateLimit = null } = {}) {
+  const rateLimit = {
+    windowMs: Math.max(1, Math.floor(Number(oauthStartRateLimit?.windowMs) || DEFAULT_OAUTH_START_RATE_LIMIT.windowMs)),
+    maxRequests: Math.max(1, Math.floor(Number(oauthStartRateLimit?.maxRequests) || DEFAULT_OAUTH_START_RATE_LIMIT.maxRequests)),
+    maxEntries: Math.max(1, Math.floor(Number(oauthStartRateLimit?.maxEntries) || DEFAULT_OAUTH_START_RATE_LIMIT.maxEntries)),
+  };
+  const oauthStartBuckets = new Map();
+  const checkOAuthStartRateLimit = (request) => {
+    const ip = request.headers.get('cf-connecting-ip')?.trim();
+    if (!ip) return null;
+    const current = now();
+    let entry = oauthStartBuckets.get(ip);
+    if (entry && entry.resetAt <= current) {
+      oauthStartBuckets.delete(ip);
+      entry = null;
+    }
+    if (!entry) {
+      if (oauthStartBuckets.size >= rateLimit.maxEntries) {
+        for (const [key, value] of oauthStartBuckets) {
+          if (value.resetAt <= current) oauthStartBuckets.delete(key);
+        }
+        while (oauthStartBuckets.size >= rateLimit.maxEntries) {
+          const oldest = oauthStartBuckets.keys().next().value;
+          if (oldest === undefined) break;
+          oauthStartBuckets.delete(oldest);
+        }
+      }
+      oauthStartBuckets.set(ip, { count: 1, resetAt: current + rateLimit.windowMs });
+      return null;
+    }
+    if (entry.count >= rateLimit.maxRequests) {
+      return Math.max(1, Math.ceil((entry.resetAt - current) / 1000));
+    }
+    entry.count += 1;
+    return null;
+  };
   return async function handleAuthRequest(request, env) {
     const url = new URL(request.url), path = url.pathname;
     if (!isAuthRoute(path)) return null;
@@ -37,12 +73,17 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
 
       if (path === '/auth/discord/start') {
         requireMethod(request, ['GET']);
-        const returnPath = url.searchParams.get('return_to') || '/';
-        if (!RETURN_PATHS.has(returnPath)) throw new AuthError('invalid-return-path');
-        const config = oauthConfig(env, url.origin), state = randomSecret(), browser = randomSecret();
-        await repo.pruneOAuthTransactionsBestEffort();
-        await repo.createTransaction({ id: randomSecret(), stateHash: await hash(state), kind: 'web', returnPath, browserHash: await hash(browser), pollHash: null, openerOrigin: null, expiresAt: now() + TRANSACTION_TTL_MS });
-        response = new Response(null, { status: 302, headers: headers({ location: authorizationUrl(config, state), 'set-cookie': cookie(OAUTH_COOKIE, browser, TRANSACTION_TTL_MS / 1000) }) });
+        const retryAfterSec = checkOAuthStartRateLimit(request);
+        if (retryAfterSec !== null) {
+          response = json({ error: 'rate-limited' }, 429, { 'retry-after': String(retryAfterSec) });
+        } else {
+          const returnPath = url.searchParams.get('return_to') || '/';
+          if (!RETURN_PATHS.has(returnPath)) throw new AuthError('invalid-return-path');
+          const config = oauthConfig(env, url.origin), state = randomSecret(), browser = randomSecret();
+          await repo.pruneOAuthTransactionsBestEffort();
+          await repo.createTransaction({ id: randomSecret(), stateHash: await hash(state), kind: 'web', returnPath, browserHash: await hash(browser), pollHash: null, openerOrigin: null, expiresAt: now() + TRANSACTION_TTL_MS });
+          response = new Response(null, { status: 302, headers: headers({ location: authorizationUrl(config, state), 'set-cookie': cookie(OAUTH_COOKIE, browser, TRANSACTION_TTL_MS / 1000) }) });
+        }
       } else if (path === '/auth/discord/callback') {
         requireMethod(request, ['GET']);
         const config = oauthConfig(env, url.origin), state = secret(url.searchParams.get('state')), code = url.searchParams.get('code');
@@ -74,12 +115,17 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
         }
       } else if (path === '/api/auth/userscript/start') {
         requireMethod(request, ['POST']);
-        const input = objectShape(await readJson(request), ['openerOrigin'], ['openerOrigin']);
-        if (!CHATGPT_ORIGINS.has(input.openerOrigin)) throw new AuthError('origin-not-allowed', 403);
-        const config = oauthConfig(env, url.origin), id = randomSecret(), state = randomSecret(), pollSecret = randomSecret(), expiresAt = now() + TRANSACTION_TTL_MS;
-        await repo.pruneOAuthTransactionsBestEffort();
-        await repo.createTransaction({ id, stateHash: await hash(state), kind: 'userscript', returnPath: '/', browserHash: null, pollHash: await hash(pollSecret), openerOrigin: input.openerOrigin, expiresAt });
-        response = json({ transactionId: id, pollSecret, authorizationUrl: authorizationUrl(config, state), expiresAt });
+        const retryAfterSec = checkOAuthStartRateLimit(request);
+        if (retryAfterSec !== null) {
+          response = json({ error: 'rate-limited' }, 429, { 'retry-after': String(retryAfterSec) });
+        } else {
+          const input = objectShape(await readJson(request), ['openerOrigin'], ['openerOrigin']);
+          if (!CHATGPT_ORIGINS.has(input.openerOrigin)) throw new AuthError('origin-not-allowed', 403);
+          const config = oauthConfig(env, url.origin), id = randomSecret(), state = randomSecret(), pollSecret = randomSecret(), expiresAt = now() + TRANSACTION_TTL_MS;
+          await repo.pruneOAuthTransactionsBestEffort();
+          await repo.createTransaction({ id, stateHash: await hash(state), kind: 'userscript', returnPath: '/', browserHash: null, pollHash: await hash(pollSecret), openerOrigin: input.openerOrigin, expiresAt });
+          response = json({ transactionId: id, pollSecret, authorizationUrl: authorizationUrl(config, state), expiresAt });
+        }
       } else if (path === '/api/auth/userscript/poll') {
         requireMethod(request, ['POST']);
         const input = objectShape(await readJson(request), ['transactionId', 'pollSecret'], ['transactionId', 'pollSecret']);
@@ -115,7 +161,9 @@ export function createAuthHandler({ privileged = null, aiCapability = null, fetc
         requireMethod(request, ['GET']);
         const auth = await authenticate();
         if (auth.kind !== 'web') throw new AuthError('web-session-required', 403);
-        const token = randomSecret(); await repo.csrf(auth.tokenHash, await hash(token));
+        const token = auth.derivedCsrfToken;
+        const csrfHash = await hash(token);
+        if (auth.csrfHash !== csrfHash) await repo.csrf(auth.tokenHash, csrfHash);
         response = json({ csrfToken: token });
       } else if (path === '/auth/logout') {
         requireMethod(request, ['POST']);
@@ -199,7 +247,8 @@ async function readSession(request, repo) {
   if (!token || !SECRET_RE.test(token)) throw new AuthError('unauthenticated', 401);
   const tokenHash = await hash(token), row = await repo.session(tokenHash, kind), identity = identityForUser(row, repo.ownerId);
   if (!identity.authenticated) throw new AuthError('unauthenticated', 401);
-  return { kind, tokenHash, identity, csrfHash: row.csrf_hash, expiresAt: row.expires_at };
+  const derivedCsrfToken = kind === 'web' ? await deriveSecret(`hex-csrf-v1:${token}`) : null;
+  return { kind, tokenHash, identity, csrfHash: row.csrf_hash, expiresAt: row.expires_at, derivedCsrfToken };
 }
 async function validateMutation(request, auth) {
   if (auth.kind !== 'web') return;

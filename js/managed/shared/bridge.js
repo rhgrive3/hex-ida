@@ -817,7 +817,7 @@ export function queryManagedSymbolicVerification(methodId, options = {}) {
     });
   }
   const session = options.session || (typeof backend.createSession === 'function' ? backend.createSession(options) : null);
-  return deepFreeze({
+  return Object.freeze({
     status: 'connected',
     backendId: backend.id,
     methodId: String(methodId || ''),
@@ -849,7 +849,7 @@ export function queryManagedRuntimeProvider(methodId, options = {}) {
       details: 'Managed method inspection requires evidence-bound module identity before binding to live runtime frames.',
     });
   }
-  return deepFreeze({
+  return Object.freeze({
     status: 'connected',
     providerId: provider.id || provider.providerId,
     methodId: String(methodId || ''),

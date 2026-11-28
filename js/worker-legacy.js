@@ -2325,11 +2325,15 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
       const disps = hasPairElement ? [baseDisp, baseDisp + BigInt(mem.elementSize)] : [baseDisp];
       const byteOff = pos + i * 4;
       const accessKinds = mem.rmw ? ['load', 'store'] : [mem.load ? 'load' : 'store'];
-      for (const disp of disps) {
+      for (let idx = 0; idx < disps.length; idx++) {
+        const disp = disps[idx];
         const slot = wanted.get(disp.toString());
         if (!slot || slot.out.length >= cap) continue;
         // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
-        if (slot.size > 0 && accessSize !== slot.size && !(slot.size > 8 && accessSize === 8)) continue;
+        const elemMatches = accessSize === slot.size || (slot.size > 8 && accessSize === 8);
+        const pairMatches = hasPairElement && idx === 0 && mem.size === slot.size;
+        if (slot.size > 0 && !elemMatches && !pairMatches) continue;
+        const matchedSize = (slot.size > 0 && pairMatches) ? mem.size : accessSize;
         for (const accessKind of accessKinds) {
           if (slot.out.length >= cap) break;
           slot.out.push({
@@ -2337,7 +2341,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
             addr: region.vmAddr + BigInt(byteOff),
             kind: accessKind,
             base: mem.base,
-            size: accessSize,
+            size: matchedSize,
             atomic: !!mem.atomic,
             rmw: !!mem.rmw,
           });

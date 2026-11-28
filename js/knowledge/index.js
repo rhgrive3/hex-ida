@@ -294,6 +294,7 @@ export class KnowledgeDB {
     if (this._db) return this._db;
     if (this._dbOpenPromise) return this._dbOpenPromise;
     this._dbOpenPromise = new Promise((resolve,reject) => {
+      let settled = false;
       const req = this.indexedDB.open(this.dbName, KNOWLEDGE_SCHEMA_VERSION);
       req.onupgradeneeded = () => {
         const db=req.result;
@@ -305,8 +306,35 @@ export class KnowledgeDB {
         if (!neg.indexNames.contains('candidateName')) neg.createIndex('candidateName','candidateName',{unique:false});
         if (!neg.indexNames.contains('candidateIdentity')) neg.createIndex('candidateIdentity','candidateIdentity',{unique:false});
       };
-      req.onsuccess=()=>{ this._db = req.result; resolve(req.result); };
-      req.onerror=()=>{ this._dbOpenPromise = null; reject(req.error); };
+      req.onsuccess=()=>{
+        const db = req.result;
+        if (settled) {
+          if (db) { try { db.close(); } catch {} }
+          return;
+        }
+        settled = true;
+        if (db) {
+          db.onversionchange = () => {
+            try { db.close(); } catch {}
+            if (this._db === db) this._db = null;
+            this._dbOpenPromise = null;
+          };
+        }
+        this._db = db;
+        resolve(db);
+      };
+      req.onblocked=()=>{
+        if (settled) return;
+        settled = true;
+        this._dbOpenPromise = null;
+        reject(new Error('Knowledge database open blocked by another connection'));
+      };
+      req.onerror=()=>{
+        if (settled) return;
+        settled = true;
+        this._dbOpenPromise = null;
+        reject(req.error);
+      };
     });
     return this._dbOpenPromise;
   }
