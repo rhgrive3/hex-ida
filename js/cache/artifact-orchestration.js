@@ -760,7 +760,8 @@ export class ArtifactAnalysisOrchestrator {
 
     let hasValidated = false;
     let validatedPayload;
-    let validatedRawPayload;
+    let validatedRecordId = null;
+    let validatedCreatedAt;
 
     const request = this.scheduler.request({
       descriptor,
@@ -772,12 +773,14 @@ export class ArtifactAnalysisOrchestrator {
         ? async (encodedPayload, record, context) => {
           hasValidated = false;
           validatedPayload = undefined;
-          validatedRawPayload = undefined;
+          validatedRecordId = null;
+          validatedCreatedAt = undefined;
           const decoded = decodeWorkerAnalysisPayload(encodedPayload, { rejectSparseArrays:true });
           const verdict = await validate(decoded, record, context);
           if (verdict === true) {
             validatedPayload = decoded;
-            validatedRawPayload = encodedPayload;
+            validatedRecordId = record?.artifactId ?? null;
+            validatedCreatedAt = record?.createdAt;
             hasValidated = true;
           }
           return verdict;
@@ -792,7 +795,8 @@ export class ArtifactAnalysisOrchestrator {
       produce:async (context) => {
         hasValidated = false;
         validatedPayload = undefined;
-        validatedRawPayload = undefined;
+        validatedRecordId = null;
+        validatedCreatedAt = undefined;
         this.metrics.producerInvocations++;
         const raw = await produce(context);
         const envelope = encodeWorkerAnalysisPayload(raw, { rejectSparseArrays:true });
@@ -804,11 +808,17 @@ export class ArtifactAnalysisOrchestrator {
     return request.then((result) => {
       if (result.reused) this.metrics.warmReuses++;
       else this.metrics.coldPublishes++;
-      const payload = result.reused === true && hasValidated && result.payload === validatedRawPayload
+      const payload = result.reused === true
+        && hasValidated
+        && validatedRecordId !== null
+        && result.record?.artifactId === validatedRecordId
+        && (validatedCreatedAt === undefined || result.record?.createdAt === validatedCreatedAt)
         ? validatedPayload
         : decodeWorkerAnalysisPayload(result.payload, { rejectSparseArrays:true });
+      hasValidated = false;
       validatedPayload = undefined;
-      validatedRawPayload = undefined;
+      validatedRecordId = null;
+      validatedCreatedAt = undefined;
       return { ...result, payload };
     }, (error) => {
       this.metrics.failures++;
