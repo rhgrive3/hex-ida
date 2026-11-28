@@ -367,9 +367,17 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
 
   const emitCutoff = Math.min(p0.unfinishedStart, p1.unfinishedStart);
   let lastEmittedEnd = 0;
+  let deferredStart = len;
   for (let i = 0; i < merged.length; i++) {
     const cand = merged[i];
-    if (cand.start >= emitCutoff) break;
+    if (cand.start >= emitCutoff) {
+      if (cand.start < deferredStart) deferredStart = cand.start;
+      break;
+    }
+    if (cand.end > emitCutoff) {
+      if (cand.start < deferredStart) deferredStart = cand.start;
+      continue;
+    }
     if (cand.start < lastEmittedEnd) continue;
     // Avoid letting a 1-byte-shifted NUL-prefixed non-ASCII shadow eclipse a true overlapping ASCII UTF-16 string.
     if (cand.asciiCount === 0 && i + 1 < merged.length) {
@@ -393,6 +401,12 @@ function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encodi
   }
   if (p1.unfinishedStart < len && p1.unfinishedStart >= lastEmittedEnd && p1.unfinishedStart < unfinishedStart) {
     unfinishedStart = p1.unfinishedStart;
+  }
+  if (deferredStart < len && deferredStart >= lastEmittedEnd && deferredStart < unfinishedStart) {
+    unfinishedStart = deferredStart;
+  }
+  if (emitCutoff < len && unfinishedStart === len && lastEmittedEnd < len) {
+    unfinishedStart = Math.max(emitCutoff, lastEmittedEnd);
   }
   return { unfinishedStart, capped: false };
 }
