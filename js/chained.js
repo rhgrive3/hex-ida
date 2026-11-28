@@ -309,9 +309,34 @@ function stubSlot(code, off, pc, stubSize, dv = new DataView(code.buffer, code.b
     const w = dv.getUint32(off + i * 4, true);
     const at = pc + BigInt(i * 4);
     if (((w & 0x9f000000) >>> 0) === 0x90000000) {
+      const rd = w & 31;
+      if (rd === 31) {
+        page = null;
+        baseReg = -1;
+        continue;
+      }
       const imm = sign21((((w >>> 5) & 0x7ffff) << 2) | ((w >>> 29) & 3));
       page = (at & ~0xfffn) + BigInt(imm) * 0x1000n;
-      baseReg = w & 31;
+      baseReg = rd;
+      continue;
+    }
+    if (page != null && ((w & 0xff800000) >>> 0) === 0x91000000) {
+      const shift = (w >>> 22) & 1;
+      const imm12 = (w >>> 10) & 0xfff;
+      const rn = (w >>> 5) & 31;
+      const rd = w & 31;
+      if (rn === baseReg && baseReg !== -1) {
+        if (rd === 31) {
+          page = null;
+          baseReg = -1;
+        } else {
+          page += BigInt(imm12 << (shift ? 12 : 0));
+          baseReg = rd;
+        }
+      } else if (rd === baseReg) {
+        page = null;
+        baseReg = -1;
+      }
       continue;
     }
     if (page != null && ((w & 0xffc00000) >>> 0) === 0xf9400000) {
@@ -599,4 +624,4 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   return Object.assign({}, result, { addrs, kinds, flags, names });
 }
 
-export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor, sliceOffset, createImportNameResolver });
+export const __chainedInternalsForTests = Object.freeze({ validMachOVmRange, rangeWithin, stubSectionWithinSegment, segmentFor, sliceOffset, createImportNameResolver, stubSlot });

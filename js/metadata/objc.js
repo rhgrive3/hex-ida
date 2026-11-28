@@ -215,7 +215,9 @@ export class ObjcMetadataProvider extends LanguageMetadataProvider {
     }
 
     this.cachedModel = model;
-    this.cachedIndex = buildObjcRuntimeIndex(model);
+    this.cachedIndex = (model.runtimeIndex?.runtime === 'objc' && model.runtimeIndex?.methodsBySelector)
+      ? model.runtimeIndex
+      : buildObjcRuntimeIndex(model);
 
     const isComplete = model.runtimeCompleteness?.complete === true;
     const coverage = ['classes', 'categories', 'protocols'].map(kind => ({ kind, ...model.runtimeCompleteness?.[kind] }));

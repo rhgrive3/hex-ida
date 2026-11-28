@@ -10,6 +10,10 @@ export const SYM_DEFINED = 0;   // このファイルの中で定義された名
 export const SYM_STUB = 1;      // 外部ライブラリへの中継地点 (__stubs)
 export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (__got など)
 
+const DEFAULT_BINARY_SYMBOL_PROVENANCE = Object.freeze({ source: 'binary-symbol', confidence: 1, confirmed: true });
+const DEFAULT_FUNC_STARTS_PROVENANCE = Object.freeze({ source: 'function-starts', confidence: 1, confirmed: true });
+const DEFAULT_FUNC_META_PROVENANCE = Object.freeze({ source: 'metadata', confidence: 0.7, confirmed: false });
+
 function finiteListMax(value, fallback = 50000) {
   if (value == null) return fallback;
   // 件数上限は primitive な非負 safe integer だけが authority (#5250):
@@ -115,13 +119,14 @@ export class SymbolIndex {
     this.functionProvenance = new Map();
     const providedNames = Array.isArray(r.nameProvenance) ? r.nameProvenance : [];
     for (let i = 0; i < this.addrs.length; i++) {
-      const p = providedNames[i] || { source: 'binary-symbol', confidence: 1, confirmed: true };
-      this.nameProvenance.set(this.addrs[i].toString(), { ...p });
+      const p = providedNames[i];
+      this.nameProvenance.set(this.addrs[i].toString(), p ? { ...p } : DEFAULT_BINARY_SYMBOL_PROVENANCE);
     }
     const providedFunctions = Array.isArray(r.functionProvenance) ? r.functionProvenance : [];
+    const defaultFuncProvenance = this.functionStartsExact ? DEFAULT_FUNC_STARTS_PROVENANCE : DEFAULT_FUNC_META_PROVENANCE;
     for (let i = 0; i < this.funcs.length; i++) {
-      const p = providedFunctions[i] || { source: this.functionStartsExact ? 'function-starts' : 'metadata', confidence: this.functionStartsExact ? 1 : 0.7, confirmed: this.functionStartsExact };
-      this.functionProvenance.set(this.funcs[i].toString(), { ...p });
+      const p = providedFunctions[i];
+      this.functionProvenance.set(this.funcs[i].toString(), p ? { ...p } : defaultFuncProvenance);
     }
     this.guessed = false;          // 関数一覧が推測によるものか
     /* 自分で付け直した名前。元の名前より優先される（IDA の Rename と同じ）。

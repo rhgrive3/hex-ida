@@ -193,16 +193,51 @@ function buildAliasIndex(symbols) {
  * Returns `readable:false` only when the record cannot be read at all.
  * Individual fields that cannot be proven stay null with an explicit reason.
  */
-export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, pointerBytes = 8 } = {}) {
+function tryResolvePointer(resolvePointer, rawWord, ctx, limit) {
+  if (typeof resolvePointer !== 'function') return null;
+  let resolved;
+  try {
+    resolved = resolvePointer(rawWord, ctx);
+  } catch {
+    return null;
+  }
+  return typeof resolved === 'bigint' && resolved > 0n && resolved <= limit ? resolved : null;
+}
+
+export async function parseItaniumTypeInfo({
+  read,
+  symbols,
+  typeinfoAddress,
+  pointerBytes = 8,
+  resolvePointer = null,
+  limit = null,
+  vtableAddress = null,
+} = {}) {
   const address = toBigInt(typeinfoAddress);
   if (address == null) fail('cpp-rtti-typeinfo-address-invalid');
   if (typeof read !== 'function') fail('cpp-rtti-read-required');
+  const effectiveLimit = typeof limit === 'bigint' && limit > 0n
+    ? limit
+    : (pointerBytes === 4 ? 0xffffffffn : 0x0000ffffffffffffn);
+  const ownerVtable = vtableAddress ?? address;
 
   const header = await read(address, pointerBytes * 2);
   if (!header || header.length < pointerBytes * 2) {
     return { address, readable: false, reason: 'typeinfo-unreadable', className: null, bases: [] };
   }
-  const [vptr, namePointer] = readWords(header, pointerBytes);
+  const [rawVptr, rawNamePointer] = readWords(header, pointerBytes);
+  const vptr = tryResolvePointer(resolvePointer, rawVptr, {
+    address,
+    vtableAddress: ownerVtable,
+    slotOffset: 0,
+    pointerBytes,
+  }, effectiveLimit) ?? rawVptr;
+  const namePointer = tryResolvePointer(resolvePointer, rawNamePointer, {
+    address: address + BigInt(pointerBytes),
+    vtableAddress: ownerVtable,
+    slotOffset: pointerBytes,
+    pointerBytes,
+  }, effectiveLimit) ?? rawNamePointer;
 
   const abiVtableSymbol = vptr !== 0n ? symbolNameAt(symbols, vptr) : null;
   const abiVtable = abiKindFromVtableSymbol(abiVtableSymbol);
@@ -259,8 +294,14 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
     const tail = await read(address, pointerBytes * 3);
     const words = tail ? readWords(tail, pointerBytes) : [];
     if (words.length >= 3 && words[2] !== 0n) {
+      const baseTypeinfo = tryResolvePointer(resolvePointer, words[2], {
+        address: address + BigInt(pointerBytes * 2),
+        vtableAddress: ownerVtable,
+        slotOffset: pointerBytes * 2,
+        pointerBytes,
+      }, effectiveLimit) ?? words[2];
       record.bases.push({
-        typeinfoAddress: words[2],
+        typeinfoAddress: baseTypeinfo,
         className: null,
         offsetFlags: null,
         offsetToTop: 0n,
@@ -294,9 +335,16 @@ export async function parseItaniumTypeInfo({ read, symbols, typeinfoAddress, poi
   const pairs = await read(address + metaOffset + 8n, pointerBytes * 2 * baseCount);
   const pairWords = pairs ? readWords(pairs, pointerBytes) : [];
   for (let index = 0; index < baseCount; index++) {
-    const baseTypeinfo = pairWords[index * 2];
+    const rawBaseTypeinfo = pairWords[index * 2];
     const offsetFlags = pairWords[index * 2 + 1];
-    if (baseTypeinfo == null || baseTypeinfo === 0n) continue;
+    if (rawBaseTypeinfo == null || rawBaseTypeinfo === 0n) continue;
+    const baseSlotOffset = pointerBytes * 2 + 8 + index * pointerBytes * 2;
+    const baseTypeinfo = tryResolvePointer(resolvePointer, rawBaseTypeinfo, {
+      address: address + metaOffset + 8n + BigInt(index * pointerBytes * 2),
+      vtableAddress: ownerVtable,
+      slotOffset: baseSlotOffset,
+      pointerBytes,
+    }, effectiveLimit) ?? rawBaseTypeinfo;
     // `__base_class_type_info::__offset_flags` is a signed `long`, so decode it
     // as such before shifting. BigInt `>>` is arithmetic on a negative value,
     // which is what turns a stored `-0x18` into `offsetToTop: -24n` rather than a
@@ -378,6 +426,7 @@ export async function buildCxxClassEvidence({
   symbolSizeOf = null,
   sectionEndOf = null,
   maxReads = 4096,
+  resolvePointer = null,
 } = {}) {
   if (pointerBytes !== 4 && pointerBytes !== 8) fail('cpp-rtti-pointer-bytes-invalid', 'must be 4 or 8');
   if (typeof read !== 'function') fail('cpp-rtti-read-required');
@@ -433,9 +482,17 @@ export async function buildCxxClassEvidence({
       continue;
     }
     const words = readWords(bytes, pointerBytes);
-    const offsetToTop = BigInt.asIntN(pointerBytes * 8, words[0]);
-    const typeinfoAddress = words[1];
     const limit = pointerBytes === 4 ? 0xffffffffn : 0x0000ffffffffffffn;
+    const offsetToTop = BigInt.asIntN(pointerBytes * 8, words[0]);
+    const rawTypeinfoAddress = words[1];
+    const typeinfoAddress = rawTypeinfoAddress != null
+      ? (tryResolvePointer(resolvePointer, rawTypeinfoAddress, {
+        address: symbol.address + BigInt(pointerBytes),
+        vtableAddress: symbol.address,
+        slotOffset: pointerBytes,
+        pointerBytes,
+      }, limit) ?? rawTypeinfoAddress)
+      : rawTypeinfoAddress;
 
     // One `_ZTV` symbol covers the primary table **and** one sub-table per
     // secondary base: `[offset, typeinfo, slots...][offset2, typeinfo2, slots...]`.
@@ -466,13 +523,21 @@ export async function buildCxxClassEvidence({
     for (let index = 0; index < extent.slotCount; index++) {
       const word = words[index + 2];
       if (word == null) break;
-      const resolvable = word !== 0n && word <= limit;
-      const aliases = resolvable ? (byAddress.get(word.toString()) || []) : [];
-      if (BigInt.asIntN(pointerBytes * 8, word) < 0n) {
+      const slotOffset = (index + 2) * pointerBytes;
+      const resolved = tryResolvePointer(resolvePointer, word, {
+        address: symbol.address + BigInt(slotOffset),
+        vtableAddress: symbol.address,
+        slotOffset,
+        pointerBytes,
+      }, limit);
+      if (resolved == null && BigInt.asIntN(pointerBytes * 8, word) < 0n) {
         // The offset-to-top of a secondary sub-table: data, not a slot.
         secondarySubTableAt = index;
         break;
       }
+      const effectiveAddr = resolved ?? word;
+      const resolvable = resolved != null || (word !== 0n && word <= limit);
+      const aliases = resolvable ? (byAddress.get(effectiveAddr.toString()) || []) : [];
       if (index > 0 && aliases.some((name) => TYPEINFO_NAME.test(name))) {
         // A typeinfo record reached from the slot run. This sub-table's
         // offset-to-top is the word before it, which is data as well.
@@ -482,8 +547,8 @@ export async function buildCxxClassEvidence({
       }
       slots.push(Object.freeze({
         index,
-        offset: (index + 2) * pointerBytes,
-        address: resolvable ? word : null,
+        offset: slotOffset,
+        address: resolvable ? effectiveAddr : null,
         raw: word,
         unresolved: !resolvable,
         reason: resolvable ? null : 'encoded-pointer-without-fixup-context',
@@ -498,6 +563,9 @@ export async function buildCxxClassEvidence({
         symbols,
         typeinfoAddress,
         pointerBytes,
+        resolvePointer,
+        limit,
+        vtableAddress: symbol.address,
       });
       if (typeinfo?.className) rttiPresent = true;
     }
@@ -525,7 +593,7 @@ export async function buildCxxClassEvidence({
       offsetToTop,
       isSecondary: offsetToTop !== 0n,
       typeinfoAddress: resolvedTypeinfo,
-      typeinfoRaw: typeinfoAddress,
+      typeinfoRaw: rawTypeinfoAddress,
       typeinfoKind: typeinfo?.kind ?? null,
       typeinfoNameSource: typeinfo?.nameSource ?? null,
       baseEvidence: typeinfo?.baseEvidence ?? 'none',

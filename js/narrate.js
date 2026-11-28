@@ -1844,6 +1844,9 @@ export function missingText(code) {
         'no read–modify–write of any value was found');
     case 'no-candidate':
       return pick('手がかりが 1 つも見つかりませんでした', 'no clue at all was found');
+    case 'per-function-budget-exceeded':
+      return pick('一部の関数解析が時間上限に達したため、未確認の候補が残っています',
+        'some function analyses exceeded the per-function time budget, leaving unverified candidates');
     default: return '';
   }
 }
@@ -2138,11 +2141,19 @@ export function proofText(item) {
       return pick('ハードウェア暗号命令（AES / SHA 等）を ' + n + ' 回実行している',
         'executes ' + n + ' hardware cryptographic instruction(s)');
     }
+    case 'fn-crypto-const': {
+      const algo = d.name || d.algo || '';
+      return pick(
+        (algo ? algo + ' の' : '') + '暗号アルゴリズム固有の定数テーブルを参照している',
+        'references a cryptographic constant table' + (algo ? ' (' + algo + ')' : ''));
+    }
     case 'fn-owner-class':
       return pick('この処理を持っているクラスの名前が目的に合う', 'the owning class name fits');
-    case 'fn-numeric':
-      return pick('中で ' + d.n + ' 回の掛け算・割り算をしている',
-        'it does ' + d.n + ' multiplications or divisions');
+    case 'fn-numeric': {
+      const n = d.n ?? ((d.mul || 0) + (d.div || 0) + (d.fmul || 0) + (d.farith || 0));
+      return pick('中で ' + n + ' 回の掛け算・割り算をしている',
+        'it does ' + n + ' multiplications or divisions');
+    }
     case 'fn-called-often':
       return pick('あちこちから呼ばれている', 'it is called from many places');
     case 'fn-too-large':
