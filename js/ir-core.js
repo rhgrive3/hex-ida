@@ -1235,28 +1235,87 @@ function sealFacadePreservedStateHistory(projected, observer, constants, typedRe
 }
 
 const EXACT_LEGACY_CONST_MAX_DEPTH = 128;
+const EXACT_LEGACY_CONST_MAX_DEPS = 512;
 
-function exactLegacyConstant(value, active = new Set(), observation = null, depth = 0) {
+function mergeExactConstantDeps(root, childA, childB) {
+  const deps = [];
+  const seen = new Set();
+  const append = (v) => {
+    if (!v || seen.has(v)) return true;
+    if (deps.length >= EXACT_LEGACY_CONST_MAX_DEPS) return false;
+    seen.add(v);
+    deps.push(v);
+    return true;
+  };
+  if (!append(root)) return { deps: null, depsOverflow: true };
+  for (const child of [childA, childB]) {
+    if (!child) continue;
+    if (child.depsOverflow) return { deps: null, depsOverflow: true };
+    if (child.deps) {
+      for (const d of child.deps) {
+        if (!append(d)) return { deps: null, depsOverflow: true };
+      }
+    }
+  }
+  return { deps, depsOverflow: false };
+}
+
+function exactLegacyConstantEntry(value, active, observation, depth, memo) {
+  const alreadyObserved = Boolean(value && observation && !observation.unavailable && observation.seen.has(value));
   observeExactConstantRead(value, observation);
-  if (!value || depth > EXACT_LEGACY_CONST_MAX_DEPTH || active.has(value.id)) return null;
+  if (!value) return { result: null, deps: null, depsOverflow: false, cutOff: false };
   if (value.const != null) {
-    try { return BigInt(value.const); } catch { return null; }
+    try {
+      return { result: BigInt(value.const), deps: [value], depsOverflow: false, cutOff: false };
+    } catch {
+      return { result: null, deps: null, depsOverflow: false, cutOff: false };
+    }
+  }
+  if (depth > EXACT_LEGACY_CONST_MAX_DEPTH || active.has(value.id)) {
+    return { result: null, deps: null, depsOverflow: false, cutOff: true };
+  }
+  const cacheKey = memo && value.id != null ? value.id : null;
+  if (cacheKey != null && memo.has(cacheKey)) {
+    const cached = memo.get(cacheKey);
+    if (cached.result != null && observation && !observation.unavailable && !alreadyObserved) {
+      if (cached.depsOverflow) {
+        observation.unavailable = true;
+      } else if (cached.deps) {
+        for (const dep of cached.deps) {
+          observeExactConstantRead(dep, observation);
+          if (observation.unavailable) break;
+        }
+      }
+    }
+    return cached;
   }
   const def = value.def;
-  if (!def) return null;
+  if (!def) {
+    const entry = { result: null, deps: null, depsOverflow: false, cutOff: false };
+    if (cacheKey != null) memo.set(cacheKey, entry);
+    return entry;
+  }
   active.add(value.id);
   let result = null;
+  let cutOff = false;
+  let childA = null;
+  let childB = null;
   if (def.op === LEGACY_OP.CONST || def.op === LEGACY_OP.ADDR) {
     try { result = BigInt(def.extra?.value ?? def.extra?.target); } catch { result = null; }
   } else if (def.op === LEGACY_OP.MOV && def.args?.length === 1) {
-    const inner = exactLegacyConstant(def.args[0]?.value, active, observation, depth + 1);
+    childA = exactLegacyConstantEntry(def.args[0]?.value, active, observation, depth + 1, memo);
+    cutOff = childA.cutOff;
+    const inner = childA.result;
     if (inner != null) {
       if (def.sub === 'trunc' || def.sub === 'zext') result = BigInt.asUintN(Number(value.bits || 64), inner);
       else if (def.sub == null || def.sub === 'copy' || def.sub === 'bitcast') result = inner;
     }
   } else if (def.op === LEGACY_OP.BIN && def.args?.length >= 2) {
-    const left = exactLegacyConstant(def.args[0]?.value, active, observation, depth + 1);
-    const right = exactLegacyConstant(def.args[1]?.value, active, observation, depth + 1);
+    childA = exactLegacyConstantEntry(def.args[0]?.value, active, observation, depth + 1, memo);
+    childB = exactLegacyConstantEntry(def.args[1]?.value, active, observation, depth + 1, memo);
+    cutOff = childA.cutOff || childB.cutOff;
+    const left = childA.result;
+    const right = childB.result;
     if (left != null && right != null) {
       const bits = Number(value.bits || 64);
       if (def.sub === 'add') result = left + right;
@@ -1274,7 +1333,16 @@ function exactLegacyConstant(value, active = new Set(), observation = null, dept
     }
   }
   active.delete(value.id);
-  return result;
+  const depInfo = result != null ? mergeExactConstantDeps(value, childA, childB) : { deps: null, depsOverflow: false };
+  const entry = { result, deps: depInfo.deps, depsOverflow: depInfo.depsOverflow, cutOff: result == null && cutOff };
+  if (cacheKey != null && (result != null || !cutOff)) {
+    memo.set(cacheKey, entry);
+  }
+  return entry;
+}
+
+function exactLegacyConstant(value, active = new Set(), observation = null, depth = 0, memo = new Map()) {
+  return exactLegacyConstantEntry(value, active, observation, depth, memo).result;
 }
 
 // The existing evaluator describes only reads it actually makes. Recursive
@@ -1293,12 +1361,13 @@ function observeExactConstantRead(value, observation) {
   } catch { observation.unavailable = true; }
 }
 
-function propagateExactLegacyConstants(projected, history = null) {
+export function propagateExactLegacyConstants(projected, history = null) {
   const observer = { records:[], expected:new WeakSet(), unavailable:new WeakSet() };
+  const memo = new Map();
   for (const value of projected.values ?? []) {
     if (value.const != null) continue;
     const observation = { inputs:[], seen:new WeakSet(), unavailable:observer.records.length >= 1024 };
-    const constant = exactLegacyConstant(value, new Set(), observation);
+    const constant = exactLegacyConstant(value, new Set(), observation, 0, memo);
     if (constant != null) {
       const beforeConstant = value.const;
       value.const = BigInt.asUintN(Number(value.bits || 64), constant);

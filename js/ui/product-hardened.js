@@ -1,7 +1,7 @@
-import { installProductUI as installBaseProductUI, editBookmarkNote, makeStarButton, bookmarkLabel, syncRouteNavigation } from './product.js';
+import { installProductUI as installBaseProductUI, editBookmarkNote, makeStarButton, bookmarkLabel, syncRouteNavigation, formatBlockCount, isBinaryUnboundError, renderBinaryUnboundCard } from './product.js';
 import { createProductSurfaceQueries } from '../analysis/query/product-surface.js';
 import { FUNCTION_TABS, EXPLORER_SCOPES } from './registry.js';
-import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip } from './primitives.js';
+import { h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge, tabs, tabPanel, updateScreenTitle, listRow, VirtualList, scrollStrip, statusNotice } from './primitives.js';
 import { addrHex } from '../format.js';
 import { menu } from '../ui.js';
 import { showRename, showComment, showPatches } from '../tools.js';
@@ -219,6 +219,30 @@ function labelFrom(table, value) {
 function classificationLabel(value) { return labelFrom(CLASSIFICATION_LABELS, value || 'UNKNOWN'); }
 function refinementLabel(value) { return value ? labelFrom(REFINEMENT_LABELS, value) : ''; }
 function completenessLabel(value) { return labelFrom(COMPLETENESS_LABELS, value); }
+
+/**
+ * Consolidates completeness + evidence level into a single non-contradictory
+ * status badge (avoids conflicting dual labels like "可能性が高い / 一部のみ").
+ */
+export function formatAnalysisStatus(completeness) {
+  const key = String(completeness || '').toLowerCase();
+  let badgeKey = 'unverified';
+  let label = text('未確認', 'Unverified');
+  if (key === 'complete') {
+    badgeKey = 'confirmed';
+    label = text('確認済み', 'Confirmed');
+  } else if (key === 'partial') {
+    badgeKey = 'likely';
+    label = text('一部のみ確認（可能性が高い）', 'Partially verified (likely)');
+  } else if (key === 'unsupported') {
+    badgeKey = 'unverified';
+    label = text('未対応', 'Unsupported');
+  }
+  const badge = h('span', `evidence-badge evidence-${badgeKey}`, label);
+  badge.dataset.evidence = badgeKey;
+  badge.setAttribute('aria-label', label);
+  return { key: badgeKey, label, badge };
+}
 function evidenceList(items) {
   return (Array.isArray(items) ? items : []).map((item) => {
     const raw = String(item);
@@ -288,6 +312,11 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
       ], r.left + r.width / 2, r.bottom + 4);
     },
   }));
+  if (!app.store?.get?.('fileInfo')) {
+    const s = screen(text('関数', 'Function'), { id:'function', subtitle:addressText(address) });
+    s.body.append(renderBinaryUnboundCard(app));
+    return { root:s.root };
+  }
   const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address), actions });
   let unsubNotes = null;
   let overviewDisposed = false;
@@ -365,9 +394,10 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
 
       const facts = card(text('基本情報', 'Basic facts'));
       facts.body.append(listRow({ title:text('命令数', 'Instructions'), meta:String(value.facts?.instructions ?? '—') }));
-      facts.body.append(listRow({ title:text('ブロック数', 'Basic blocks'), meta:String(value.facts?.blocks ?? '—') }));
+      facts.body.append(listRow({ title:text('ブロック数', 'Basic blocks'), meta:formatBlockCount(value.facts?.blocks, { instructions: value.facts?.instructions, size: value.facts?.size }) }));
       facts.body.append(listRow({ title:text('アドレス', 'Address'), meta:addressText(address), mono:true }));
-      facts.body.append(listRow({ title:text('解析状態', 'Analysis status'), meta:completenessLabel(result.completeness), badge:evidenceBadge(result.completeness === 'complete' ? 'confirmed' : 'likely') }));
+      const unifiedStatus = formatAnalysisStatus(result.completeness);
+      facts.body.append(listRow({ title:text('解析状態', 'Analysis status'), badge:unifiedStatus.badge }));
       grid.append(facts.root);
 
       const next = card(text('次に見る', 'Next steps'));
@@ -382,7 +412,10 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
       grid.append(next.root);
       content.replaceChildren(grid);
     } catch (error) {
-      if (!signal?.aborted) content.replaceChildren(errorState(text('分類を表示できませんでした', 'Could not render classification'), String(error?.message || error)));
+      if (!signal?.aborted) {
+        if (isBinaryUnboundError(error) || !app.store?.get?.('fileInfo')) content.replaceChildren(renderBinaryUnboundCard(app));
+        else content.replaceChildren(errorState(text('分類を表示できませんでした', 'Could not render classification'), String(error?.message || error)));
+      }
     }
   })();
 
@@ -396,6 +429,11 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
     subtitle:detailId ? text('見つかった結果と、その根拠の状態です。', 'Shows the canonical claim and evidence verdict.') : text('自動解析で見つかった結果です。状態は解析エンジンの判定をそのまま表示します。', 'Shows analysed claims using canonical verdicts without UI confidence thresholds.'),
   });
   const host = h('div', 'ui-stack');
+  if (detailId && !app.store?.get?.('fileInfo')) {
+    host.append(renderBinaryUnboundCard(app));
+    s.body.append(host);
+    return { root:s.root };
+  }
   if (!detailId && !app.store?.get?.('fileInfo')) {
     host.append(emptyState(
       text('ファイルが開かれていません', 'No binary open'),
@@ -469,7 +507,10 @@ function renderCanonicalClaims(app, router, route, meta, queries) {
       }
       if (result.completeness !== 'complete') host.prepend(h('p', 'ui-partial-note', text('結果は一部だけです。まだ処理していない結果を「無い」とは判断しません。', 'The claim set is partial; unprocessed claims are not treated as absent.')));
     } catch (error) {
-      if (!disposed && !signal?.aborted) host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
+      if (!disposed && !signal?.aborted) {
+        if (isBinaryUnboundError(error) || !app.store?.get?.('fileInfo')) host.replaceChildren(renderBinaryUnboundCard(app));
+        else host.replaceChildren(errorState(text('結果を表示できませんでした', 'Could not show results'), String(error?.message || error)));
+      }
     }
   })();
   return { root:s.root, dispose:() => { disposed = true; activeList?.dispose?.(); activeList = null; } };
@@ -592,13 +633,18 @@ function renderCanonicalStrings(app, router, route, meta, queries) {
       if (result.completeness !== 'complete') {
         const scanned = Number(result.status?.scannedRegions || 0);
         const total = Number(result.status?.totalRegions || 0);
-        nodes.push(h('p', 'ui-partial-note', text(`一部の結果です（${scanned}/${total} 領域を検索済み）。まだ検索していない領域に「無い」とは判断しません。`, `Partial result: scanned ${scanned}/${total} regions; unscanned regions are not treated as negative evidence.`)));
+        const lead = text(`一部の結果です（${scanned}/${total} 領域を検索済み）。まだ検索していない領域に「無い」とは判断しません。`, `Partial result: scanned ${scanned}/${total} regions; unscanned regions are not treated as negative evidence.`);
+        if (result.status?.reason) nodes.push(statusNotice(result.status.reason, { lead }));
+        else nodes.push(h('p', 'ui-partial-note', lead));
       }
       nodes.push(virtual.root);
       host.replaceChildren(...nodes);
       if (pendingVirtualState) { virtual.restoreState(pendingVirtualState); pendingVirtualState = null; }
     } catch (error) {
-      if (!signal.aborted && !disposed) host.replaceChildren(errorState(text('文字列を検索できませんでした', 'Could not search strings'), String(error?.message || error)));
+      if (!signal.aborted && !disposed) {
+        if (isBinaryUnboundError(error) || !app.store?.get?.('fileInfo')) host.replaceChildren(renderBinaryUnboundCard(app));
+        else host.replaceChildren(errorState(text('文字列を検索できませんでした', 'Could not search strings'), String(error?.message || error)));
+      }
     }
   };
 

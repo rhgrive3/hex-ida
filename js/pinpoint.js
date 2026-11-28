@@ -25,7 +25,9 @@ import { withCxxSemanticPreference } from './analysis/query/cxx-semantic-prefere
 
 export * from './pinpoint-legacy.js';
 
-const DEFAULT_PINPOINT_ANALYSIS_TIMEOUT_MS = 30_000;
+export const DEFAULT_PER_FUNCTION_BUDGET_MS = 1500;
+export const PER_FUNCTION_BUDGET_EXCEEDED_REASON = 'per-function-budget-exceeded';
+const DEFAULT_PINPOINT_ANALYSIS_TIMEOUT_MS = DEFAULT_PER_FUNCTION_BUDGET_MS;
 const MAX_PINPOINT_ANALYSIS_TIMEOUT_MS = 120_000;
 const DEFAULT_ACCESS_SCAN_TIMEOUT_MS = 45_000;
 const MAX_ACCESS_SCAN_TIMEOUT_MS = 120_000;
@@ -279,7 +281,8 @@ function resultLimit(value, fallback = 12) {
 }
 
 function timeoutMs(opts) {
-  const requested = Number(opts?.analysisTimeoutMs);
+  const raw = opts?.perFunctionBudgetMs != null ? opts.perFunctionBudgetMs : opts?.analysisTimeoutMs;
+  const requested = Number(raw);
   if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_PINPOINT_ANALYSIS_TIMEOUT_MS;
   return Math.max(1, Math.min(MAX_PINPOINT_ANALYSIS_TIMEOUT_MS, Math.floor(requested)));
 }
@@ -303,6 +306,7 @@ function uniqueAnalysisLimit(opts) {
 function timeoutError(ms) {
   const error = new Error(`pinpoint analysis timed out after ${ms}ms`);
   error.code = 'pinpoint-analysis-timeout';
+  error.reason = PER_FUNCTION_BUDGET_EXCEEDED_REASON;
   return error;
 }
 
@@ -322,6 +326,7 @@ function abortError(reason) {
   const error = new Error(typeof reason === 'string' && reason ? reason : 'pinpoint analysis aborted');
   error.name = 'AbortError';
   error.code = 'pinpoint-analysis-aborted';
+  if (reason !== undefined) error.reason = reason;
   return error;
 }
 
@@ -329,12 +334,97 @@ function analysisKey(args) {
   return args.slice(0, 2).map((value) => value == null ? 'null' : value.toString()).join(':');
 }
 
-function analyzeArgsWithSignal(args, signal) {
+function analyzeArgsWithSignal(args, signal, budgetMs) {
   const out = args.slice();
   const third = out[2];
-  if (third && typeof third === 'object' && !Array.isArray(third)) out[2] = { ...third, signal };
-  else out[2] = { signal };
+  if (third && typeof third === 'object' && !Array.isArray(third)) {
+    out[2] = { ...third, signal, perFunctionBudgetMs: budgetMs };
+  } else {
+    out[2] = { signal, perFunctionBudgetMs: budgetMs };
+  }
   return out;
+}
+
+function yieldToEventLoop(signal = null) {
+  if (signal?.aborted) return Promise.reject(abortError(signal.reason));
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let timer = null;
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      if (timer != null) clearTimeout(timer);
+      reject(abortError(signal?.reason));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, 0);
+  });
+}
+
+function safeAddrKey(addr) {
+  if (addr == null) return null;
+  try { return BigInt(addr).toString(); } catch { return String(addr); }
+}
+
+function recordBudgetExceeded(budgetTracker, addr, elapsedMs, budgetMs) {
+  if (!budgetTracker) return;
+  const key = safeAddrKey(addr);
+  if (key == null) return;
+  budgetTracker.set(key, {
+    addr,
+    elapsedMs,
+    budgetMs,
+    status: 'unverified',
+    label: '未確認',
+    reason: PER_FUNCTION_BUDGET_EXCEEDED_REASON,
+  });
+}
+
+function candidateMatchesBudgetTracker(c, budgetTracker) {
+  if (!c || !budgetTracker || budgetTracker.size === 0) return false;
+  const direct = safeAddrKey(c.addr);
+  if (direct != null && budgetTracker.has(direct)) return true;
+  const getter = safeAddrKey(c.accessors?.getter?.addr);
+  if (getter != null && budgetTracker.has(getter)) return true;
+  const setter = safeAddrKey(c.accessors?.setter?.addr);
+  if (setter != null && budgetTracker.has(setter)) return true;
+  if (Array.isArray(c.functions)) {
+    for (const fn of c.functions) {
+      const fk = safeAddrKey(fn?.addr);
+      if (fk != null && budgetTracker.has(fk)) return true;
+    }
+  }
+  return false;
+}
+
+function applyBudgetExceededMetadata(result, budgetTracker) {
+  if (!result || !budgetTracker || budgetTracker.size === 0) return result;
+  const exceeded = Array.from(budgetTracker.values());
+  for (const c of result.candidates || []) {
+    if (!candidateMatchesBudgetTracker(c, budgetTracker)) continue;
+    if (!c.verified) {
+      c.verified = false;
+      c.unconfirmed = true;
+      c.verificationStatus = 'unverified';
+      c.statusLabel = '未確認';
+      c.unverifiedReason = PER_FUNCTION_BUDGET_EXCEEDED_REASON;
+    }
+  }
+  const missing = Array.isArray(result.missing) ? result.missing.slice() : [];
+  if (!missing.includes(PER_FUNCTION_BUDGET_EXCEEDED_REASON)) {
+    missing.push(PER_FUNCTION_BUDGET_EXCEEDED_REASON);
+  }
+  return {
+    ...result,
+    missing,
+    budgetExceeded: exceeded,
+    unconfirmedFunctions: exceeded,
+  };
 }
 
 function linkParentSignal(controller, parentSignal) {
@@ -358,22 +448,30 @@ function linkParentSignal(controller, parentSignal) {
  * a cancellable operation's cancel hook when available, so backend work cannot
  * survive as a detached orphan after the pinpoint phase has moved on.
  */
-function guardedAnalyze(analyze, opts) {
+function guardedAnalyze(analyze, opts, budgetTracker = null) {
   if (typeof analyze !== 'function') return analyze;
   const state = burstScopedState(ANALYZE_GUARDS, analyze, opts,
-    () => ({ blockedUntil: 0, uniqueKeys: new Set() }));
+    () => ({ uniqueKeys: new Set() }));
   const ms = timeoutMs(opts);
   const uniqueLimit = uniqueAnalysisLimit(opts);
+  let callCount = 0;
   return async (...args) => {
     if (opts?.signal?.aborted || opts?.isCancelled?.()) {
       throw abortError(opts?.signal?.reason);
     }
-    if (Date.now() < state.blockedUntil) throw timeoutError(ms);
+    if (callCount > 0) {
+      await yieldToEventLoop(opts?.signal || null);
+      if (opts?.signal?.aborted || opts?.isCancelled?.()) {
+        throw abortError(opts?.signal?.reason);
+      }
+    }
+    callCount++;
     const key = analysisKey(args);
     if (!state.uniqueKeys.has(key)) {
       if (state.uniqueKeys.size >= uniqueLimit) throw analysisBudgetError(uniqueLimit);
       state.uniqueKeys.add(key);
     }
+    const startedAt = Date.now();
     const controller = new AbortController();
     const unlinkParent = linkParentSignal(controller, opts?.signal || null);
     let timer = null;
@@ -381,12 +479,13 @@ function guardedAnalyze(analyze, opts) {
     let onControllerAbort = null;
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
-        if (!controller.signal.aborted) controller.abort('pinpoint-analysis-timeout');
+        if (!controller.signal.aborted) controller.abort(PER_FUNCTION_BUDGET_EXCEEDED_REASON);
         try { operation?.cancel?.(); } catch { /* timeout remains authoritative */ }
+        recordBudgetExceeded(budgetTracker, args[0], Date.now() - startedAt, ms);
         reject(timeoutError(ms));
       }, ms);
       onControllerAbort = () => {
-        if (controller.signal.reason === 'pinpoint-analysis-timeout') return;
+        if (controller.signal.reason === PER_FUNCTION_BUDGET_EXCEEDED_REASON) return;
         try { operation?.cancel?.(); } catch { /* abort remains authoritative */ }
         reject(abortError(controller.signal.reason));
       };
@@ -394,11 +493,17 @@ function guardedAnalyze(analyze, opts) {
     });
     timeout.catch(() => {});
     try {
-      operation = analyze(...analyzeArgsWithSignal(args, controller.signal));
-      return await Promise.race([Promise.resolve(operation), timeout]);
+      operation = analyze(...analyzeArgsWithSignal(args, controller.signal, ms));
+      const res = await Promise.race([Promise.resolve(operation), timeout]);
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs > ms) {
+        recordBudgetExceeded(budgetTracker, args[0], elapsedMs, ms);
+        throw timeoutError(ms);
+      }
+      return res;
     } catch (error) {
-      if (error?.code === 'pinpoint-analysis-timeout') {
-        state.blockedUntil = Date.now() + Math.min(5000, ms);
+      if (error?.code === 'pinpoint-analysis-timeout' || error?.reason === PER_FUNCTION_BUDGET_EXCEEDED_REASON) {
+        recordBudgetExceeded(budgetTracker, args[0], Date.now() - startedAt, ms);
       }
       throw error;
     } finally {
@@ -650,7 +755,7 @@ function composeIsCancelled(opts) {
   return () => Boolean(signal?.aborted) || Boolean(prev?.());
 }
 
-function preparedOptions(opts) {
+function preparedOptions(opts, budgetTracker = null) {
   const o = opts || {};
   const isCancelled = composeIsCancelled(o);
   const effectiveOpts = isCancelled !== o.isCancelled ? { ...o, isCancelled } : o;
@@ -658,7 +763,7 @@ function preparedOptions(opts) {
   const deferScan = o.deferAccessScan === true && !automaticBatch;
   return {
     ...effectiveOpts,
-    analyze: guardedAnalyze(o.analyze, effectiveOpts),
+    analyze: guardedAnalyze(o.analyze, effectiveOpts, budgetTracker),
     scanAccess: deferScan
       ? null
       : (automaticBatch ? batchedScanAccess(o.scanAccess, effectiveOpts) : guardedScanAccess(o.scanAccess, effectiveOpts)),
@@ -711,11 +816,14 @@ function hydrateShapeChangeSites(pin, opts) {
 
 export async function pinpointField(opts = {}) {
   const requestedLimit = resultLimit(opts.limit);
+  const budgetTracker = new Map();
   /* The preserved implementation internally keeps at most 400 candidates.
      Ask it to return that whole ranked set so the prior is not inferred from a
      UI-truncated top-12 list. */
-  const raw = await legacyPinpointField({ ...preparedOptions(opts), limit: 400 });
-  if (!raw || !Array.isArray(raw.candidates) || !raw.candidates.length) return raw;
+  const raw = await legacyPinpointField({ ...preparedOptions(opts, budgetTracker), limit: 400 });
+  if (!raw || !Array.isArray(raw.candidates) || !raw.candidates.length) {
+    return applyBudgetExceededMetadata(raw, budgetTracker);
+  }
 
   const ranked = raw.candidates.slice();
   const priorCandidates = narrowedPriorCount(ranked, raw.universe);
@@ -747,18 +855,22 @@ export async function pinpointField(opts = {}) {
   };
   const preferred = opts.binaryContextPreference === true
     ? withCxxSemanticPreference(opts.goal?.text, result, opts.symbols, { policy: opts.cxxSemanticPolicy || 'object-context-v4', goal: opts.goal }) : result;
-  return hydrateShapeChangeSites({ ...preferred, candidates: preferred.candidates.slice(0, requestedLimit) }, opts);
+  const hydrated = hydrateShapeChangeSites({ ...preferred, candidates: preferred.candidates.slice(0, requestedLimit) }, opts);
+  return applyBudgetExceededMetadata(hydrated, budgetTracker);
 }
 
 export async function pinpointLocation(opts = {}) {
   const requestedLimit = resultLimit(opts.limit, 10);
-  const result = await legacyPinpointLocation({ ...preparedOptions(opts), limit: requestedLimit });
-  return hydrateShapeChangeSites(result, opts);
+  const budgetTracker = new Map();
+  const result = await legacyPinpointLocation({ ...preparedOptions(opts, budgetTracker), limit: requestedLimit });
+  return applyBudgetExceededMetadata(hydrateShapeChangeSites(result, opts), budgetTracker);
 }
 
 export async function pinpointFunction(opts = {}) {
   const requestedLimit = resultLimit(opts.limit, 12);
-  return legacyPinpointFunction({ ...preparedOptions(opts), limit: requestedLimit });
+  const budgetTracker = new Map();
+  const result = await legacyPinpointFunction({ ...preparedOptions(opts, budgetTracker), limit: requestedLimit });
+  return applyBudgetExceededMetadata(result, budgetTracker);
 }
 
 function bestVerdict(field, fn) {
@@ -788,10 +900,15 @@ export async function pinpoint(opts = {}) {
     }));
   }
 
+  const budgetExceeded = [
+    ...(Array.isArray(field?.budgetExceeded) ? field.budgetExceeded : []),
+    ...(Array.isArray(fn?.budgetExceeded) ? fn.budgetExceeded : []),
+  ];
   return {
     goal: o.goal,
     field,
     function: fn,
     verdict: bestVerdict(field, fn),
+    ...(budgetExceeded.length ? { budgetExceeded, unconfirmedFunctions: budgetExceeded } : {}),
   };
 }

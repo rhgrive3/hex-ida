@@ -3,7 +3,8 @@ import { addrHex, sizeText } from '../../format.js';
 import { showDecompiler, showCfg, showCallGraphPanel } from '../../tools.js';
 import { functionViews, openFunctionView } from '../next-views.js';
 import { decompile as decompileModel } from '../../decompile.js';
-import { t } from '../../i18n.js';
+import { t, pick } from '../../i18n.js';
+import { buildGoalCandidateSummary, findGoalHighlightLines } from '../function-analysis-presentation.js';
 
 const COMPLETENESS_JA = Object.freeze({
   complete:'完全',
@@ -183,6 +184,156 @@ function summaryNextViews(app, sheet, address) {
   return root;
 }
 
+function resolveGoalContext(app, target, options) {
+  const safeOpts = options && typeof options === 'object' ? options : {};
+  const explicit = safeOpts.goalContext
+    || ((safeOpts.goal || safeOpts.candidate || safeOpts.pinpoint || safeOpts.fields)
+      ? {
+        goal: safeOpts.goal ?? null,
+        candidate: safeOpts.candidate ?? null,
+        pinpoint: safeOpts.pinpoint ?? null,
+        fields: safeOpts.fields ?? null,
+        disasm: safeOpts.disasm ?? null,
+      }
+      : null);
+  if (explicit) return { ...explicit, explicit: true };
+
+  const stored = app?.lastGoalContext && typeof app.lastGoalContext === 'object'
+    ? app.lastGoalContext
+    : null;
+  if (stored) {
+    const ctxAddr = stored.targetAddr ?? stored.addr ?? stored.address ?? stored.candidate?.addr ?? null;
+    if (ctxAddr == null || target == null) {
+      return { ...stored, explicit: true };
+    }
+    try {
+      if (BigInt(ctxAddr) === BigInt(target)) {
+        return { ...stored, explicit: true };
+      }
+    } catch {
+      return { ...stored, explicit: true };
+    }
+  }
+
+  if (app?.lastGoal) {
+    return { goal: app.lastGoal, candidate: null, pinpoint: null, fields: null, explicit: false };
+  }
+  return null;
+}
+
+function renderGoalSummaryBanner(summary, highlightLines, onJumpToHighlight) {
+  const banner = el('section', 'goal-candidate-summary');
+  if (banner.style) {
+    banner.style.borderLeft = '3px solid var(--accent, #f59e0b)';
+    banner.style.background = 'rgba(245, 158, 11, 0.08)';
+    banner.style.padding = '10px 12px';
+    banner.style.borderRadius = '6px';
+    banner.style.marginBottom = '10px';
+  }
+
+  const topRow = el('div', 'goal-summary-head');
+  if (topRow.style) {
+    topRow.style.display = 'flex';
+    topRow.style.alignItems = 'center';
+    topRow.style.justifyContent = 'space-between';
+    topRow.style.gap = '8px';
+    topRow.style.marginBottom = '4px';
+  }
+  const titleText = summary.goalLabel
+    ? pick(`目的との関連: ${summary.goalLabel}`, `Goal context: ${summary.goalLabel}`)
+    : pick('目的候補の要約', 'Goal candidate summary');
+  const title = el('div', 'goal-summary-title', titleText);
+  if (title.style) {
+    title.style.fontSize = '12px';
+    title.style.fontWeight = '600';
+    title.style.opacity = '0.85';
+  }
+  topRow.append(title);
+
+  if (summary.verdictLabel) {
+    const badge = el('span', 'goal-summary-verdict', summary.verdictLabel);
+    if (badge.style) {
+      badge.style.fontSize = '11px';
+      badge.style.fontWeight = '600';
+      badge.style.padding = '2px 6px';
+      badge.style.borderRadius = '4px';
+      badge.style.background = 'rgba(245, 158, 11, 0.18)';
+    }
+    topRow.append(badge);
+  }
+  banner.append(topRow);
+
+  const headline = el('div', 'goal-summary-headline', summary.headline);
+  if (headline.style) {
+    headline.style.fontWeight = '600';
+    headline.style.marginBottom = summary.bullets.length ? '6px' : '0';
+  }
+  banner.append(headline);
+
+  if (summary.bullets.length) {
+    const ul = el('ul', 'goal-summary-list');
+    if (ul.style) {
+      ul.style.margin = '0';
+      ul.style.paddingLeft = '18px';
+    }
+    for (const item of summary.bullets) {
+      ul.append(el('li', 'goal-summary-item', item));
+    }
+    banner.append(ul);
+  }
+
+  if (Array.isArray(highlightLines) && highlightLines.length && highlightLines[0] >= 4 && typeof onJumpToHighlight === 'function') {
+    const jumpBtn = button(
+      pick('該当箇所へ移動', 'Jump to match'),
+      'btn sm goal-jump-btn',
+      () => onJumpToHighlight(),
+    );
+    if (jumpBtn.style) {
+      jumpBtn.style.marginTop = '8px';
+    }
+    banner.append(jumpBtn);
+  }
+
+  return banner;
+}
+
+function renderHighlightedPseudocode(pseudocode, highlightLines) {
+  const allLines = String(pseudocode || '').split('\n');
+  const trimmedAll = allLines.join('\n').trim();
+  if (!trimmedAll) return { element: null, firstHighlighted: null };
+
+  const highlightSet = new Set(Array.isArray(highlightLines) ? highlightLines : []);
+  if (!highlightSet.size) {
+    const preview = allLines.slice(0, 24).join('\n').trim();
+    return { element: preview ? codeBlock(preview) : null, firstHighlighted: null };
+  }
+
+  const firstHighlight = Math.min(...highlightSet);
+  const maxHighlight = Math.max(...highlightSet);
+  const visibleLimit = Math.min(allLines.length, Math.max(24, firstHighlight + 6, Math.min(240, maxHighlight + 6)));
+  const pre = el('pre', 'doc-code hex-goal-code');
+  let firstHighlighted = null;
+
+  for (let i = 0; i < visibleLimit; i++) {
+    const isHit = highlightSet.has(i);
+    const lineEl = el('div', isHit ? 'hex-code-line hex-goal-highlight' : 'hex-code-line', allLines[i] || ' ');
+    lineEl.setAttribute?.('data-line-index', String(i));
+    if (isHit) {
+      if (lineEl.style) {
+        lineEl.style.borderLeft = '3px solid var(--accent, #f59e0b)';
+        lineEl.style.background = 'rgba(245, 158, 11, 0.14)';
+        lineEl.style.paddingLeft = '8px';
+        lineEl.style.marginLeft = '-11px';
+        lineEl.style.display = 'block';
+      }
+      if (!firstHighlighted) firstHighlighted = lineEl;
+    }
+    pre.append(lineEl);
+  }
+
+  return { element: pre, firstHighlighted };
+}
+
 export function showFunctions(app) {
   const region = app.store.get('currentRegion');
   if (!region) { toast('先にファイルを開いてください。'); return; }
@@ -315,7 +466,7 @@ export function showFunctions(app) {
   void render();
 }
 
-export function showFunctionSummary(app, row) {
+export function showFunctionSummary(app, row, options = {}) {
   const region = app.store.get('currentRegion');
   if (!region) return;
   const address = app.viewer?.rowAddress?.(row) ?? null;
@@ -346,6 +497,47 @@ export function showFunctionSummary(app, row) {
 
       const value = fn.value;
       const target = bundle.target;
+      const decompiled = bundle.decompile?.value ?? value.decompiler ?? null;
+      const rawPseudocode = String(decompiled?.pseudocode || '');
+      const goalCtx = resolveGoalContext(app, target, options);
+      const highlightLines = goalCtx && rawPseudocode
+        ? findGoalHighlightLines(rawPseudocode, goalCtx)
+        : [];
+      const goalSummary = goalCtx
+        ? buildGoalCandidateSummary({
+          goal: goalCtx.goal,
+          candidate: goalCtx.candidate,
+          pinpoint: goalCtx.pinpoint,
+          fields: goalCtx.fields,
+          pseudocode: rawPseudocode || null,
+          disasm: goalCtx.disasm ?? value.model?.instructions ?? null,
+        })
+        : null;
+
+      const renderedPseudocode = decompiled
+        ? renderHighlightedPseudocode(rawPseudocode, highlightLines)
+        : { element: null, firstHighlighted: null };
+      const firstHighlightedEl = renderedPseudocode.firstHighlighted;
+      const shouldShowBanner = Boolean(
+        goalSummary && (
+          goalCtx.explicit
+          || goalSummary.fieldOperations.length
+          || goalSummary.matchedStrings.length
+          || goalSummary.matchedSymbols.length
+          || highlightLines.length
+        )
+      );
+      if (shouldShowBanner) {
+        const banner = renderGoalSummaryBanner(
+          goalSummary,
+          highlightLines,
+          firstHighlightedEl
+            ? () => { firstHighlightedEl.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); }
+            : null,
+        );
+        sheet.body.append(banner);
+      }
+
       const architecture = value.architectureId
         ?? app.store.get('architecture')
         ?? app.store.get('capability')?.architecture
@@ -372,13 +564,10 @@ export function showFunctionSummary(app, row) {
       if (fn.status?.reason) facts.append(tapRow('解析上の注意', { sub:String(fn.status.reason), disabled:true }));
       sheet.body.append(facts);
 
-      const decompiled = bundle.decompile?.value ?? value.decompiler ?? null;
       if (decompiled) {
         if (decompiled.signature) sheet.body.append(el('div', 'code-sig mono', decompiled.signature));
         if (decompiled.summary) sheet.body.append(el('div', 'hint', decompiled.summary));
-        const preview = String(decompiled.pseudocode || '')
-          .split('\n').slice(0, 24).join('\n').trim();
-        if (preview) sheet.body.append(codeBlock(preview));
+        if (renderedPseudocode.element) sheet.body.append(renderedPseudocode.element);
       }
 
       const cfg = bundle.cfg?.value ?? value.pipeline?.cfg ?? null;

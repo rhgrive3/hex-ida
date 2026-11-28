@@ -6,6 +6,7 @@ function abortError(signal) {
   const error = new Error(reason == null ? 'Analysis cancelled.' : String(reason));
   error.name = 'AbortError';
   error.code = 'ABORT_ERR';
+  if (reason !== undefined) error.reason = reason;
   return error;
 }
 
@@ -113,15 +114,51 @@ async function canonicalPinpointModel(app, addr, signal, options) {
   return result.value.model ?? result.value.semanticAnalysis?.model ?? null;
 }
 
+function yieldToEventLoop(signal = null) {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let timer = null;
+    const onAbort = () => {
+      if (done) return;
+      done = true;
+      if (timer != null) clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, 0);
+  });
+}
+
 export function makePinpointAnalyzer(app, region, parentSignal = null, analyze = analyzeFunctionCached) {
   if (!app?.store?.get?.('canDisassemble')) return null;
   if (!region && typeof app?.executableRegionFor !== 'function') return null;
   const legacyArm64 = isLegacyArm64Candidate(app);
+  let callCount = 0;
 
   return async (addr, end, options = {}) => {
-    const linked = combineSignals(parentSignal, options?.signal || null);
+    const rawBudget = Number(options?.perFunctionBudgetMs);
+    const budgetMs = Number.isFinite(rawBudget) && rawBudget > 0 ? Math.floor(rawBudget) : null;
+    const budgetController = budgetMs != null ? new AbortController() : null;
+    const linked = combineSignals(parentSignal, options?.signal || null, budgetController?.signal || null);
+    let budgetTimer = null;
     try {
       if (linked.signal?.aborted) throw abortError(linked.signal);
+      if (callCount > 0 && options?.yieldBetweenFunctions !== false) {
+        await yieldToEventLoop(linked.signal);
+        if (linked.signal?.aborted) throw abortError(linked.signal);
+      }
+      callCount++;
+      if (budgetController && budgetMs != null) {
+        budgetTimer = setTimeout(() => {
+          if (!budgetController.signal.aborted) budgetController.abort('per-function-budget-exceeded');
+        }, budgetMs);
+      }
 
       const canonical = await canonicalPinpointModel(app, addr, linked.signal, options);
       if (canonical !== undefined) return canonical;
@@ -152,7 +189,17 @@ export function makePinpointAnalyzer(app, region, parentSignal = null, analyze =
       const res = await analyze(app.backend, owner, startRow, endRow,
         app.symbols, null, { ...(options || {}), texts: false, signal: linked.signal });
       return res?.model || null;
+    } catch (err) {
+      if (budgetController?.signal.aborted) {
+        if (err && typeof err === 'object') {
+          if (err.reason === undefined) err.reason = budgetController.signal.reason;
+          throw err;
+        }
+        throw abortError(budgetController.signal);
+      }
+      throw err;
     } finally {
+      if (budgetTimer != null) clearTimeout(budgetTimer);
       linked.dispose();
     }
   };

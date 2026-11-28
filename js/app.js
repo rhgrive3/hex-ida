@@ -52,7 +52,7 @@ import {
   serializeDeltaJson,
   parseDeltaJson,
 } from './cache/delta-session.js';
-import { attachV6Workbench } from './ui/v6-workbench-bridge.js';
+import { attachV6Workbench, formatStagedAutoAnalysisStatus } from './ui/v6-workbench-bridge.js';
 import { installFunctionAnalysisPresentation } from './ui/function-analysis-presentation.js';
 import { isStrippedFunctionName, normalizeVaHex } from './analysis/common/v6-auto-contracts.js';
 
@@ -439,9 +439,13 @@ export class App {
     this.analysisResume = new AnalysisResumeStore();
     this.analysisResumeReady = Promise.resolve(false);
     this.activeProject = null;
+    this.stagedGoalCandidates = [];
     this.v6 = attachV6Workbench(this);
     this.v6Workbench = this.v6;
     this._lastIngestedWasmAnalysis = null;
+    this._unsubAutoAnalysisStatus = this.v6?.subscribeAutoAnalysis?.((state) => {
+      this._renderAutoAnalysisStatus(state);
+    }) || null;
     installFunctionAnalysisPresentation(this);
     this._reinstallPresentationWrapper = () => installFunctionAnalysisPresentation(this);
 
@@ -497,6 +501,7 @@ export class App {
     document.title = t('app.title');
     this.dom.explain.setAttribute('aria-pressed', String(!!this.prefs.explain));
     this.updateChrome();
+    this._renderAutoAnalysisStatus();
   }
 
   /* ── 配線 ─────────────────────────────────────────────────── */
@@ -702,6 +707,7 @@ export class App {
       this.dom.addrCur.textContent = '—';
       this.dom.addrRegion.textContent = '';
       this.dom.addrRange.textContent = '';
+      this._renderAutoAnalysisStatus(null);
       return;
     }
 
@@ -852,6 +858,8 @@ export class App {
     if (dropCache) {
       this.v6?.detach?.();
       this._lastIngestedWasmAnalysis = null;
+      this.stagedGoalCandidates = [];
+      this._renderAutoAnalysisStatus(null);
       clearSchemaRecoveryTasks(this);
       this.featureIndex = null;
       this.stringIndex = null;
@@ -1329,10 +1337,148 @@ export class App {
     }
   }
 
+  _ensureAutoAnalysisStatusDom() {
+    if (typeof document === 'undefined' || !this.dom) return null;
+    if (this.dom.stAuto && this.dom.stAutoText && this.dom.stAutoCancel) {
+      return this.dom.stAuto;
+    }
+    const footer = this.dom.stLeft?.parentElement || document.querySelector?.('.statusbar') || null;
+    if (!footer || typeof document.createElement !== 'function') return null;
+
+    const wrap = document.createElement('span');
+    wrap.id = 'st-auto';
+    wrap.className = 'st-auto mono';
+    wrap.setAttribute('role', 'status');
+    wrap.setAttribute('aria-live', 'polite');
+    wrap.hidden = true;
+    if (wrap.style) {
+      wrap.style.display = 'inline-flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '6px';
+      wrap.style.marginLeft = 'auto';
+      wrap.style.marginRight = '8px';
+    }
+
+    const textEl = document.createElement('span');
+    textEl.id = 'st-auto-text';
+    textEl.className = 'st-auto-text';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.id = 'st-auto-cancel';
+    cancelBtn.className = 'st-auto-cancel';
+    cancelBtn.type = 'button';
+    cancelBtn.hidden = true;
+    cancelBtn.textContent = pick('停止', 'Stop');
+    cancelBtn.setAttribute('aria-label', pick('バックグラウンド解析を停止', 'Stop background analysis'));
+    if (cancelBtn.style) {
+      cancelBtn.style.fontSize = '11px';
+      cancelBtn.style.padding = '1px 6px';
+      cancelBtn.style.borderRadius = '4px';
+      cancelBtn.style.border = '1px solid currentColor';
+      cancelBtn.style.background = 'transparent';
+      cancelBtn.style.color = 'inherit';
+      cancelBtn.style.cursor = 'pointer';
+    }
+    cancelBtn.addEventListener?.('click', () => {
+      this.cancelBackgroundAutoAnalysis();
+    });
+
+    wrap.append(textEl, cancelBtn);
+    if (this.dom.stRight && this.dom.stRight.parentElement === footer && typeof footer.insertBefore === 'function') {
+      footer.insertBefore(wrap, this.dom.stRight);
+    } else if (typeof footer.appendChild === 'function') {
+      footer.appendChild(wrap);
+    }
+
+    this.dom.stAuto = wrap;
+    this.dom.stAutoText = textEl;
+    this.dom.stAutoCancel = cancelBtn;
+    return wrap;
+  }
+
+  _renderAutoAnalysisStatus(state = this.getAutoAnalysisState()) {
+    const model = formatStagedAutoAnalysisStatus(state);
+    try { this.store?.set?.({ autoAnalysisStatus: model }); } catch { /* non-fatal */ }
+    const wrap = this._ensureAutoAnalysisStatusDom();
+    if (!wrap) return model;
+    const hasFile = Boolean(this.store?.get?.('fileInfo'));
+    if (!hasFile || !model.visible) {
+      wrap.hidden = true;
+      if (this.dom.stAutoText) this.dom.stAutoText.textContent = '';
+      if (this.dom.stAutoCancel) this.dom.stAutoCancel.hidden = true;
+      return model;
+    }
+    wrap.hidden = false;
+    if (wrap.dataset) {
+      wrap.dataset.state = model.running ? 'running' : (model.done ? 'done' : (model.cancelled ? 'cancelled' : 'idle'));
+      wrap.dataset.stage = model.activeStage || '';
+    }
+    if (this.dom.stAutoText) this.dom.stAutoText.textContent = model.text;
+    if (this.dom.stAutoCancel) {
+      this.dom.stAutoCancel.hidden = !model.canCancel;
+      this.dom.stAutoCancel.textContent = model.cancelLabel;
+      this.dom.stAutoCancel.setAttribute('aria-label', pick('バックグラウンド解析を停止', 'Stop background analysis'));
+    }
+    return model;
+  }
+
+  cancelBackgroundAutoAnalysis() {
+    return this.v6Workbench?.cancelStagedAutoAnalysis?.() ?? false;
+  }
+
+  _countRecoveredNamesSummary() {
+    const sym = this.symbols;
+    if (!sym || sym === EMPTY_INDEX) {
+      return { named: 0, total: 0, objcCount: 0, swiftCount: 0, hexsigCount: 0, entries: [] };
+    }
+    const funcs = (Array.isArray(sym.funcs) || ArrayBuffer.isView(sym.funcs)) ? sym.funcs : (typeof sym.functionList === 'function' ? sym.functionList() : []);
+    const total = Number.isFinite(sym.functionCount) ? sym.functionCount : funcs.length;
+    let named = 0;
+    let objcCount = 0;
+    let swiftCount = 0;
+    let hexsigCount = 0;
+    const entries = [];
+    for (let i = 0; i < funcs.length; i++) {
+      const fn = funcs[i];
+      const addr = typeof fn === 'bigint' ? fn : (fn?.start ?? fn?.va ?? fn?.addr ?? null);
+      if (addr == null) continue;
+      let vaBig;
+      try { vaBig = typeof addr === 'bigint' ? addr : BigInt(addr); } catch { continue; }
+      const name = typeof sym.nameAt === 'function' ? sym.nameAt(vaBig) : (fn?.name ?? null);
+      if (!name || isStrippedFunctionName(name)) continue;
+      named += 1;
+      const prov = sym.nameProvenance?.get?.(vaBig.toString()) || null;
+      const source = prov?.source || 'symbol';
+      if (source === 'objc-runtime') objcCount += 1;
+      else if (source === 'swift-metadata') swiftCount += 1;
+      else if (source === 'hexsig') hexsigCount += 1;
+      if (entries.length < 256 && (source === 'objc-runtime' || source === 'swift-metadata' || source === 'hexsig')) {
+        entries.push({ va: `0x${vaBig.toString(16)}`, name, source });
+      }
+    }
+    if (objcCount === 0 && Array.isArray(this.objcModel?.names)) {
+      objcCount = this.objcModel.names.length;
+    }
+    if (hexsigCount === 0 && this.v6Workbench?._autoNamedFunctions?.size) {
+      hexsigCount = this.v6Workbench._autoNamedFunctions.size;
+    }
+    return { named, total, objcCount, swiftCount, hexsigCount, entries };
+  }
+
   _buildV6AutoProviders(epoch, sliceIndex) {
-    const isCurrent = () => epoch === this.backend.gen && this.store.get('sliceIndex') === sliceIndex;
+    const openedFileInfo = this.store?.get?.('fileInfo') ?? null;
+    const isCurrent = () => (
+      epoch === this.backend?.gen
+      && this.store?.get?.('sliceIndex') === sliceIndex
+      && (!openedFileInfo || this.store?.get?.('fileInfo') === openedFileInfo)
+    );
     const cfg = this.v6Workbench?._autoAnalysisConfig || {};
+    const cachedStagedAnalysis = this.lastDeltaRestore?.record?.resume?.stagedAutoAnalysis
+      ?? this.v6Workbench?.exportStagedAutoAnalysisCache?.()
+      ?? null;
     return {
+      isCurrent,
+      cachedStagedAnalysis,
       tilManifestUrl: cfg.tilManifestUrl ?? 'til-hub/manifest.json',
       tilBaseUrl: cfg.tilBaseUrl ?? 'til-hub',
       hexsigManifestUrl: cfg.hexsigManifestUrl ?? 'hexsig-hub/manifest.json',
@@ -1437,6 +1583,123 @@ export class App {
           }
         }
         return accepted;
+      },
+      recoverNames: async ({ signal, onProgress } = {}) => {
+        if (!isCurrent() || signal?.aborted) return null;
+        const reportProgress = () => {
+          const summary = this._countRecoveredNamesSummary();
+          onProgress?.({ completed: summary.named, total: summary.total });
+          return summary;
+        };
+        reportProgress();
+        const regions = this.store?.get?.('regions') || [];
+        const hasCustomObjc = Object.prototype.hasOwnProperty.call(this, 'ensureObjcIndex')
+          || Object.prototype.hasOwnProperty.call(this, 'ensureObjc');
+        if ((regions.length > 0 || hasCustomObjc) && !signal?.aborted && isCurrent()) {
+          try {
+            if (typeof this.ensureObjcIndex === 'function') {
+              await this.ensureObjcIndex({ priority: 'background', signal });
+            } else if (typeof this.ensureObjc === 'function') {
+              await this.ensureObjc(sliceIndex, { priority: 'background', signal });
+            }
+          } catch { /* fail-soft */ }
+        }
+        if (!isCurrent() || signal?.aborted) return null;
+        reportProgress();
+
+        const hasCustomSwift = Object.prototype.hasOwnProperty.call(this, 'ensureSwift');
+        if ((regions.length > 0 || hasCustomSwift) && !signal?.aborted && isCurrent()) {
+          try {
+            await this.ensureSwift?.({ priority: 'background', signal });
+          } catch { /* fail-soft */ }
+        }
+        if (!isCurrent() || signal?.aborted) return null;
+
+        try { this.viewer?.setSymbols?.(this.symbols); } catch { /* non-fatal */ }
+        try { this.syncSymbolsStore?.(true); } catch { /* non-fatal */ }
+        try { this.updateChrome?.(); } catch { /* non-fatal */ }
+        return reportProgress();
+      },
+      indexStrings: async ({ signal, onProgress } = {}) => {
+        if (!isCurrent() || signal?.aborted) return null;
+        const regions = this.store?.get?.('regions') || [];
+        const hasCustomStrings = Object.prototype.hasOwnProperty.call(this, 'ensureStrings');
+        let strings = this.stringIndex || null;
+        if (!strings && (regions.length > 0 || hasCustomStrings) && typeof this.ensureStrings === 'function') {
+          try {
+            strings = await this.ensureStrings((p) => {
+              if (signal?.aborted || !isCurrent()) return;
+              onProgress?.({ completed: p?.done ?? 0, total: p?.all ?? 0 });
+            });
+          } catch {
+            strings = null;
+          }
+        }
+        if (!isCurrent() || signal?.aborted) return null;
+        const count = Array.isArray(strings) ? strings.length : 0;
+        try { this.store?.set?.({ stringsReady: true, stringsCount: count }); } catch { /* non-fatal */ }
+        try { this.updateChrome?.(); } catch { /* non-fatal */ }
+        return { count };
+      },
+      indexCallGraph: async ({ signal, onProgress } = {}) => {
+        if (!isCurrent() || signal?.aborted) return null;
+        const regions = this.store?.get?.('regions') || [];
+        const hasCustomProgram = Object.prototype.hasOwnProperty.call(this, 'ensureProgram');
+        let program = this.program || null;
+        if (!program && (regions.length > 0 || hasCustomProgram) && typeof this.ensureProgram === 'function') {
+          try {
+            program = await this.ensureProgram((p) => {
+              if (signal?.aborted || !isCurrent()) return;
+              onProgress?.({ completed: p?.done ?? 0, total: p?.all ?? 0 });
+            });
+          } catch {
+            program = null;
+          }
+        }
+        if (!isCurrent() || signal?.aborted) return null;
+        const functionCount = this.symbols?.functionCount ?? 0;
+        const callCount = program?.callCount ?? this.programScan?.callCount ?? 0;
+        const refCount = program?.refCount ?? this.programScan?.refCount ?? 0;
+        try { this.store?.set?.({ programReady: Boolean(program) }); } catch { /* non-fatal */ }
+        try { this.updateChrome?.(); } catch { /* non-fatal */ }
+        return { functionCount, callCount, refCount };
+      },
+      rankGoalCandidates: async ({ signal } = {}) => {
+        if (!isCurrent() || signal?.aborted) return null;
+        let candidates = [];
+        try {
+          const guide = this.getBeginnerAutoGuide?.({ limit: 12 }) || null;
+          const starters = Array.isArray(guide?.starterFunctions) ? guide.starterFunctions : [];
+          candidates = starters.map((item) => ({
+            vaHex: normalizeVaHex(item?.vaHex ?? item?.va ?? item?.addr ?? item?.start) || '',
+            name: item?.displayName || item?.name || item?.vaHex || '',
+            score: Number(item?.score ?? 0),
+            reason: Array.isArray(item?.reasons) ? item.reasons.join(' / ') : String(item?.reason || ''),
+            goal: item?.category || item?.goal || null,
+          })).filter((c) => Boolean(c.vaHex));
+        } catch {
+          candidates = [];
+        }
+        if (!isCurrent() || signal?.aborted) return null;
+        this.stagedGoalCandidates = candidates;
+        try { this.store?.set?.({ goalCandidates: candidates }); } catch { /* non-fatal */ }
+        try { this.updateChrome?.(); } catch { /* non-fatal */ }
+        return { count: candidates.length, candidates };
+      },
+      onStageComplete: (stageId, result) => {
+        if (!isCurrent()) return;
+        try { this.updateChrome?.(); } catch { /* non-fatal */ }
+        if (typeof document !== 'undefined' && typeof CustomEvent === 'function') {
+          try {
+            document.dispatchEvent(new CustomEvent('hex:auto-analysis-stage', {
+              detail: { stage: stageId, result },
+            }));
+          } catch { /* non-fatal */ }
+        }
+        try { this.scheduleDeltaSave?.(); } catch { /* non-fatal */ }
+        if (stageId === 'names' || stageId === 'goals') {
+          try { void this.persistAnalysisSession?.(); } catch { /* non-fatal */ }
+        }
       },
     };
   }
@@ -1753,6 +2016,7 @@ export class App {
       explorerFilter: this.uiResume?.explorerFilter || 'all',
       explorerSort: this.uiResume?.explorerSort || 'address',
       lastFunctionTab: this.uiResume?.lastFunctionTab ?? null,
+      stagedAutoAnalysis: this.v6?.exportStagedAutoAnalysisCache?.() ?? null,
     };
     const v6Delta = this.v6?.exportV2DeltaFields?.() || {};
     Object.assign(delta, v6Delta);
@@ -1840,6 +2104,40 @@ export class App {
 
       if (resume.lastGoal?.text) {
         this.lastGoal = { text: resume.lastGoal.text };
+      }
+      if (resume.stagedAutoAnalysis) {
+        this.v6?.restoreStagedAutoAnalysis?.(resume.stagedAutoAnalysis);
+        this.stagedGoalCandidates = Array.isArray(resume.stagedAutoAnalysis.goalCandidatesSummary)
+          ? resume.stagedAutoAnalysis.goalCandidatesSummary.slice()
+          : [];
+        try { this.store?.set?.({ goalCandidates: this.stagedGoalCandidates }); } catch { /* non-fatal */ }
+        const cachedEntries = resume.stagedAutoAnalysis.recoveredNamesSummary?.entries;
+        if (Array.isArray(cachedEntries) && cachedEntries.length > 0 && this.symbols && this.symbols !== EMPTY_INDEX && typeof this.symbols.addNames === 'function') {
+          const toAdd = [];
+          for (const entry of cachedEntries) {
+            if (!entry?.va || !entry?.name) continue;
+            let vaBig;
+            try { vaBig = BigInt(entry.va); } catch { continue; }
+            const decKey = vaBig.toString();
+            const noteName = notes && notes !== EMPTY_NOTES ? (notes.nameOf?.(vaBig) ?? notes.names?.get?.(decKey) ?? null) : null;
+            if (typeof noteName === 'string' && noteName.trim()) continue;
+            if (this.symbols.renamedAt?.(vaBig) || this.symbols.renames?.has?.(decKey)) continue;
+            const existingName = this.symbols.nameAt?.(vaBig) ?? null;
+            if (existingName && !isStrippedFunctionName(existingName)) continue;
+            toAdd.push({
+              addr: vaBig,
+              name: entry.name,
+              provenance: { source: entry.source || 'auto', confidence: 0.95, confirmed: false },
+            });
+          }
+          if (toAdd.length > 0) {
+            const added = this.symbols.addNames(toAdd);
+            if (added > 0) {
+              this.viewer?.setSymbols?.(this.symbols);
+              this.syncSymbolsStore();
+            }
+          }
+        }
       }
 
       if (resume.displayMode === 'asm' || resume.displayMode === 'hex') {
@@ -2285,6 +2583,10 @@ export class App {
    *
    * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
+  async ensureObjcIndex(options = {}) {
+    return this.ensureObjc(this.store?.get?.('sliceIndex'), options);
+  }
+
   async ensureObjc(sliceIndex, options = {}) {
     const opts = options && typeof options === 'object' ? options : {};
     const epoch = this.backend.gen;

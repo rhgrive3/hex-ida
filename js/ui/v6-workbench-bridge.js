@@ -9,6 +9,11 @@
 import { detectRuntimeProfile } from '../core/budgets/runtime-profile.js';
 import { MemoryBudget } from '../core/budgets/memory-budget.js';
 import { HexDbClient } from '../cache/hexdb/hexdb-client.js';
+import {
+  STAGED_AUTO_ANALYSIS_STAGES,
+  normalizeStagedAutoAnalysis,
+} from '../cache/delta-session.js';
+import { pick } from '../i18n.js';
 import { TilLiteResolver } from '../analysis/types/core/til-lite-resolver.js';
 import {
   TilPackManager,
@@ -197,6 +202,171 @@ function createBoundedTilFetcher(signal = null, {
   };
 }
 
+export { STAGED_AUTO_ANALYSIS_STAGES };
+
+function makeInitialStagedState(initialStatus = AUTO_ANALYSIS_STATUS.IDLE) {
+  return {
+    status: initialStatus,
+    activeStage: null,
+    restoredFromCache: false,
+    stages: {
+      names: {
+        status: initialStatus,
+        completed: 0,
+        total: 0,
+        objcCount: 0,
+        swiftCount: 0,
+        hexsigCount: 0,
+        restoredFromCache: false,
+        completedAt: null,
+        detail: '',
+      },
+      strings: {
+        status: initialStatus,
+        completed: 0,
+        total: 0,
+        count: 0,
+        restoredFromCache: false,
+        completedAt: null,
+        detail: '',
+      },
+      callgraph: {
+        status: initialStatus,
+        completed: 0,
+        total: 0,
+        functionCount: 0,
+        callCount: 0,
+        refCount: 0,
+        restoredFromCache: false,
+        completedAt: null,
+        detail: '',
+      },
+      goals: {
+        status: initialStatus,
+        completed: 0,
+        total: 0,
+        count: 0,
+        restoredFromCache: false,
+        completedAt: null,
+        detail: '',
+      },
+    },
+    recoveredNamesSummary: {
+      named: 0,
+      total: 0,
+      objc: 0,
+      swift: 0,
+      hexsig: 0,
+      entries: [],
+    },
+    goalCandidatesSummary: [],
+  };
+}
+
+function cloneStagedState(staged) {
+  if (!staged || typeof staged !== 'object') return makeInitialStagedState(AUTO_ANALYSIS_STATUS.IDLE);
+  return {
+    status: staged.status,
+    activeStage: staged.activeStage ?? null,
+    restoredFromCache: Boolean(staged.restoredFromCache),
+    stages: {
+      names: { ...staged.stages.names },
+      strings: { ...staged.stages.strings },
+      callgraph: { ...staged.stages.callgraph },
+      goals: { ...staged.stages.goals },
+    },
+    recoveredNamesSummary: {
+      ...staged.recoveredNamesSummary,
+      entries: Array.isArray(staged.recoveredNamesSummary?.entries)
+        ? staged.recoveredNamesSummary.entries.map((e) => ({ ...e }))
+        : [],
+    },
+    goalCandidatesSummary: Array.isArray(staged.goalCandidatesSummary)
+      ? staged.goalCandidatesSummary.map((g) => ({ ...g }))
+      : [],
+  };
+}
+
+function formatNumberEn(n) {
+  const num = Number(n);
+  if (!Number.isFinite(num) || num < 0) return '0';
+  return Math.trunc(num).toLocaleString('en-US');
+}
+
+export function formatStagedAutoAnalysisStatus(stateOrStaged, { lang = null } = {}) {
+  const staged = stateOrStaged?.staged || stateOrStaged;
+  const choose = (ja, en) => (lang === 'en' ? en : (lang === 'ja' ? ja : pick(ja, en)));
+  if (!staged || typeof staged !== 'object' || !staged.stages) {
+    return {
+      visible: false,
+      running: false,
+      done: false,
+      cancelled: false,
+      restored: false,
+      activeStage: null,
+      text: '',
+      cancelLabel: choose('停止', 'Stop'),
+      canCancel: false,
+    };
+  }
+  const status = staged.status;
+  const activeStage = staged.activeStage || null;
+  const names = staged.stages.names || {};
+  const running = status === AUTO_ANALYSIS_STATUS.RUNNING || Boolean(activeStage);
+  const done = status === AUTO_ANALYSIS_STATUS.DONE;
+  const cancelled = status === AUTO_ANALYSIS_STATUS.ABORTED;
+  const restored = Boolean(staged.restoredFromCache);
+
+  let text = '';
+  if (running) {
+    if (activeStage === 'names' || names.status === AUTO_ANALYSIS_STATUS.RUNNING) {
+      const completed = Number(names.completed || 0);
+      const total = Number(names.total || 0);
+      if (total > 0) {
+        text = choose(
+          `名前 ${formatNumberEn(completed)} / ${formatNumberEn(total)}`,
+          `Names ${formatNumberEn(completed)} / ${formatNumberEn(total)}`,
+        );
+      } else {
+        text = choose('名前を復元中…', 'Recovering names…');
+      }
+    } else if (activeStage === 'strings' || staged.stages.strings?.status === AUTO_ANALYSIS_STATUS.RUNNING) {
+      text = choose('文字列の参照を索引中…', 'Indexing string references…');
+    } else if (activeStage === 'callgraph' || staged.stages.callgraph?.status === AUTO_ANALYSIS_STATUS.RUNNING) {
+      text = choose('呼び出しグラフを構築中…', 'Building call graph…');
+    } else if (activeStage === 'goals' || staged.stages.goals?.status === AUTO_ANALYSIS_STATUS.RUNNING) {
+      text = choose('目的ごとの候補を整理中…', 'Ranking goal candidates…');
+    } else {
+      text = choose('バックグラウンド解析中…', 'Running background analysis…');
+    }
+  } else if (done) {
+    const named = Number(staged.recoveredNamesSummary?.named ?? names.completed ?? 0);
+    const total = Number(staged.recoveredNamesSummary?.total ?? names.total ?? 0);
+    if (total > 0) {
+      text = choose(
+        `自動解析完了 · 名前 ${formatNumberEn(named)} / ${formatNumberEn(total)}`,
+        `Auto-analysis done · Names ${formatNumberEn(named)} / ${formatNumberEn(total)}`,
+      );
+    } else {
+      text = choose('自動解析完了', 'Auto-analysis done');
+    }
+  } else if (cancelled) {
+    text = choose('自動解析を停止しました', 'Auto-analysis stopped');
+  }
+
+  return {
+    visible: Boolean(text),
+    running,
+    done,
+    cancelled,
+    restored,
+    activeStage,
+    text,
+    cancelLabel: choose('停止', 'Stop'),
+    canCancel: running,
+  };
+}
+
 function makeInitialAutoAnalysisState(initialStatus = AUTO_ANALYSIS_STATUS.IDLE, binaryKey = null) {
   return {
     binaryKey,
@@ -204,6 +374,7 @@ function makeInitialAutoAnalysisState(initialStatus = AUTO_ANALYSIS_STATUS.IDLE,
     til: { status: initialStatus, completed: 0, total: 0, loadedPacks: [], errors: [], detail: '' },
     hexsig: { status: initialStatus, completed: 0, total: 0, scanned: 0, named: 0, detail: '' },
     deobf: { status: initialStatus, completed: 0, total: 0, processed: 0, deobfHits: 0, stlHits: 0, detail: '' },
+    staged: makeInitialStagedState(initialStatus),
   };
 }
 
@@ -1102,6 +1273,7 @@ export class V6Workbench {
       },
       hexsig: { ...s.hexsig },
       deobf: { ...s.deobf },
+      staged: cloneStagedState(s.staged),
     };
   }
 
@@ -1161,6 +1333,143 @@ export class V6Workbench {
     }
   }
 
+  restoreStagedAutoAnalysis(rawCached, { emit = true } = {}) {
+    const cached = normalizeStagedAutoAnalysis(rawCached);
+    if (!cached) return false;
+    if (!this._autoAnalysisState.staged) {
+      this._autoAnalysisState.staged = makeInitialStagedState(AUTO_ANALYSIS_STATUS.IDLE);
+    }
+    const staged = this._autoAnalysisState.staged;
+    const cs = cached.stages;
+
+    if (cs.names.completed) {
+      staged.stages.names = {
+        ...staged.stages.names,
+        status: AUTO_ANALYSIS_STATUS.DONE,
+        completed: cs.names.recovered,
+        total: cs.names.total,
+        objcCount: cs.names.objcCount,
+        swiftCount: cs.names.swiftCount,
+        hexsigCount: cs.names.hexsigCount,
+        restoredFromCache: true,
+        completedAt: cs.names.completedAt,
+      };
+    }
+    if (cs.strings.completed) {
+      staged.stages.strings = {
+        ...staged.stages.strings,
+        status: AUTO_ANALYSIS_STATUS.DONE,
+        completed: cs.strings.count,
+        total: cs.strings.count,
+        count: cs.strings.count,
+        restoredFromCache: true,
+        completedAt: cs.strings.completedAt,
+      };
+    }
+    if (cs.callgraph.completed) {
+      staged.stages.callgraph = {
+        ...staged.stages.callgraph,
+        status: AUTO_ANALYSIS_STATUS.DONE,
+        completed: cs.callgraph.functionCount,
+        total: cs.callgraph.functionCount,
+        functionCount: cs.callgraph.functionCount,
+        callCount: cs.callgraph.callCount,
+        refCount: cs.callgraph.refCount,
+        restoredFromCache: true,
+        completedAt: cs.callgraph.completedAt,
+      };
+    }
+    if (cs.goals.completed) {
+      staged.stages.goals = {
+        ...staged.stages.goals,
+        status: AUTO_ANALYSIS_STATUS.DONE,
+        completed: cs.goals.count,
+        total: cs.goals.count,
+        count: cs.goals.count,
+        restoredFromCache: true,
+        completedAt: cs.goals.completedAt,
+      };
+    }
+
+    staged.recoveredNamesSummary = {
+      ...cached.recoveredNamesSummary,
+      entries: Array.isArray(cached.recoveredNamesSummary?.entries)
+        ? cached.recoveredNamesSummary.entries.map((e) => ({ ...e }))
+        : [],
+    };
+    staged.goalCandidatesSummary = Array.isArray(cached.goalCandidatesSummary)
+      ? cached.goalCandidatesSummary.map((g) => ({ ...g }))
+      : [];
+
+    const allDone = STAGED_AUTO_ANALYSIS_STAGES.every(
+      (id) => staged.stages[id].status === AUTO_ANALYSIS_STATUS.DONE,
+    );
+    staged.restoredFromCache = true;
+    staged.activeStage = null;
+    if (allDone) {
+      staged.status = AUTO_ANALYSIS_STATUS.DONE;
+    }
+    if (emit) this._emitAutoAnalysisUpdate();
+    return true;
+  }
+
+  exportStagedAutoAnalysisCache() {
+    const staged = this._autoAnalysisState?.staged;
+    if (!staged || !staged.stages) return null;
+    const raw = {
+      version: 1,
+      updatedAt: Date.now(),
+      stages: {
+        names: {
+          completed: staged.stages.names.status === AUTO_ANALYSIS_STATUS.DONE,
+          recovered: staged.stages.names.completed,
+          total: staged.stages.names.total,
+          objcCount: staged.stages.names.objcCount,
+          swiftCount: staged.stages.names.swiftCount,
+          hexsigCount: staged.stages.names.hexsigCount,
+          completedAt: staged.stages.names.completedAt,
+        },
+        strings: {
+          completed: staged.stages.strings.status === AUTO_ANALYSIS_STATUS.DONE,
+          count: staged.stages.strings.count,
+          completedAt: staged.stages.strings.completedAt,
+        },
+        callgraph: {
+          completed: staged.stages.callgraph.status === AUTO_ANALYSIS_STATUS.DONE,
+          functionCount: staged.stages.callgraph.functionCount,
+          callCount: staged.stages.callgraph.callCount,
+          refCount: staged.stages.callgraph.refCount,
+          completedAt: staged.stages.callgraph.completedAt,
+        },
+        goals: {
+          completed: staged.stages.goals.status === AUTO_ANALYSIS_STATUS.DONE,
+          count: staged.stages.goals.count,
+          completedAt: staged.stages.goals.completedAt,
+        },
+      },
+      recoveredNamesSummary: staged.recoveredNamesSummary,
+      goalCandidatesSummary: staged.goalCandidatesSummary,
+    };
+    return normalizeStagedAutoAnalysis(raw);
+  }
+
+  cancelStagedAutoAnalysis() {
+    this.cancelAutoAnalysis({ resetState: false });
+    const staged = this._autoAnalysisState?.staged;
+    if (staged && staged.stages) {
+      for (const stageId of STAGED_AUTO_ANALYSIS_STAGES) {
+        const st = staged.stages[stageId];
+        if (st && (st.status === AUTO_ANALYSIS_STATUS.IDLE || st.status === AUTO_ANALYSIS_STATUS.RUNNING)) {
+          st.status = AUTO_ANALYSIS_STATUS.ABORTED;
+        }
+      }
+      staged.status = AUTO_ANALYSIS_STATUS.ABORTED;
+      staged.activeStage = null;
+    }
+    this._emitAutoAnalysisUpdate();
+    return true;
+  }
+
   onBinaryReady(fingerprint, providers = null) {
     if (!fingerprint || typeof fingerprint !== 'object') return;
     const key = [
@@ -1178,6 +1487,9 @@ export class V6Workbench {
     const initialStatus = hasProviders ? AUTO_ANALYSIS_STATUS.IDLE : AUTO_ANALYSIS_STATUS.SKIPPED;
     this._autoAnalysisState = makeInitialAutoAnalysisState(initialStatus, key);
     this._autoAnalysisState.generation = gen;
+    if (hasProviders && providers.cachedStagedAnalysis) {
+      this.restoreStagedAutoAnalysis(providers.cachedStagedAnalysis, { emit: false });
+    }
     this._emitAutoAnalysisUpdate();
 
     // Deferred idle activation so loaderOpenLatency overhead is strictly +0 ms.
@@ -1205,6 +1517,27 @@ export class V6Workbench {
     this._autoAbortController = ctrl;
     const { signal } = ctrl;
     const cfg = this._autoAnalysisConfig || {};
+    const staged = this._autoAnalysisState.staged || (this._autoAnalysisState.staged = makeInitialStagedState(AUTO_ANALYSIS_STATUS.IDLE));
+    const hasStagedHooks = Boolean(
+      typeof providers.recoverNames === 'function'
+      || typeof providers.indexStrings === 'function'
+      || typeof providers.indexCallGraph === 'function'
+      || typeof providers.rankGoalCandidates === 'function',
+    );
+    const isStillCurrent = () => (
+      gen === this._autoGen
+      && !signal.aborted
+      && (typeof providers.isCurrent !== 'function' || providers.isCurrent() !== false)
+    );
+    const yieldStage = typeof cfg.yieldFn === 'function'
+      ? cfg.yieldFn
+      : (typeof providers.yieldFn === 'function'
+        ? providers.yieldFn
+        : () => new Promise((resolve) => {
+          const t = setTimeout(resolve, 0);
+          t.unref?.();
+        }));
+    const namesAlreadyDone = staged.stages.names.status === AUTO_ANALYSIS_STATUS.DONE;
 
     try {
       const [
@@ -1223,6 +1556,56 @@ export class V6Workbench {
         binaryMeta = (typeof providers.getBinaryMeta === 'function' ? providers.getBinaryMeta() : providers.binaryMeta) || {};
       } catch {
         binaryMeta = {};
+      }
+
+      // ── Stage 1 (names): ObjC / Swift / Symbol Name Recovery ──────────────
+      let namesStageFailed = false;
+      if (!isStillCurrent()) return;
+      if (hasStagedHooks && !namesAlreadyDone) {
+        staged.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        staged.activeStage = 'names';
+        staged.stages.names.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        this._emitAutoAnalysisUpdate();
+        if (typeof providers.recoverNames === 'function') {
+          try {
+            const nameRes = await providers.recoverNames({
+              signal,
+              onProgress: (ev) => {
+                if (!isStillCurrent()) return;
+                if (Number.isFinite(ev?.completed)) staged.stages.names.completed = Math.max(0, Math.trunc(ev.completed));
+                if (Number.isFinite(ev?.total)) staged.stages.names.total = Math.max(0, Math.trunc(ev.total));
+                if (typeof ev?.detail === 'string') staged.stages.names.detail = ev.detail;
+                staged.recoveredNamesSummary.named = staged.stages.names.completed;
+                staged.recoveredNamesSummary.total = staged.stages.names.total;
+                this._emitAutoAnalysisUpdate();
+              },
+            });
+            if (!isStillCurrent()) return;
+            if (nameRes && typeof nameRes === 'object') {
+              const named = Number.isFinite(nameRes.named) ? Math.max(0, Math.trunc(nameRes.named)) : staged.stages.names.completed;
+              const total = Number.isFinite(nameRes.total) ? Math.max(0, Math.trunc(nameRes.total)) : staged.stages.names.total;
+              staged.stages.names.completed = named;
+              staged.stages.names.total = total;
+              staged.stages.names.objcCount = Number.isFinite(nameRes.objcCount) ? Math.max(0, Math.trunc(nameRes.objcCount)) : staged.stages.names.objcCount;
+              staged.stages.names.swiftCount = Number.isFinite(nameRes.swiftCount) ? Math.max(0, Math.trunc(nameRes.swiftCount)) : staged.stages.names.swiftCount;
+              staged.stages.names.hexsigCount = Number.isFinite(nameRes.hexsigCount) ? Math.max(0, Math.trunc(nameRes.hexsigCount)) : staged.stages.names.hexsigCount;
+              staged.recoveredNamesSummary = {
+                named,
+                total,
+                objc: staged.stages.names.objcCount,
+                swift: staged.stages.names.swiftCount,
+                hexsig: staged.stages.names.hexsigCount,
+                entries: Array.isArray(nameRes.entries) ? nameRes.entries.slice(0, 256) : staged.recoveredNamesSummary.entries,
+              };
+            }
+          } catch (err) {
+            if (!isStillCurrent()) return;
+            namesStageFailed = true;
+            staged.stages.names.status = AUTO_ANALYSIS_STATUS.ERROR;
+            staged.stages.names.detail = err?.message || 'names_recovery_error';
+            this._emitAutoAnalysisUpdate();
+          }
+        }
       }
 
       // ── Phase 1: TIL Auto-Loader ──────────────────────────────────────────
@@ -1351,7 +1734,8 @@ export class V6Workbench {
     }
 
     // ── Phase 2: HexSig Auto-Scanner ──────────────────────────────────────
-    if (gen !== this._autoGen || signal.aborted) return;
+    if (!isStillCurrent()) return;
+    if (!(hasStagedHooks && namesAlreadyDone))
     try {
       let hubLoader = providers.hexsigHubLoader ?? cfg.hexsigHubLoader ?? null;
       const hexsigManifest = providers.hexsigManifest ?? cfg.hexsigManifest ?? null;
@@ -1493,8 +1877,161 @@ export class V6Workbench {
       this._emitAutoAnalysisUpdate();
     }
 
+    // ── Complete Stage 1 (names) ──────────────────────────────────────────
+    if (!isStillCurrent()) return;
+    if (hasStagedHooks && !namesAlreadyDone) {
+      const hexsigAdded = this._autoNamedFunctions.size;
+      if (hexsigAdded > 0) {
+        const prevHexsigCount = Number.isFinite(staged.stages.names.hexsigCount)
+          ? Math.max(0, Math.trunc(staged.stages.names.hexsigCount))
+          : 0;
+        const nextHexsigCount = Math.max(prevHexsigCount, hexsigAdded);
+        const hexsigDelta = nextHexsigCount - prevHexsigCount;
+
+        staged.stages.names.hexsigCount = nextHexsigCount;
+        staged.recoveredNamesSummary.hexsig = nextHexsigCount;
+        if (hexsigDelta > 0) {
+          staged.stages.names.completed = Math.max(0, (staged.stages.names.completed || 0) + hexsigDelta);
+          const hexsigTotal = Number.isFinite(this._autoAnalysisState.hexsig?.total)
+            ? Math.max(0, Math.trunc(this._autoAnalysisState.hexsig.total))
+            : 0;
+          if (staged.stages.names.total < staged.stages.names.completed) {
+            staged.stages.names.total = Math.max(staged.stages.names.completed, hexsigTotal);
+          }
+          staged.recoveredNamesSummary.named = Math.max(
+            staged.recoveredNamesSummary.named || 0,
+            staged.stages.names.completed,
+          );
+          staged.recoveredNamesSummary.total = Math.max(
+            staged.recoveredNamesSummary.total || 0,
+            staged.stages.names.total,
+          );
+        }
+
+        const existingEntries = Array.isArray(staged.recoveredNamesSummary.entries)
+          ? staged.recoveredNamesSummary.entries.slice(0, 256)
+          : [];
+        const seenVas = new Set();
+        for (const entry of existingEntries) {
+          const normVa = normalizeVaHex(entry?.va ?? entry?.vaHex ?? entry?.addr);
+          if (normVa) seenVas.add(normVa);
+        }
+        for (const [vaHex, matchRec] of this._autoNamedFunctions.entries()) {
+          if (existingEntries.length >= 256) break;
+          const normVa = normalizeVaHex(vaHex);
+          if (!normVa || seenVas.has(normVa) || !matchRec?.newName) continue;
+          seenVas.add(normVa);
+          existingEntries.push({
+            va: normVa,
+            name: String(matchRec.newName).slice(0, 160),
+            source: 'hexsig',
+          });
+        }
+        staged.recoveredNamesSummary.entries = existingEntries;
+      }
+
+      if (namesStageFailed) {
+        staged.stages.names.status = AUTO_ANALYSIS_STATUS.ERROR;
+        this._emitAutoAnalysisUpdate();
+      } else {
+        staged.stages.names.status = AUTO_ANALYSIS_STATUS.DONE;
+        staged.stages.names.completedAt = Date.now();
+        this._emitAutoAnalysisUpdate();
+        safeInvokeCallback(providers.onStageComplete, 'names', {
+          ...staged.stages.names,
+          summary: { ...staged.recoveredNamesSummary },
+        });
+      }
+      await yieldStage();
+      if (!isStillCurrent()) return;
+    }
+
+    // ── Stage 2 (strings): String Table & Reference Indexing ──────────────
+    if (hasStagedHooks && staged.stages.strings.status !== AUTO_ANALYSIS_STATUS.DONE) {
+      if (typeof providers.indexStrings === 'function') {
+        staged.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        staged.activeStage = 'strings';
+        staged.stages.strings.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        this._emitAutoAnalysisUpdate();
+        try {
+          const strRes = await providers.indexStrings({
+            signal,
+            onProgress: (ev) => {
+              if (!isStillCurrent()) return;
+              if (Number.isFinite(ev?.completed)) staged.stages.strings.completed = Math.max(0, Math.trunc(ev.completed));
+              if (Number.isFinite(ev?.total)) staged.stages.strings.total = Math.max(0, Math.trunc(ev.total));
+              this._emitAutoAnalysisUpdate();
+            },
+          });
+          if (!isStillCurrent()) return;
+          const count = Number.isFinite(strRes?.count)
+            ? Math.max(0, Math.trunc(strRes.count))
+            : (Array.isArray(strRes) ? strRes.length : staged.stages.strings.count);
+          staged.stages.strings.count = count;
+          staged.stages.strings.completed = count;
+          staged.stages.strings.total = count;
+          staged.stages.strings.status = AUTO_ANALYSIS_STATUS.DONE;
+          staged.stages.strings.completedAt = Date.now();
+          this._emitAutoAnalysisUpdate();
+          safeInvokeCallback(providers.onStageComplete, 'strings', { ...staged.stages.strings });
+        } catch (err) {
+          if (!isStillCurrent()) return;
+          staged.stages.strings.status = AUTO_ANALYSIS_STATUS.ERROR;
+          staged.stages.strings.detail = err?.message || 'strings_index_error';
+          this._emitAutoAnalysisUpdate();
+        }
+      } else {
+        staged.stages.strings.status = AUTO_ANALYSIS_STATUS.SKIPPED;
+      }
+      await yieldStage();
+      if (!isStillCurrent()) return;
+    }
+
+    // ── Stage 3 (callgraph): Call Graph & Xref Indexing ───────────────────
+    if (hasStagedHooks && staged.stages.callgraph.status !== AUTO_ANALYSIS_STATUS.DONE) {
+      if (typeof providers.indexCallGraph === 'function') {
+        staged.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        staged.activeStage = 'callgraph';
+        staged.stages.callgraph.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        this._emitAutoAnalysisUpdate();
+        try {
+          const cgRes = await providers.indexCallGraph({
+            signal,
+            onProgress: (ev) => {
+              if (!isStillCurrent()) return;
+              if (Number.isFinite(ev?.completed)) staged.stages.callgraph.completed = Math.max(0, Math.trunc(ev.completed));
+              if (Number.isFinite(ev?.total)) staged.stages.callgraph.total = Math.max(0, Math.trunc(ev.total));
+              this._emitAutoAnalysisUpdate();
+            },
+          });
+          if (!isStillCurrent()) return;
+          if (cgRes && typeof cgRes === 'object') {
+            staged.stages.callgraph.functionCount = Number.isFinite(cgRes.functionCount) ? Math.max(0, Math.trunc(cgRes.functionCount)) : 0;
+            staged.stages.callgraph.callCount = Number.isFinite(cgRes.callCount) ? Math.max(0, Math.trunc(cgRes.callCount)) : 0;
+            staged.stages.callgraph.refCount = Number.isFinite(cgRes.refCount) ? Math.max(0, Math.trunc(cgRes.refCount)) : 0;
+            staged.stages.callgraph.completed = staged.stages.callgraph.functionCount;
+            staged.stages.callgraph.total = staged.stages.callgraph.functionCount;
+          }
+          staged.stages.callgraph.status = AUTO_ANALYSIS_STATUS.DONE;
+          staged.stages.callgraph.completedAt = Date.now();
+          this._emitAutoAnalysisUpdate();
+          safeInvokeCallback(providers.onStageComplete, 'callgraph', { ...staged.stages.callgraph });
+        } catch (err) {
+          if (!isStillCurrent()) return;
+          staged.stages.callgraph.status = AUTO_ANALYSIS_STATUS.ERROR;
+          staged.stages.callgraph.detail = err?.message || 'callgraph_index_error';
+          this._emitAutoAnalysisUpdate();
+        }
+      } else {
+        staged.stages.callgraph.status = AUTO_ANALYSIS_STATUS.SKIPPED;
+      }
+      await yieldStage();
+      if (!isStillCurrent()) return;
+    }
+
     // ── Phase 3: CFF/MBA/STL Auto-Analysis Queue ──────────────────────────
-    if (gen !== this._autoGen || signal.aborted) return;
+    if (!isStillCurrent()) return;
+    if (!(hasStagedHooks && staged.stages.goals.status === AUTO_ANALYSIS_STATUS.DONE))
     try {
       const candidates = typeof providers.getDeobfCandidates === 'function'
         ? (providers.getDeobfCandidates() || [])
@@ -1585,9 +2122,97 @@ export class V6Workbench {
       };
       this._emitAutoAnalysisUpdate();
     }
+    // ── Stage 4 (goals): Lightweight Goal Candidate Ranking ───────────────
+    if (!isStillCurrent()) return;
+    if (hasStagedHooks && staged.stages.goals.status !== AUTO_ANALYSIS_STATUS.DONE) {
+      if (typeof providers.rankGoalCandidates === 'function') {
+        staged.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        staged.activeStage = 'goals';
+        staged.stages.goals.status = AUTO_ANALYSIS_STATUS.RUNNING;
+        this._emitAutoAnalysisUpdate();
+        try {
+          const goalRes = await providers.rankGoalCandidates({
+            signal,
+            onProgress: (ev) => {
+              if (!isStillCurrent()) return;
+              if (Number.isFinite(ev?.completed)) staged.stages.goals.completed = Math.max(0, Math.trunc(ev.completed));
+              if (Number.isFinite(ev?.total)) staged.stages.goals.total = Math.max(0, Math.trunc(ev.total));
+              this._emitAutoAnalysisUpdate();
+            },
+          });
+          if (!isStillCurrent()) return;
+          const candidates = Array.isArray(goalRes?.candidates)
+            ? goalRes.candidates
+            : (Array.isArray(goalRes) ? goalRes : []);
+          const compact = [];
+          for (const item of candidates.slice(0, 32)) {
+            if (!item || typeof item !== 'object') continue;
+            const vaHex = normalizeVaHex(item.vaHex ?? item.va ?? item.addr ?? item.address);
+            if (!vaHex) continue;
+            compact.push({
+              vaHex,
+              name: String(item.name ?? item.displayName ?? `sub_${vaHex.slice(2)}`).slice(0, 160),
+              score: Number.isFinite(Number(item.score)) ? Math.round(Number(item.score) * 100) / 100 : 0,
+              reason: typeof item.reason === 'string' ? item.reason.slice(0, 200) : '',
+              goal: typeof item.goal === 'string' ? item.goal.slice(0, 80) : null,
+            });
+          }
+          staged.goalCandidatesSummary = compact;
+          staged.stages.goals.count = compact.length;
+          staged.stages.goals.completed = compact.length;
+          staged.stages.goals.total = compact.length;
+          staged.stages.goals.status = AUTO_ANALYSIS_STATUS.DONE;
+          staged.stages.goals.completedAt = Date.now();
+          this._emitAutoAnalysisUpdate();
+          safeInvokeCallback(providers.onStageComplete, 'goals', {
+            ...staged.stages.goals,
+            candidates: compact,
+          });
+        } catch (err) {
+          if (!isStillCurrent()) return;
+          staged.stages.goals.status = AUTO_ANALYSIS_STATUS.ERROR;
+          staged.stages.goals.detail = err?.message || 'goals_rank_error';
+          this._emitAutoAnalysisUpdate();
+        }
+      } else {
+        staged.stages.goals.status = AUTO_ANALYSIS_STATUS.SKIPPED;
+      }
+    }
     } finally {
-      if (gen === this._autoGen && this._autoAbortController === ctrl) {
-        this._autoAbortController = null;
+      if (gen === this._autoGen) {
+        if (this._autoAbortController === ctrl) {
+          this._autoAbortController = null;
+        }
+        if (hasStagedHooks) {
+          staged.activeStage = null;
+          if (signal.aborted || (typeof providers.isCurrent === 'function' && providers.isCurrent() === false)) {
+            for (const stageId of STAGED_AUTO_ANALYSIS_STAGES) {
+              const st = staged.stages[stageId];
+              if (st && (st.status === AUTO_ANALYSIS_STATUS.IDLE || st.status === AUTO_ANALYSIS_STATUS.RUNNING)) {
+                st.status = AUTO_ANALYSIS_STATUS.ABORTED;
+              }
+            }
+            staged.status = AUTO_ANALYSIS_STATUS.ABORTED;
+            this._emitAutoAnalysisUpdate();
+          } else {
+            const anyRunning = STAGED_AUTO_ANALYSIS_STAGES.some(
+              (id) => staged.stages[id].status === AUTO_ANALYSIS_STATUS.RUNNING,
+            );
+            const anyDone = STAGED_AUTO_ANALYSIS_STAGES.some(
+              (id) => staged.stages[id].status === AUTO_ANALYSIS_STATUS.DONE,
+            );
+            if (!anyRunning && anyDone) {
+              staged.status = AUTO_ANALYSIS_STATUS.DONE;
+              this._emitAutoAnalysisUpdate();
+            } else if (!anyRunning && !anyDone) {
+              const anyError = STAGED_AUTO_ANALYSIS_STAGES.some(
+                (id) => staged.stages[id].status === AUTO_ANALYSIS_STATUS.ERROR,
+              );
+              staged.status = anyError ? AUTO_ANALYSIS_STATUS.ERROR : AUTO_ANALYSIS_STATUS.SKIPPED;
+              this._emitAutoAnalysisUpdate();
+            }
+          }
+        }
       }
     }
   }

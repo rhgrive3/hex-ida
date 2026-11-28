@@ -4,7 +4,7 @@ import {
 } from './registry.js';
 import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
-  tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip, reasonText,
+  tabs, tabPanel, updateScreenTitle, sectionTitle, listRow, VirtualList, scrollStrip, reasonText, statusNotice,
 } from './primitives.js';
 import { renderSecondaryRoute } from './secondary.js';
 import * as formatMod from '../format.js';
@@ -21,7 +21,11 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
 import { classifyFunction, discoverSubsystems } from '../recognition/classifier.js';
 import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.js';
 import { installAssistant } from '../ai/ui/assistant.js';
-import { classifyOmnibox, intentLabel, COMMANDS } from '../ai/interaction/omnibox.js';
+import {
+  classifyOmnibox, intentLabel, COMMANDS,
+  rankSearchResults, scoreSearchMatch, matchGoalForQuery,
+} from '../ai/interaction/omnibox.js';
+import { buildGoalCandidateSummary, findGoalHighlightLines } from './function-analysis-presentation.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 import { productDescriptor } from '../platform/product-descriptor.js';
 import * as explorerIndex from './explorer-index.js';
@@ -300,6 +304,221 @@ function noFileActions(app) {
     }),
   );
   return actions;
+}
+
+export function formatBlockCount(blocks, { instructions = null, size = null } = {}) {
+  const hasCode = (Number(instructions) > 0) || (Number(size) > 0);
+  if (blocks == null) return hasCode ? text('計算中', 'Computing...') : '—';
+  const n = Number(blocks);
+  if (Number.isFinite(n) && n === 0 && hasCode) return text('計算中', 'Computing...');
+  return String(blocks);
+}
+
+export function isBinaryUnboundError(error) {
+  const msg = String(error?.message || error || '');
+  return msg.includes('analysis-query-binary-unbound');
+}
+
+export function renderBinaryUnboundCard(app, { title = null, subtitle = null } = {}) {
+  const openPicker = () => {
+    const registry = window.__hexUi?.actions;
+    if (registry?.has?.('file.open') && typeof registry.run === 'function') registry.run('file.open');
+    else document.getElementById('file-input')?.click();
+  };
+  const actions = h('div', 'ui-actions');
+  const prevBtn = uiButton(text('前回のファイルを開く', 'Open previous file'), {
+    cls: 'ui-primary-action ui-open-previous-btn',
+    onClick: async () => {
+      try {
+        const saved = typeof app?.analysisResume?.loadLastFile === 'function'
+          ? await Promise.resolve(app.analysisResume.loadLastFile())
+          : null;
+        if (saved?.file && typeof app.openFile === 'function') {
+          await app.openFile(saved.file, { restored: true });
+          return;
+        }
+      } catch { /* fall through to picker */ }
+      openPicker();
+    },
+  });
+  actions.append(
+    prevBtn,
+    uiButton(text('ファイルを開く', 'Open file'), { cls: 'ui-secondary-action', onClick: openPicker }),
+    uiButton(text('サンプルで試す', 'Try sample'), { cls: 'ui-secondary-action', onClick: () => app?.openSample?.() }),
+  );
+  const state = emptyState(
+    title || text('前回のファイルがまだ開かれていません', 'Previous file is not open yet'),
+    subtitle || text(
+      'ページを再読み込みした後はバイナリをもう一度開く必要があります。「前回のファイルを開く」から続きを再開できます。',
+      'After reloading, reopen the binary to continue viewing this function or code. Use "Open previous file" to resume.',
+    ),
+    actions,
+  );
+  state.classList.add('ui-binary-unbound-card');
+  return state;
+}
+
+function collectFrequentFunctions(app, limit = 5) {
+  const out = [];
+  const seen = new Set();
+  const pushFn = (addr, name, callCount = null) => {
+    if (addr == null) return;
+    let big;
+    try { big = BigInt(addr); } catch { return; }
+    const key = big.toString();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ addr: big, name: String(name || functionName(app, big)), callCount });
+  };
+  const hot = app?.appMap?.hotFunctions || app?.autoReport?.report?.notable || null;
+  if (Array.isArray(hot)) {
+    for (const item of hot) {
+      if (out.length >= limit) break;
+      const addr = item?.addr ?? item?.address ?? item?.start;
+      pushFn(addr, item?.name, item?.callCount ?? item?.calls ?? null);
+    }
+  }
+  if (out.length < limit && app?.symbols) {
+    const funcs = Array.isArray(app.symbols.funcs) ? app.symbols.funcs : [];
+    const scored = [];
+    const maxScan = Math.min(funcs.length, 400);
+    for (let i = 0; i < maxScan; i++) {
+      const f = funcs[i];
+      const addr = f?.start ?? f?.addr ?? (typeof f === 'bigint' || typeof f === 'number' ? f : null);
+      if (addr == null) continue;
+      let big;
+      try { big = BigInt(addr); } catch { continue; }
+      const calls = typeof app.program?.callCountOf === 'function' ? Number(app.program.callCountOf(big) || 0) : 0;
+      const name = app.symbols.nameAt?.(big) || f?.name || '';
+      if (calls > 0 || name) scored.push({ addr: big, name: name || functionName(app, big), callCount: calls });
+    }
+    scored.sort((a, b) => (b.callCount - a.callCount) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const item of scored) {
+      if (out.length >= limit) break;
+      pushFn(item.addr, item.name, item.callCount > 0 ? item.callCount : null);
+    }
+  }
+  return out.slice(0, limit);
+}
+
+function collectTopClassesOrModules(app, limit = 5) {
+  const out = [];
+  const seen = new Set();
+  const pushItem = (name, meta = '', onClick = null) => {
+    const clean = String(name || '').trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    out.push({ name: clean, meta, onClick });
+  };
+  const mapClasses = app?.appMap?.classes || app?.appMap?.modules;
+  if (Array.isArray(mapClasses)) {
+    for (const item of mapClasses) {
+      if (out.length >= limit) break;
+      const name = typeof item === 'string' ? item : (item?.name || item?.className || item?.module);
+      const count = typeof item === 'object' && item != null ? (item.methods?.length ?? item.functions?.length ?? item.count ?? null) : null;
+      pushItem(name, count != null ? text(`${count}件`, `${count} items`) : '');
+    }
+  }
+  if (out.length < limit) {
+    try {
+      const classes = classItems(app, '');
+      for (const item of classes) {
+        if (out.length >= limit) break;
+        pushItem(item.name, item.meta || '');
+      }
+    } catch { /* ignore */ }
+  }
+  if (out.length < limit) {
+    try {
+      const sections = sectionItems(app, '');
+      for (const sec of sections) {
+        if (out.length >= limit) break;
+        pushItem(sec.name, sec.size != null ? `${sec.size} B` : '');
+      }
+    } catch { /* ignore */ }
+  }
+  return out.slice(0, limit);
+}
+
+export function buildInitialLandingCard(app, router, { onDismiss = null } = {}) {
+  const fileInfo = app?.store?.get?.('fileInfo') || {};
+  const fileName = String(fileInfo.name || fileInfo.fileName || text('開いたバイナリ', 'Opened binary'));
+  const fnCount = Number(app?.symbols?.functionCount ?? app?.symbols?.funcs?.length ?? 0);
+  const subtitleParts = [
+    fnCount > 0 ? text(`関数 ${fnCount.toLocaleString()} 件`, `${fnCount.toLocaleString()} functions`) : null,
+    text('まずは気になる目的やクラス・関数から選んで解析を始められます。', 'Pick a goal, class, or frequently called function to get started.'),
+  ].filter(Boolean);
+  const c = card(text(`${fileName} — クイックスタート`, `${fileName} — Quick Start`), {
+    subtitle: subtitleParts.join(' · '),
+    className: 'ui-quickstart-card',
+  });
+  if (typeof onDismiss === 'function') {
+    const dismissBtn = uiButton(text('閉じる', 'Dismiss'), {
+      cls: 'ui-secondary-action ui-quickstart-dismiss',
+      ariaLabel: text('クイックスタートを閉じる', 'Dismiss quick start'),
+      onClick: onDismiss,
+    });
+    c.body.append(dismissBtn);
+  }
+
+  const goalsWrap = h('div', 'ui-quickstart-section ui-quickstart-goals');
+  goalsWrap.append(h('h3', 'ui-quickstart-heading', text('目的から探す', 'Start by goal')));
+  const goalBar = h('div', 'ui-goal-suggestions');
+  for (const preset of [
+    { label: text('HP・体力', 'HP / health'), query: text('HPを書き換える処理', 'where HP is written') },
+    { label: text('攻撃力', 'Attack power'), query: text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
+    { label: text('所持金・コイン', 'Money / coins'), query: text('所持金・コインを増減する処理', 'where money or coins are changed') },
+    { label: text('通信・API', 'Network / API'), query: text('通信している場所', 'network') },
+  ]) {
+    goalBar.append(uiButton(preset.label, {
+      cls: 'ui-suggestion ui-quickstart-goal-btn',
+      onClick: () => runInvestigation(app, preset.query),
+    }));
+  }
+  goalBar.append(uiButton(text('アプリ全体を解析', 'Full overview'), {
+    cls: 'ui-primary-action ui-quickstart-overview-btn',
+    onClick: () => {
+      if (typeof app?.openOverview === 'function') app.openOverview();
+      else router?.navigate?.('/investigate');
+    },
+  }));
+  goalsWrap.append(goalBar);
+  c.body.append(goalsWrap);
+
+  const classes = collectTopClassesOrModules(app, 5);
+  if (classes.length) {
+    const classWrap = h('div', 'ui-quickstart-section ui-quickstart-classes');
+    classWrap.append(h('h3', 'ui-quickstart-heading', text('主なクラス・モジュール', 'Top classes & modules')));
+    const list = h('div', 'ui-list');
+    for (const item of classes) {
+      list.append(listRow({
+        title: item.name,
+        meta: item.meta,
+        onClick: () => router?.navigate?.('/explorer/types?q=' + encodeURIComponent(item.name)),
+      }));
+    }
+    classWrap.append(list);
+    c.body.append(classWrap);
+  }
+
+  const hotFns = collectFrequentFunctions(app, 5);
+  if (hotFns.length) {
+    const fnWrap = h('div', 'ui-quickstart-section ui-quickstart-functions');
+    fnWrap.append(h('h3', 'ui-quickstart-heading', text('よく呼ばれる関数', 'Frequently called functions')));
+    const list = h('div', 'ui-list');
+    for (const fn of hotFns) {
+      list.append(listRow({
+        title: fn.name,
+        subtitle: addressText(fn.addr),
+        meta: fn.callCount != null ? text(`${fn.callCount}回呼ばれる`, `${fn.callCount} calls`) : '',
+        onClick: () => router?.navigate?.('/function/' + fn.addr.toString() + '/pseudocode'),
+      }));
+    }
+    fnWrap.append(list);
+    c.body.append(fnWrap);
+  }
+
+  return c.root;
 }
 
 function architectureOf(app) {
@@ -742,6 +961,14 @@ async function matchingFunctionItems(app, query, options = {}) {
           enumerable: false,
           configurable: true,
         });
+        const fastReason = fast.reason || fast.truncationReason || fast.status?.reason || (fast.complete === false ? 'function-discovery-incomplete' : null);
+        if (fastReason) {
+          Object.defineProperty(rows, 'truncationReason', {
+            value: fastReason,
+            enumerable: false,
+            configurable: true,
+          });
+        }
         return rows;
       }
     } catch (err) {
@@ -1266,10 +1493,20 @@ function renderExplorer(app, router, route, routeContext = {}) {
         content.append(pager);
       }
     }
-    if (items?.completeness && items.completeness !== 'complete') {
-      content.append(h('p', 'ui-partial-note', text('索引は一部です。未解析の領域を「該当なし」とは扱いません。', 'The index is partial; unanalysed regions are not treated as having no matches.')));
+    const partialReason = items?.truncationReason || items?.status?.reason || null;
+    if ((items?.completeness && items.completeness !== 'complete') || items?.complete === false) {
+      const codes = partialReason ? [partialReason] : ['function-discovery-incomplete'];
+      const canContinue = codes.some((c) => String(c).includes('function-discovery-incomplete'))
+        && (typeof app.discoverMoreFunctions === 'function' || typeof app.resumeDiscovery === 'function' || scope === 'functions');
+      content.append(statusNotice(codes, {
+        actionLabel: text('続きを調べる', 'Continue scanning'),
+        onAction: canContinue ? () => {
+          if (typeof app.discoverMoreFunctions === 'function') Promise.resolve(app.discoverMoreFunctions()).finally(() => void update());
+          else if (typeof app.resumeDiscovery === 'function') Promise.resolve(app.resumeDiscovery()).finally(() => void update());
+          else void update();
+        } : null,
+      }));
     }
-    if (items?.complete === false) content.append(h('p', 'ui-partial-note', text('結果は一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial; unscanned regions are not treated as having no matches.')));
     if (!items || !Number(items.length)) {
       const q = String(search.value || '').trim();
       const fallbackAction = (!emptyAction && q)
@@ -1705,6 +1942,11 @@ function evidenceSubtitle(item) {
 function renderFunctionWorkspace(app, router, route, routeContext = {}) {
   let addr;
   try { addr = BigInt(route.params.address); } catch { addr = currentFunctionAddr(app); }
+  if (!app.store?.get?.('fileInfo')) {
+    const s = screen(text('関数', 'Function'), { id: 'function', subtitle: addr != null ? addressText(addr) : '' });
+    s.body.append(renderBinaryUnboundCard(app));
+    return { root: s.root };
+  }
   if (addr == null) {
     const s = screen(text('関数', 'Function'), { id: 'function' });
     s.body.append(emptyState(text('関数が選択されていません', 'No function selected'), text('コードまたは索引から関数を開いてください。', 'Open a function from Code or Explorer.')));
@@ -1974,8 +2216,10 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     grid.append(identity.root);
 
     const facts = card(text('基本情報', 'Basic facts'));
-    facts.body.append(listRow({ title: text('命令数', 'Instructions'), meta: String(res.instructions || res.model?.instructions?.length || 0) }));
-    facts.body.append(listRow({ title: text('ブロック数', 'Basic blocks'), meta: String(res.model?.blocks?.length || 0) }));
+    const insnCount = res.instructions || res.model?.instructions?.length || 0;
+    const fnSize = res.size || (res.model?.end != null && res.model?.start != null ? Number(res.model.end - res.model.start) : 0);
+    facts.body.append(listRow({ title: text('命令数', 'Instructions'), meta: String(insnCount) }));
+    facts.body.append(listRow({ title: text('ブロック数', 'Basic blocks'), meta: formatBlockCount(res.model?.blocks?.length || 0, { instructions: insnCount, size: fnSize }) }));
     facts.body.append(listRow({ title: text('アドレス', 'Address'), meta: addressText(addr), mono: true }));
     facts.body.append(listRow({ title: text('アーキテクチャ', 'Architecture'), meta: architectureOf(app) }));
     grid.append(facts.root);
@@ -1990,6 +2234,100 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     ]) next.body.append(listRow({ title: label, onClick: () => router.navigate(dest) }));
     grid.append(next.root);
     content.replaceChildren(grid);
+  };
+
+  const resolveMatchingGoalContext = () => {
+    const stored = app?.lastGoalContext && typeof app.lastGoalContext === 'object'
+      ? app.lastGoalContext
+      : null;
+    if (!stored) return null;
+    const ctxAddr = stored.targetAddr ?? stored.addr ?? stored.address ?? stored.candidate?.addr ?? null;
+    if (ctxAddr == null || addr == null) return null;
+    try {
+      if (BigInt(ctxAddr) !== BigInt(addr)) return null;
+    } catch {
+      return null;
+    }
+    return stored;
+  };
+
+  const applyGoalLineHighlight = (lineEl, lineIndex) => {
+    lineEl.classList.add('hex-goal-highlight');
+    lineEl.setAttribute('data-line-index', String(lineIndex));
+    if (lineEl.style) {
+      lineEl.style.borderLeft = '3px solid var(--accent, #f59e0b)';
+      lineEl.style.background = 'rgba(245, 158, 11, 0.14)';
+      lineEl.style.paddingLeft = '8px';
+      lineEl.style.marginLeft = '-11px';
+      lineEl.style.display = 'block';
+    }
+  };
+
+  const buildGoalBanner = (summary, highlightLines, firstHighlighted) => {
+    const banner = h('section', 'goal-candidate-summary');
+    if (banner.style) {
+      banner.style.borderLeft = '3px solid var(--accent, #f59e0b)';
+      banner.style.background = 'rgba(245, 158, 11, 0.08)';
+      banner.style.padding = '10px 12px';
+      banner.style.borderRadius = '6px';
+      banner.style.marginBottom = '10px';
+    }
+    const topRow = h('div', 'goal-summary-head');
+    if (topRow.style) {
+      topRow.style.display = 'flex';
+      topRow.style.alignItems = 'center';
+      topRow.style.justifyContent = 'space-between';
+      topRow.style.gap = '8px';
+      topRow.style.marginBottom = '4px';
+    }
+    const titleText = summary.goalLabel
+      ? text(`目的との関連: ${summary.goalLabel}`, `Goal context: ${summary.goalLabel}`)
+      : text('目的候補の要約', 'Goal candidate summary');
+    const title = h('div', 'goal-summary-title', titleText);
+    if (title.style) {
+      title.style.fontSize = '12px';
+      title.style.fontWeight = '600';
+      title.style.opacity = '0.85';
+    }
+    topRow.append(title);
+    if (summary.verdictLabel) {
+      const badge = h('span', 'goal-summary-verdict', summary.verdictLabel);
+      if (badge.style) {
+        badge.style.fontSize = '11px';
+        badge.style.fontWeight = '600';
+        badge.style.padding = '2px 6px';
+        badge.style.borderRadius = '4px';
+        badge.style.background = 'rgba(245, 158, 11, 0.18)';
+      }
+      topRow.append(badge);
+    }
+    banner.append(topRow);
+    const headline = h('div', 'goal-summary-headline', summary.headline);
+    if (headline.style) {
+      headline.style.fontWeight = '600';
+      headline.style.marginBottom = summary.bullets.length ? '6px' : '0';
+    }
+    banner.append(headline);
+    if (summary.bullets.length) {
+      const ul = h('ul', 'goal-summary-list');
+      if (ul.style) {
+        ul.style.margin = '0';
+        ul.style.paddingLeft = '18px';
+      }
+      for (const item of summary.bullets) {
+        ul.append(h('li', 'goal-summary-item', item));
+      }
+      banner.append(ul);
+    }
+    if (Array.isArray(highlightLines) && highlightLines.length && highlightLines[0] >= 4 && firstHighlighted) {
+      const jumpBtn = uiButton(text('該当箇所へ移動', 'Jump to match'), {
+        cls: 'ui-secondary-action goal-jump-btn',
+        onClick: () => firstHighlighted.scrollIntoView?.({ behavior: 'smooth', block: 'center' }),
+      });
+      if (jumpBtn.style) jumpBtn.style.marginTop = '8px';
+      banner.append(jumpBtn);
+    }
+    return banner;
   };
 
   const renderPseudocode = (res) => {
@@ -2011,6 +2349,20 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const rawLines = rawText.split('\n');
     const sigIdx = findSignatureLineIndex(rawLines);
     const prelude = preludeLength(rawLines);
+    const goalCtx = resolveMatchingGoalContext();
+    const highlightLines = goalCtx && rawText ? findGoalHighlightLines(rawText, goalCtx) : [];
+    const highlightSet = new Set(highlightLines);
+    const goalSummary = goalCtx
+      ? buildGoalCandidateSummary({
+        goal: goalCtx.goal,
+        candidate: goalCtx.candidate,
+        pinpoint: goalCtx.pinpoint,
+        fields: goalCtx.fields,
+        pseudocode: rawText || null,
+        disasm: goalCtx.disasm ?? res?.model?.instructions ?? null,
+      })
+      : null;
+    let firstGoalHighlight = null;
     const calleeOpts = {
       resolveCallee: (name) => symbolAddress(app, name),
       onOpenCallee: (targetAddr) => router.navigate('/function/' + BigInt(targetAddr).toString() + '/pseudocode'),
@@ -2024,6 +2376,10 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       const isSig = index === sigIdx;
       if (isSig) rowClasses.push('is-sig');
       const row = h('span', rowClasses.join(' '));
+      if (highlightSet.has(index)) {
+        applyGoalLineHighlight(row, index);
+        if (!firstGoalHighlight) firstGoalHighlight = row;
+      }
       appendHighlighted(row, lineText, { ...calleeOpts, isSig });
       if (index + 1 < rawLines.length) row.append(h('span', null, '\n'));
       code.append(row);
@@ -2075,7 +2431,8 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
       });
       toolbar.append(toggle);
     }
-    content.replaceChildren(toolbar, findBar.root, code);
+    const goalBanner = goalSummary ? buildGoalBanner(goalSummary, highlightLines, firstGoalHighlight) : null;
+    content.replaceChildren(...(goalBanner ? [goalBanner] : []), toolbar, findBar.root, code);
     if (pendingPseudoState) applyPseudoState(pendingPseudoState);
   };
 
@@ -2284,7 +2641,31 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
           if (innerToolbar) innerToolbar.prepend(copyBtn, wrapBtn, findBtn, asmBtn);
         }
         code.before(findBar.root);
-        content.replaceChildren(provenanceView.root);
+        const goalCtx = resolveMatchingGoalContext();
+        let goalBanner = null;
+        if (goalCtx) {
+          const lineNodes = [...code.querySelectorAll('.ui-pseudocode-line')].filter((n) => !n.classList.contains('is-fn-comment'));
+          const renderedText = lineNodes.map((n) => String(n.textContent || '').replace(/\n$/, '')).join('\n');
+          const highlightLines = renderedText ? findGoalHighlightLines(renderedText, goalCtx) : [];
+          let firstGoalHighlight = null;
+          for (const idx of highlightLines) {
+            const lineEl = lineNodes[idx];
+            if (lineEl) {
+              applyGoalLineHighlight(lineEl, idx);
+              if (!firstGoalHighlight) firstGoalHighlight = lineEl;
+            }
+          }
+          const goalSummary = buildGoalCandidateSummary({
+            goal: goalCtx.goal,
+            candidate: goalCtx.candidate,
+            pinpoint: goalCtx.pinpoint,
+            fields: goalCtx.fields,
+            pseudocode: renderedText || null,
+            disasm: goalCtx.disasm ?? res?.value?.model?.instructions ?? null,
+          });
+          if (goalSummary) goalBanner = buildGoalBanner(goalSummary, highlightLines, firstGoalHighlight);
+        }
+        content.replaceChildren(...(goalBanner ? [goalBanner] : []), provenanceView.root);
         const notice = decompileNotice(res);
         if (notice) {
           const innerToolbar = provenanceView.root.querySelector('.ui-code-toolbar');
@@ -2733,7 +3114,10 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
         renderOverview(res);
       }
     } catch (err) {
-      if (viewCurrent() && !routeSignal.aborted) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      if (viewCurrent() && !routeSignal.aborted) {
+        if (isBinaryUnboundError(err) || !app.store?.get?.('fileInfo')) content.replaceChildren(renderBinaryUnboundCard(app));
+        else content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      }
     }
   })();
 
@@ -3049,7 +3433,11 @@ function renderDiff(app,router,routeContext = {}) {
     for(const c of state.changes||[])counts[c.changeType]=(counts[c.changeType]||0)+1;
     const summary=card(text('比較結果','Diff summary'));
     summary.body.append(h('p','ui-body',text(`変更 ${counts.changed||0} · 書き直し ${counts.rewritten||0} · 移動 ${counts.moved||0} · 新規 ${counts.new||0} · 削除 ${counts.deleted||0} · 未確定 ${counts.unresolved||0}`,`${counts.changed||0} changed · ${counts.rewritten||0} rewritten · ${counts.moved||0} moved · ${counts.new||0} new · ${counts.deleted||0} deleted · ${counts.unresolved||0} unresolved`)));
-    summary.body.append(h('p',state.completeness?.complete?'ui-sub':'ui-warning',state.completeness?.complete?text('すべての関数を比較しました。','Function sets and matching are complete.'):text('部分結果です: ','Partial result: ')+(state.completeness?.reasons||[]).join(', ')));
+    if (state.completeness?.complete) {
+      summary.body.append(h('p', 'ui-sub', text('すべての関数を比較しました。', 'Function sets and matching are complete.')));
+    } else {
+      summary.body.append(statusNotice(state.completeness?.reasons || ['function-discovery-incomplete']));
+    }
     host.append(summary.root);
     const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
     const render=(c)=>{const current=c.after?.address??null;const previous=c.before?.address??null;const title=c.after?.name||c.before?.name||(current!=null?functionName(app,current):text('削除された関数','Deleted function'));const tags=c.semanticChange?.tags?.join(', ')||'';return listRow({title,subtitle:[c.changeType,current!=null?addressText(current):previous!=null?'old '+addressText(previous):'',tags].filter(Boolean).join(' · '),badge:evidenceBadge(c.changeType==='unresolved'?'unverified':c.confidence>=0.82?'confirmed':'likely'),onClick:current!=null?()=>router.navigate('/function/'+BigInt(current).toString()+'/overview'):null});};
@@ -3103,9 +3491,8 @@ function decompileNotice(res) {
     : text('意味解析（Semantic IR）の結果です。', 'Produced by the Semantic IR pipeline.'));
   if (partial) {
     const reason = res?.status?.reason;
-    lines.push(reason === 'function-end-unproven'
-      ? text('一部だけの結果です：関数の終わりの位置が確定していないため、確定している範囲だけを解析しています。', 'Partial: the function end is unproven, so only the proven window was analysed.')
-      : text('一部だけの結果です。', 'Partial result.'));
+    const mappedReason = reason ? reasonText(reason) : null;
+    lines.push(mappedReason || text('一部だけの結果です。', 'Partial result.'));
   }
   for (const warning of warnings.slice(0, 6)) {
     const hit = DECOMPILE_WARNING_TEXT.find(([pattern]) => pattern.test(warning));
@@ -3486,7 +3873,12 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       hideResults();
       input.blur();
       rememberQuery(item.query, app);
-      runInvestigation(app, item.query);
+      if (item.goal) {
+        if (typeof app.showCandidates === 'function') app.showCandidates(item.goal);
+        else showCandidates(app, item.goal);
+      } else {
+        runInvestigation(app, item.query);
+      }
       return;
     }
     if (item.addr == null) return;
@@ -3652,12 +4044,22 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
       const controller = new AbortController();
       dropdownController = controller;
       try {
-        const fns = await matchingFunctionItems(app, raw, { limit: 8, signal: controller.signal });
+        const fns = await matchingFunctionItems(app, raw, { limit: 24, signal: controller.signal });
         if (serial !== dropdownSerial || controller.signal.aborted || document.activeElement !== input) return;
         const len = Number(fns?.length || 0);
-        for (let i = 0; i < len && out.length < 10; i++) {
+        const rawFns = [];
+        for (let i = 0; i < len; i++) {
           const item = Array.isArray(fns) ? fns[i] : fns.itemAt?.(i);
-          if (item?.addr != null) pushUnique({ kind: 'function', badge: '', title: item.name || functionName(app, item.addr), addr: item.addr });
+          if (item?.addr != null) {
+            const name = item.name || functionName(app, item.addr);
+            rawFns.push({ name, addr: item.addr, score: scoreSearchMatch(name, raw) });
+          }
+        }
+        const rankedFns = rankSearchResults(rawFns, raw, (it) => it.name);
+        const orderedFns = rankedFns.length ? rankedFns : rawFns;
+        for (const item of orderedFns) {
+          if (out.length >= 10) break;
+          pushUnique({ kind: 'function', badge: '', title: item.name, addr: item.addr });
         }
       } catch (error) {
         if (error?.name === 'AbortError') return;
@@ -3665,15 +4067,27 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
     }
     if (serial !== dropdownSerial || document.activeElement !== input) return;
     if (raw && app.store?.get?.('fileInfo') && parsed == null) {
-      const compiled = compileGoal(raw);
-      if (compiled?.goal) {
-        out.push({
+      const goalMatch = matchGoalForQuery(raw);
+      if (goalMatch) {
+        out.unshift({
           kind: 'investigate',
           badge: '◎',
-          title: text(`「${raw}」を自動解析で探す`, `Auto-investigate "${raw}"`),
-          subtitle: text('自動解析', 'Auto'),
+          title: goalMatch.actionLabel,
+          subtitle: text('目的', 'Goal'),
           query: raw,
+          goal: goalMatch.goal,
         });
+      } else {
+        const compiled = compileGoal(raw);
+        if (compiled?.goal) {
+          out.push({
+            kind: 'investigate',
+            badge: '◎',
+            title: text(`「${raw}」を自動解析で探す`, `Auto-investigate "${raw}"`),
+            subtitle: text('自動解析', 'Auto'),
+            query: raw,
+          });
+        }
       }
     }
     renderDropdown(out, { autoSelectFirst: Boolean(raw) });
@@ -3922,10 +4336,31 @@ export function installProductUI(app) {
   deltaActions.append(deltaExportBtn, deltaImportBtn, deltaResetBtn, deltaDismissBtn);
   deltaStrip.append(deltaText, deltaActions);
   chrome.after(deltaStrip);
+  const landingHost = h('div', 'ui-quickstart-host');
+  landingHost.hidden = true;
+  deltaStrip.after(landingHost);
+  let landingDismissed = false;
   let deltaDismissed = false;
   let lastDeltaToken = null;
   let appliedDeltaRouteToken = null;
   let userNavigatedSinceFileOpen = false;
+  const syncLandingCard = () => {
+    const onBareCode = router?.current?.route?.id === 'code' && !router?.current?.params?.address;
+    const hasFile = !!app.store?.get?.('fileInfo');
+    if (!onBareCode || !hasFile || userNavigatedSinceFileOpen || landingDismissed) {
+      landingHost.hidden = true;
+      landingHost.replaceChildren();
+      return;
+    }
+    landingHost.replaceChildren(buildInitialLandingCard(app, router, {
+      onDismiss: () => {
+        landingDismissed = true;
+        landingHost.hidden = true;
+        landingHost.replaceChildren();
+      },
+    }));
+    landingHost.hidden = false;
+  };
   const resolveRestoredRoutePath = (rawPath) => {
     const path = String(rawPath || '').trim();
     if (!path || !path.startsWith('/')) return null;
@@ -3993,9 +4428,20 @@ export function installProductUI(app) {
       for (const b of nav.querySelectorAll('[data-route-id]')) b.setAttribute('aria-current', b.dataset.routeId === activeNavId ? 'page' : 'false');
       if (route.route.id === 'code') {
         updateScreenTitle(null);
-        routeHost.hidden = true;
         const raw = route.params.address;
+        if (raw && !app.store?.get?.('fileInfo')) {
+          landingHost.hidden = true;
+          landingHost.replaceChildren();
+          routeHost.hidden = false;
+          const s = screen(text('コード', 'Code'), { id: 'code', subtitle: addressText(raw) });
+          s.body.append(renderBinaryUnboundCard(app));
+          routeHost.replaceChildren(s.root);
+          syncRouteNavigation(app, router, route, routeContext);
+          return { root: s.root };
+        }
+        routeHost.hidden = true;
         if (raw) {
+          userNavigatedSinceFileOpen = true;
           routingCodeAddress = true;
           try {
             const target = BigInt(raw);
@@ -4019,8 +4465,11 @@ export function installProductUI(app) {
           } catch { /* invalid deep link */ } finally { routingCodeAddress = false; }
         }
         syncRouteNavigation(app, router, route, routeContext);
+        syncLandingCard();
         return codeViewState(app);
       }
+      landingHost.hidden = true;
+      landingHost.replaceChildren();
       routeHost.hidden = false;
       routeHost.replaceChildren();
       let view;
@@ -4045,6 +4494,7 @@ export function installProductUI(app) {
   });
   const unsubDeltaStore = app.store?.subscribe?.((_state, patch) => {
     if (!patch || 'deltaRestored' in patch || 'fileInfo' in patch) syncDeltaStrip();
+    if (!patch || 'fileInfo' in patch || 'symbolsReady' in patch || 'symbolsGen' in patch) syncLandingCard();
   }) || null;
   syncDeltaStrip();
 
@@ -4056,6 +4506,7 @@ export function installProductUI(app) {
       const result = await originalSelectSlice(...args);
       if (app.backend?.gen !== beforeEpoch) {
         userNavigatedSinceFileOpen = false;
+        landingDismissed = false;
         appliedDeltaRouteToken = null;
         router.navigate('/code', { replace: true });
         assistant?.refresh();
@@ -4354,8 +4805,10 @@ export function installProductUI(app) {
    */
   const onFileOpened = () => {
     userNavigatedSinceFileOpen = false;
+    landingDismissed = false;
     appliedDeltaRouteToken = null;
     router.navigate('/code');
+    syncLandingCard();
     assistant?.refresh();
     /* On a phone or a narrow split the panel covers the code it is about to
        be asked about; step aside and leave the launcher. */
@@ -4381,7 +4834,7 @@ export function installProductUI(app) {
     }
     commandCenter.refreshLanguage();
     addressBar.refreshLanguage();
-    if (router.current?.route?.id === 'code') updateScreenTitle(null);
+    if (router.current?.route?.id === 'code') { updateScreenTitle(null); syncLandingCard(); }
     else if (router.current?.fullPath) router._render(router.current.fullPath, { replace: true, restoredState: null });
   };
   document.addEventListener('hex:language-changed', onLanguageChanged);
@@ -4405,7 +4858,7 @@ export function installProductUI(app) {
     if (app.viewer) app.viewer.onJumpTarget = prevJumpTarget;
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     if (originalGoToAddress) app.goToAddress = originalGoToAddress;
-    deltaStrip.remove(); chrome.remove(); nav.remove(); routeHost.remove();
+    landingHost.remove(); deltaStrip.remove(); chrome.remove(); nav.remove(); routeHost.remove();
     uiRoot()?.classList.remove('product-ui-ready');
   };
   window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };
