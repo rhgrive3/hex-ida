@@ -1067,6 +1067,22 @@ export class DeltaSessionStore {
     recents.put(recentEntry);
     await txDone(tx);
 
+    const dropLocalStorageKeys = (keys) => {
+      if (!this.localStorage || !keys.length) return;
+      try {
+        const drop = new Set(keys);
+        for (const k of drop) {
+          this.localStorage.removeItem(this._lsKey(k));
+        }
+        const lsRecents = this._readLsRecents();
+        const filtered = lsRecents.filter((r) => !drop.has(r?.deltaKey));
+        if (filtered.length !== lsRecents.length) {
+          this._writeLsRecents(filtered);
+        }
+      } catch { /* best-effort localStorage sync */ }
+    };
+    dropLocalStorageKeys([deltaKey]);
+
     // Enforce maxRecents cap (25) by pruning oldest entries.
     try {
       const readTx = db.transaction([RECENTS_STORE], 'readonly');
@@ -1078,6 +1094,7 @@ export class DeltaSessionStore {
           (a, b) => Number(b.lastOpenedAt || 0) - Number(a.lastOpenedAt || 0),
         );
         const victims = sorted.slice(this.maxRecents);
+        const prunedKeys = [];
         const pruneTx = db.transaction([SESSIONS_STORE, RECENTS_STORE], 'readwrite');
         const sStore = pruneTx.objectStore(SESSIONS_STORE);
         const rStore = pruneTx.objectStore(RECENTS_STORE);
@@ -1085,9 +1102,11 @@ export class DeltaSessionStore {
           if (v?.deltaKey) {
             sStore.delete(v.deltaKey);
             rStore.delete(v.deltaKey);
+            prunedKeys.push(v.deltaKey);
           }
         }
         await txDone(pruneTx);
+        dropLocalStorageKeys(prunedKeys);
       }
     } catch { /* best-effort pruning */ }
 
