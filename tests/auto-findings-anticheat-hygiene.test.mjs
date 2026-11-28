@@ -164,3 +164,21 @@ test('notableFunctions() falls back to next function boundary when range.end is 
   assert.equal(notable[0].range.end, 0x100200n);
   assert.ok(notable[0].score > 6);
 });
+
+test('goals.js avoid rules reject ad-SDK false positives without suppressing real game methods', () => {
+  const gacha = goalFromPreset('gacha');
+  const level = goalFromPreset('level');
+  const item = goalFromPreset('item');
+
+  // Ad-SDK false positives are avoided
+  assert.equal(gacha.avoid.some((re) => re.test('-[MarketingAdUnit updateDraw]')), true);
+  assert.equal(level.avoid.some((re) => re.test('-[MarketingAdError setLevel:]')), true);
+  assert.equal(item.avoid.some((re) => re.test('-[AdUserStatus setInventoryId:]')), true);
+  assert.equal(item.avoid.some((re) => re.test('-[AdUnitMeta setInventoryType:]')), true);
+
+  // Real game methods must NOT be suppressed by the new avoid rules
+  assert.equal(gacha.avoid.some((re) => re.test('-[GachaManager updateDraw]')), false);
+  assert.equal(level.avoid.some((re) => re.test('-[Player setLevel:]')), false);
+  assert.equal(item.avoid.some((re) => re.test('-[InventoryManager setInventoryId:]')), false);
+  assert.equal(item.avoid.some((re) => re.test('-[ItemInventory setInventoryType:]')), false);
+});
