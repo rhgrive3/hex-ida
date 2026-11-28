@@ -42,7 +42,7 @@ assert.match(hardened, /queries\.claims\(snapshot,/);
 const claimsRenderer = hardened.slice(hardened.indexOf('function renderCanonicalClaims'), hardened.indexOf('function linkedController'));
 assert.doesNotMatch(claimsRenderer, /autoReport|report\.findings|report\.results|report\.goals/);
 assert.doesNotMatch(claimsRenderer, /confidence\s*>|confirmed\s*\?/);
-assert.match(surface, /const source = report\?\.findings \|\| report\?\.results \|\| report\?\.goals \|\| \[\]/);
+assert.match(surface, /function claimRows\(report, snapshot\)[\s\S]*?report\?\.goals[\s\S]*?report\?\.findings \|\| report\?\.results \|\| \[\]/);
 assert.match(surface, /verdict:canonicalClaimVerdict\(item\)/);
 assert.match(surface, /async claims\(snapshot, query = \{\}, page = \{\}, options = \{\}\)/);
 assert.match(surface, /await assertCurrentSnapshot\(app, snapshot, options\)/);
