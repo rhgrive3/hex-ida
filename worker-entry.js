@@ -7,7 +7,7 @@ import { createAuthHandler } from './js/auth/server/router.js';
 import { AuthRepository } from './js/auth/server/repository.js';
 import { AI_CAPABILITY_HEADER, verifyAICapability } from './js/auth/server/ai-capability.js';
 import { DEPLOYMENT_COMMIT } from './js/userscript/deployment-identity.generated.js';
-import { CHATGPT_ORIGINS, isAllowedRequestOrigin } from './js/userscript/request-origin-policy.js';
+import { CHATGPT_ORIGINS, isAllowedRequestOrigin, isAllowedOpenJevOrigin } from './js/userscript/request-origin-policy.js';
 import {
   decodeBase64URL, encodeBase64URL, publicRuntimeManifest,
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
@@ -208,20 +208,24 @@ async function readBoundedOpenJevText(message, limit = OPENJEV_MAX_BODY_BYTES, {
 
 async function handleOpenJevSystemOne(request, { fetchImpl = (...args) => fetch(...args), timeoutMs = OPENJEV_DEFAULT_TIMEOUT_MS } = {}) {
   const origin = request.headers.get('origin');
-  if (request.method === 'OPTIONS') return apiPreflight(origin);
-  if (request.method !== 'POST') return withApiCors(methodNotAllowed('POST'), origin);
+  const workerOrigin = new URL(request.url).origin;
+  if (request.method === 'OPTIONS') return openJevPreflight(origin, workerOrigin);
+  if (origin !== null && !isAllowedOpenJevOrigin(origin, workerOrigin)) {
+    return json({ error: { code: 'origin_not_allowed', message: 'Origin not allowed.' } }, 403);
+  }
+  if (request.method !== 'POST') return withOpenJevCors(methodNotAllowed('POST, OPTIONS'), origin, workerOrigin);
   const auth = request.headers.get('authorization') || '';
   if (!/^Bearer\s+\S{4,4096}$/i.test(auth)) {
-    return withApiCors(json({ error: { code: 'unauthorized', message: 'OpenJev Bearer token is required.' } }, 401), origin);
+    return withOpenJevCors(json({ error: { code: 'unauthorized', message: 'OpenJev Bearer token is required.' } }, 401), origin, workerOrigin);
   }
   let rawBody;
   try {
     rawBody = await readBoundedOpenJevText(request, OPENJEV_MAX_BODY_BYTES);
   } catch (error) {
     if (error?.openJevPayloadTooLarge) {
-      return withApiCors(json({ error: { code: 'payload_too_large', message: 'Request body exceeds 512 KB.' } }, 413), origin);
+      return withOpenJevCors(json({ error: { code: 'payload_too_large', message: 'Request body exceeds 512 KB.' } }, 413), origin, workerOrigin);
     }
-    return withApiCors(json({ error: { code: 'invalid_request', message: 'Failed to read request body.' } }, 400), origin);
+    return withOpenJevCors(json({ error: { code: 'invalid_request', message: 'Failed to read request body.' } }, 400), origin, workerOrigin);
   }
   const controller = new AbortController();
   const effectiveTimeout = Math.max(1, Math.floor(Number(timeoutMs) || OPENJEV_DEFAULT_TIMEOUT_MS));
@@ -234,18 +238,18 @@ async function handleOpenJevSystemOne(request, { fetchImpl = (...args) => fetch(
       signal: controller.signal,
     });
     const text = await readBoundedOpenJevText(upstream, OPENJEV_MAX_BODY_BYTES, { signal: controller.signal });
-    return withApiCors(new Response(text, {
+    return withOpenJevCors(new Response(text, {
       status: upstream.status,
-      headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
-    }), origin);
+      headers: { ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+    }), origin, workerOrigin);
   } catch (error) {
     if (controller.signal.aborted || error?.name === 'AbortError') {
-      return withApiCors(json({ error: { code: 'upstream_timeout', message: 'OpenJev upstream request timed out.' } }, 504), origin);
+      return withOpenJevCors(json({ error: { code: 'upstream_timeout', message: 'OpenJev upstream request timed out.' } }, 504), origin, workerOrigin);
     }
     if (error?.openJevPayloadTooLarge) {
-      return withApiCors(json({ error: { code: 'upstream_payload_too_large', message: 'OpenJev upstream response exceeds 512 KB.' } }, 502), origin);
+      return withOpenJevCors(json({ error: { code: 'upstream_payload_too_large', message: 'OpenJev upstream response exceeds 512 KB.' } }, 502), origin, workerOrigin);
     }
-    return withApiCors(json({ error: { code: 'upstream_error', message: 'OpenJev upstream request failed.' } }, 502), origin);
+    return withOpenJevCors(json({ error: { code: 'upstream_error', message: 'OpenJev upstream request failed.' } }, 502), origin, workerOrigin);
   } finally {
     clearTimeout(timer);
   }
@@ -464,6 +468,34 @@ function runtimePreflight(origin, workerOrigin) {
 function runtimeAssetPreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
+}
+function openJevPreflight(origin, workerOrigin) {
+  if (origin === null || !isAllowedOpenJevOrigin(origin, workerOrigin)) {
+    return new Response(null, { status: 403, headers: securityHeaders() });
+  }
+  return new Response(null, {
+    status: 204,
+    headers: {
+      ...securityHeaders(),
+      'access-control-allow-origin': origin,
+      'access-control-allow-methods': 'POST, OPTIONS',
+      'access-control-allow-headers': 'Content-Type, Authorization',
+      'access-control-max-age': '86400',
+      vary: 'Origin',
+      'cross-origin-resource-policy': 'cross-origin',
+    },
+  });
+}
+function withOpenJevCors(response, origin, workerOrigin) {
+  if (!isAllowedOpenJevOrigin(origin, workerOrigin)) return response;
+  const headers = new Headers(response.headers);
+  headers.set('access-control-allow-origin', origin);
+  headers.set('access-control-allow-methods', 'POST, OPTIONS');
+  headers.set('access-control-allow-headers', 'Content-Type, Authorization');
+  headers.set('vary', appendVary(headers.get('vary'), 'Origin'));
+  headers.set('cross-origin-resource-policy', 'cross-origin');
+  headers.delete('access-control-allow-credentials');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, Authorization, X-Hex-Session, X-Hex-AI-Capability', 'access-control-max-age': '86400', vary: 'Origin' } }); }
 function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, Authorization, X-Hex-Session, X-Hex-AI-Capability'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }

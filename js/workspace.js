@@ -1,6 +1,20 @@
 import { Backend } from './backend.js';
 import { SymbolIndex } from './symbols.js';
-import { createHexProject, exportHexProject, importHexProject, serializeHexProject, parseHexProject, normalizeNavigation, projectAnnotationCommitList } from './project/index.js';
+import {
+  createHexProject,
+  exportHexProject,
+  importHexProject,
+  serializeHexProject,
+  parseHexProject,
+  normalizeNavigation,
+  projectAnnotationCommitList,
+  ProjectFormatError,
+} from './project/index.js';
+import {
+  MAX_NAME_LENGTH,
+  MAX_TYPE_LENGTH,
+  MAX_VAR_KEY_LENGTH,
+} from './project/limits.js';
 import { runDiffInWorker } from './diff/runtime.js';
 import { createCompactFunctionSet, demoteLowInformationAbsenceClaims } from './diff/compact-function-set.js';
 import { stripSecrets, createInvestigationSession, isValidSessionId } from './ai/session-core/index.js';
@@ -54,7 +68,14 @@ function identityKey(identity){
   return [identity?.hash||'',meta.sliceIndex,meta.sliceOffset,meta.sliceSize,meta.uuid,meta.architecture].map(keyOf).join('\0');
 }
 function staleWorkspaceError(){const error=new Error('workspace-binding-changed');error.code='HEX_WORKSPACE_STALE';return error;}
-function throwIfAborted(signal){if(!signal?.aborted)return;if(signal.reason instanceof Error)throw signal.reason;const error=new Error(signal.reason==null?'Operation aborted':String(signal.reason));error.name='AbortError';error.code='ABORT_ERR';throw error;}
+function abortError(reason = 'Operation aborted'){
+  if(reason instanceof Error)return reason;
+  const error=new Error(reason==null?'Operation aborted':String(reason));
+  error.name='AbortError';
+  error.code='ABORT_ERR';
+  return error;
+}
+function throwIfAborted(signal){if(!signal?.aborted)return;throw abortError(signal.reason);}
 function applyWorkspaceAnalysisSettings(app,settings){
   if(!settings||typeof settings!=='object'||Array.isArray(settings))return;
   if(PROJECT_LANGUAGES.has(settings.language)){
@@ -71,13 +92,32 @@ function applyWorkspaceAnalysisSettings(app,settings){
   }
 }
 
-export function binaryIdentity(app, hash=null){
+function normalizeFileSize(app){
+  const raw = app?.store?.get?.('file')?.size ?? app?.store?.get?.('fileInfo')?.size ?? null;
+  if(typeof raw==='bigint')return raw>=0n?raw:null;
+  if(typeof raw==='number'&&Number.isSafeInteger(raw)&&raw>=0)return BigInt(raw);
+  return null;
+}
+
+export function resolvePrimaryHash(backend){
+  return backend?.binaryId || backend?.contentHash || null;
+}
+
+export function resolveLegacyHash(backend){
+  return backend?.contentHash || null;
+}
+
+export function binaryIdentity(app, hash=null, legacyHash=null){
   const info=app?.store?.get?.('fileInfo')||null;
   const index=app?.store?.get?.('sliceIndex')??-1;
   const slice=index>=0?info?.slices?.[index]||null:null;
   const meta=slice?.info||{};
+  const primary=hash||resolvePrimaryHash(app?.backend);
+  const candidateLegacy=legacyHash??resolveLegacyHash(app?.backend);
+  const resolvedLegacy=candidateLegacy && candidateLegacy!==primary ? candidateLegacy : null;
   return {
-    hash:hash||app?.backend?.contentHash||null,
+    hash:primary,
+    ...(resolvedLegacy ? { legacyHash: resolvedLegacy } : {}),
     metadata:{
       name:info?.name||app?.store?.get?.('file')?.name||null,
       size:info?.size??app?.store?.get?.('file')?.size??null,
@@ -92,7 +132,14 @@ export function binaryIdentity(app, hash=null){
 }
 
 export function sameProjectIdentity(project, identity){
-  if(!project?.binary?.hash||!identity?.hash||project.binary.hash!==identity.hash)return {ok:false,reason:'binary-hash-mismatch'};
+  const projectHash=project?.binary?.hash||null;
+  const hashMatches=Boolean(
+    projectHash && (
+      (identity?.hash && projectHash===identity.hash) ||
+      (identity?.legacyHash && projectHash===identity.legacyHash)
+    )
+  );
+  if(!hashMatches)return {ok:false,reason:'binary-hash-mismatch'};
   const a=project.binary.metadata||{}, b=identity.metadata||{};
   const keys=['sliceIndex','sliceOffset','sliceSize','uuid','architecture'];
   for(const key of keys){
@@ -146,6 +193,12 @@ function sessionMatchesBinaryHash(sessionBinaryId, hash) {
   return sessionBinaryId.startsWith(`content:${hash}:`);
 }
 
+function sessionMatchesAnyHash(sessionBinaryId, primaryHash, legacyHash) {
+  if (primaryHash && sessionMatchesBinaryHash(sessionBinaryId, primaryHash)) return true;
+  if (legacyHash && sessionMatchesBinaryHash(sessionBinaryId, legacyHash)) return true;
+  return false;
+}
+
 export function snapshotWorkspace(app, identity){
   const notes=app.notes;
   const navigation=app.navigation;
@@ -160,7 +213,7 @@ export function snapshotWorkspace(app, identity){
         // binary identity. Otherwise a caller that invokes snapshotWorkspace
         // before ProductWorkspace.bind() can leak a prior binary's session
         // into the next project (#5652).
-        if (session?.binaryId != null && (!identity?.hash || !sessionMatchesBinaryHash(session.binaryId, identity.hash))) return false;
+        if (session?.binaryId != null && (!identity?.hash || !sessionMatchesAnyHash(session.binaryId, identity.hash, identity.legacyHash))) return false;
         if (session?.projectId != null && currentProjectId != null && session.projectId !== currentProjectId) return false;
         return true;
       })
@@ -170,9 +223,12 @@ export function snapshotWorkspace(app, identity){
   const safeSessions = Array.isArray(activeSessions) && activeSessions.length
     ? activeSessions.map((s) => stripSecrets(s))
     : (safeTurns.length ? [{ id: 'default', binaryId: identity?.hash || identity?.binaryId || null, projectId: currentProjectId, turns: safeTurns }] : []);
+  const serializableBinary = identity
+    ? { hash: identity.hash ?? null, metadata: identity.metadata || {} }
+    : identity;
   const project=createHexProject({
     id: currentProjectId,
-    binary:identity,
+    binary:serializableBinary,
     userNames:noteEntries(notes?.names),
     comments:noteEntries(notes?.comments),
     types:[...((notes?.types)||[])].map(([key,value])=>({key,value})),
@@ -211,20 +267,72 @@ export function applyWorkspaceProject(app, project){
   // authority on byte shape and overlap, and a mid-import throw used to leave
   // notes replaced+persisted and the old patch set cleared. If staging fails,
   // the import fails with the workspace untouched.
+  const fileSize = normalizeFileSize(app);
+  const rawPatches = project.user?.patches;
+  if(rawPatches!=null && !Array.isArray(rawPatches)){
+    throw new ProjectFormatError('user.patches must be an array','HEX_PROJECT_INVALID_PATCH');
+  }
   const stagedPatches=[];
   const staging=new PatchSet();
-  for(const p of project.user.patches||[]){
-    if(p?.offset==null)continue;
+  for(const p of rawPatches||[]){
+    if(!p || typeof p!=='object' || Array.isArray(p) || p.offset==null){
+      throw new ProjectFormatError('patch entry is missing a valid offset','HEX_PROJECT_INVALID_PATCH');
+    }
+    let offset;
+    try {
+      if(typeof p.offset==='bigint') offset=p.offset;
+      else if(typeof p.offset==='number' && Number.isSafeInteger(p.offset)) offset=BigInt(p.offset);
+      else throw new Error('bad-offset');
+      if(offset<0n) throw new Error('negative-offset');
+    } catch {
+      throw new ProjectFormatError('patch offset must be a non-negative integer','HEX_PROJECT_INVALID_PATCH');
+    }
+    const before = p.before;
+    const after = p.after;
+    if(!before || !after || typeof before.length!=='number' || typeof after.length!=='number' || before.length===0 || before.length!==after.length){
+      throw new ProjectFormatError('patch before/after bytes are invalid','HEX_PROJECT_INVALID_PATCH');
+    }
+    if(fileSize!=null && offset + BigInt(after.length) > fileSize){
+      throw new ProjectFormatError(
+        `patch range [${offset.toString()}, ${(offset + BigInt(after.length)).toString()}) exceeds binary size ${fileSize.toString()}`,
+        'HEX_PROJECT_PATCH_OUT_OF_RANGE',
+      );
+    }
+    if(staging.items.has(offset.toString())){
+      throw new ProjectFormatError(`duplicate patch offset ${offset.toString()}`,'HEX_PROJECT_INVALID_PATCH');
+    }
     const meta={addr:p.addr??null,label:p.label??null,reason:p.reason??null};
-    staging.add(BigInt(p.offset),p.before||[],p.after||[],meta);
-    stagedPatches.push([BigInt(p.offset),p.before||[],p.after||[],meta]);
+    try {
+      staging.add(offset,before,after,meta);
+    } catch (err) {
+      throw new ProjectFormatError(err?.message || 'invalid patch entry','HEX_PROJECT_INVALID_PATCH');
+    }
+    stagedPatches.push([offset,before,after,meta]);
   }
   const stagedNames=projectAnnotationCommitList(project.user?.names,'user.names');
   const stagedComments=projectAnnotationCommitList(project.user?.comments,'user.comments');
   const stagedTypes=[];
-  for(const entry of project.user.types||[])if(entry?.key)stagedTypes.push([String(entry.key),String(entry.value||'')]);
+  for(const entry of project.user.types||[]){
+    if(!entry?.key)continue;
+    const key=String(entry.key);
+    const value=String(entry.value||'');
+    if(key.length>MAX_VAR_KEY_LENGTH||value.length>MAX_TYPE_LENGTH){
+      throw new ProjectFormatError('user.types entry exceeds maximum length','HEX_PROJECT_TYPE_TOO_LONG');
+    }
+    stagedTypes.push([key,value]);
+  }
   const stagedVars=[];
-  if(replaceVars)for(const entry of (project.user.vars||project.user.varNames||[]))if(entry?.key)stagedVars.push([String(entry.key),String(entry.value||'')]);
+  if(replaceVars){
+    for(const entry of (project.user.vars||project.user.varNames||[])){
+      if(!entry?.key)continue;
+      const key=String(entry.key);
+      const value=String(entry.value||'');
+      if(key.length>MAX_VAR_KEY_LENGTH||value.length>MAX_NAME_LENGTH){
+        throw new ProjectFormatError('user.vars entry exceeds maximum length','HEX_PROJECT_VAR_TOO_LONG');
+      }
+      stagedVars.push([key,value]);
+    }
+  }
   const stagedStructs=Array.isArray(project.user.structs)?project.user.structs.slice():[];
 
   // Preflight the investigation sessions BEFORE any mutation (#8961). `register`
@@ -233,7 +341,8 @@ export function applyWorkspaceProject(app, project){
   // therefore cannot leave a partially-imported workspace, and `notes.save()` is
   // never reached for a structurally invalid project. The register loop below
   // consumes exactly this validated candidate set so the success path is unchanged.
-  const currentHash = app?.backend?.contentHash || app?.store?.get?.('fileInfo')?.hash || null;
+  const primaryHash = resolvePrimaryHash(app?.backend) || app?.store?.get?.('fileInfo')?.hash || null;
+  const legacyHash = resolveLegacyHash(app?.backend);
   const sessionStore = app?.aiRuntime?.sessionStore || null;
   const canRegisterSessions = !!(sessionStore && typeof sessionStore.register === 'function' && sessionStore.sessions instanceof Map);
   const sessionCandidates = [];
@@ -241,7 +350,7 @@ export function applyWorkspaceProject(app, project){
     for(const session of project.findings.investigationSessions){
       if(!session || typeof session !== 'object' || !session.id) continue;
       const sessionBinaryId = session.binaryId || null;
-      if(sessionBinaryId && currentHash && !sessionMatchesBinaryHash(sessionBinaryId, currentHash)) continue;
+      if(sessionBinaryId && (primaryHash || legacyHash) && !sessionMatchesAnyHash(sessionBinaryId, primaryHash, legacyHash)) continue;
       if(!isValidSessionId(session.id)) continue; // `register` would no-op; do not validate a record it will drop.
       // Throws (before any live mutation) on a malformed binding identity.
       sessionCandidates.push({ id: session.id, record: createInvestigationSession(session) });
@@ -281,12 +390,17 @@ export function applyWorkspaceProject(app, project){
   const touchedSessionIds=new Set();
   const restoreMaps=(target,entries)=>{ target.clear(); for(const [k,v] of entries) target.set(k,v); };
   const syncSymbolRenames=(targetEntries,clearExtraAddresses=[])=>{
-    if(!app.symbols||typeof app.symbols.rename!=='function')return;
+    if(!app.symbols)return;
     const nextByKey=new Map();
     for(const [addr,name] of targetEntries){
       const big=asBigInt(addr);
       if(big!=null&&name)nextByKey.set(big.toString(),[big,name]);
     }
+    if(typeof app.symbols.renameMany==='function'){
+      app.symbols.renameMany(nextByKey.values(),{replace:true});
+      return;
+    }
+    if(typeof app.symbols.rename!=='function')return;
     const staleAddresses=new Map();
     if(app.symbols.renames instanceof Map){
       for(const key of app.symbols.renames.keys()){
@@ -306,11 +420,29 @@ export function applyWorkspaceProject(app, project){
   const rollback=()=>{
     app.project=previous.project;
     if(app.workspace)app.workspace.project=previous.workspaceProject;
-    restoreMaps(notes.names, previous.names);
-    restoreMaps(notes.comments, previous.comments);
-    restoreMaps(notes.types, previous.types);
-    if(replaceVars)restoreMaps(notes.vars, previous.vars);
-    notes.structs=previous.structs;
+    if(typeof notes.replaceAll==='function'){
+      try{
+        notes.replaceAll({
+          names:previous.names,
+          comments:previous.comments,
+          types:previous.types,
+          vars:previous.vars,
+          structs:previous.structs,
+        },{replaceVars,save:false});
+      }catch{
+        restoreMaps(notes.names, previous.names);
+        restoreMaps(notes.comments, previous.comments);
+        restoreMaps(notes.types, previous.types);
+        if(replaceVars)restoreMaps(notes.vars, previous.vars);
+        notes.structs=previous.structs;
+      }
+    }else{
+      restoreMaps(notes.names, previous.names);
+      restoreMaps(notes.comments, previous.comments);
+      restoreMaps(notes.types, previous.types);
+      if(replaceVars)restoreMaps(notes.vars, previous.vars);
+      notes.structs=previous.structs;
+    }
     notes.dirty=previous.dirty;
     if(app.patches?.clear){ app.patches.clear(); for(const p of previous.patches) app.patches.add(p.offset,p.before,p.after,{addr:p.addr,label:p.label,reason:p.reason}); }
     if(app.symbols){
@@ -341,17 +473,27 @@ export function applyWorkspaceProject(app, project){
       }
     }
     // Re-persist the restored note state so durable storage matches memory.
-    try{ notes.save(); }catch{ /* the rethrow still signals the failed import */ }
+    try{ notes.save({ replace: true }); }catch{ /* the rethrow still signals the failed import */ }
   };
 
   try {
-    notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
-    for(const [address,value] of stagedNames)notes.names.set(address,value);
-    for(const [address,value] of stagedComments)notes.comments.set(address,value);
-    for(const [key,value] of stagedTypes)notes.types.set(key,value);
-    if(replaceVars)for(const [key,value] of stagedVars)notes.vars.set(key,value);
-    notes.structs=stagedStructs;
-    notes.dirty=true;
+    if(typeof notes.replaceAll==='function'){
+      notes.replaceAll({
+        names:stagedNames,
+        comments:stagedComments,
+        types:stagedTypes,
+        vars:stagedVars,
+        structs:stagedStructs,
+      },{replaceVars,save:false});
+    }else{
+      notes.names.clear();notes.comments.clear();notes.types.clear();if(replaceVars)notes.vars.clear();
+      for(const [address,value] of stagedNames)notes.names.set(address,value);
+      for(const [address,value] of stagedComments)notes.comments.set(address,value);
+      for(const [key,value] of stagedTypes)notes.types.set(key,value);
+      if(replaceVars)for(const [key,value] of stagedVars)notes.vars.set(key,value);
+      notes.structs=stagedStructs;
+      notes.dirty=true;
+    }
     app.patches.clear();
     for(const [offset,before,after,meta] of stagedPatches)app.patches.add(offset,before,after,meta);
     if(app.symbols){syncSymbolRenames(notes.nameEntries().map((entry)=>[entry.addr,entry.name]),previous.names.map(([addr])=>addr));app.viewer?.setSymbols?.(app.symbols);}
@@ -425,7 +567,7 @@ export function applyWorkspaceProject(app, project){
     // Commit durability last (#8961): every fallible in-memory step already
     // succeeded, so a storage failure here is the only post-mutation risk and
     // it is fully rolled back before it propagates.
-    if(!notes.save())throw new Error(notes.lastSaveError?.code||'notes-save-failed');
+    if(!notes.save({ replace: true }))throw new Error(notes.lastSaveError?.code||'notes-save-failed');
   } catch (error) {
     rollback();
     throw error;
@@ -462,11 +604,39 @@ function chooseSlice(info,architecture){
 }
 
 export class ProductWorkspace{
-  constructor(app,{backendFactory=()=>new Backend(),storage=globalThis.localStorage}={}){
-    this.app=app;this.backendFactory=backendFactory;this.storage=storage||null;this.project=null;this.identity=null;this.baseline=null;this.diffState=null;this.busy=null;
+  constructor(app,{
+    backendFactory=()=>new Backend(),
+    storage=globalThis.localStorage,
+    idb=null,
+    onAutosaveError=null,
+    onAutosaveSuccess=null,
+    autosaveDebounceMs=250,
+  }={}){
+    this.app=app;
+    this.backendFactory=backendFactory;
+    this.storage=storage||null;
+    this.idb=idb||null;
+    this.onAutosaveError=typeof onAutosaveError==='function'?onAutosaveError:null;
+    this.onAutosaveSuccess=typeof onAutosaveSuccess==='function'?onAutosaveSuccess:null;
+    this.autosaveDebounceMs=Number.isFinite(autosaveDebounceMs)&&autosaveDebounceMs>=0?autosaveDebounceMs:250;
+    this.lastAutosaveError=null;
+    this._autosaveTimer=null;
+    this._autosavePromise=Promise.resolve(false);
+    this._autosaveRevision=0;
+    this.project=null;this.identity=null;this.baseline=null;this.diffState=null;this.busy=null;
     this.bindingRevision=0;this.bindSequence=0;this.baselineSequence=0;
   }
-  _resetBoundState(){const previous=this.baseline;this.bindingRevision++;this.baselineSequence++;this.project=null;if(this.app)this.app.project=null;this.baseline=null;this.diffState=null;this.busy=null;if(previous?.ownedBackend)previous.backend?.dispose?.();}
+  setIdb(idb){this.idb=idb||null;}
+  _cancelAutosaveTimer(){
+    if(this._autosaveTimer!=null){
+      clearTimeout(this._autosaveTimer);
+      this._autosaveTimer=null;
+    }
+  }
+  _resetBoundState(){
+    this._cancelAutosaveTimer();
+    const previous=this.baseline;this.bindingRevision++;this.baselineSequence++;this.project=null;if(this.app)this.app.project=null;this.baseline=null;this.diffState=null;this.busy=null;if(previous?.ownedBackend)previous.backend?.dispose?.();
+  }
   _assertBinding(revision){if(revision!==this.bindingRevision)throw staleWorkspaceError();}
   async bind(){
     const sequence=++this.bindSequence;
@@ -474,28 +644,135 @@ export class ProductWorkspace{
     if(!sourceInfo){this.identity=null;this._resetBoundState();return null;}
     const sourceSlice=this.app?.store?.get?.('sliceIndex')??-1;
     const sourceBackendGen=this.app?.backend?.gen;
-    const hash=await this.app.backend.ensureContentHash();
-    const superseded=sequence!==this.bindSequence || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
+    const backend=this.app?.backend;
+    let primaryHash=null;
+    let legacyHash=null;
+    if(typeof backend?.ensureBinaryId==='function'){
+      const [idHash, contentHash]=await Promise.all([
+        backend.ensureBinaryId(),
+        typeof backend.ensureContentHash==='function'
+          ? backend.ensureContentHash().catch(()=>null)
+          : Promise.resolve(backend.contentHash||null),
+      ]);
+      primaryHash=idHash||contentHash||null;
+      legacyHash=contentHash && contentHash!==primaryHash ? contentHash : null;
+    }else if(typeof backend?.ensureContentHash==='function'){
+      primaryHash=await backend.ensureContentHash();
+      legacyHash=null;
+    }else{
+      primaryHash=resolvePrimaryHash(backend);
+      legacyHash=resolveLegacyHash(backend);
+      if(legacyHash===primaryHash)legacyHash=null;
+    }
+    const isSuperseded=()=>sequence!==this.bindSequence || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
       (this.app?.store?.get?.('sliceIndex')??-1)!==sourceSlice ||
       (sourceBackendGen!=null&&this.app?.backend?.gen!==sourceBackendGen);
-    if(superseded){if(sequence===this.bindSequence){this.identity=null;this._resetBoundState();}return null;}
-    const nextIdentity=binaryIdentity(this.app,hash);
+    if(isSuperseded()){if(sequence===this.bindSequence){this.identity=null;this._resetBoundState();}return null;}
+    const nextIdentity=binaryIdentity(this.app,primaryHash,legacyHash);
     if(this.identity&&identityKey(this.identity)!==identityKey(nextIdentity))this._resetBoundState();
     this.identity=nextIdentity;
-    const saved=this._loadLocal(this.identity);
+    const saved=await this._loadLocal(this.identity);
+    if(isSuperseded()){if(sequence===this.bindSequence){this.identity=null;this._resetBoundState();}return null;}
     if(saved){const ok=sameProjectIdentity(saved,this.identity);if(ok.ok){try{applyWorkspaceProject(this.app,saved);this.project=saved;this.app.project=saved;}catch{/* local restore is best effort */}}}
     if(!this.project)this.project=snapshotWorkspace(this.app,this.identity);
     this.app.project=this.project;
     return this.project;
   }
   snapshot(){if(!this.identity)return null;this.project=snapshotWorkspace(this.app,this.identity);this.app.project=this.project;return this.project;}
-  autosave(){
-    const project=this.snapshot();if(!project||!this.storage)return false;
-    try{this.storage.setItem(this._localKey(this.identity),serializeHexProject(project));return true;}catch{return false;}
+  async _writeIdbPayload(key,serialized){
+    if(!this.idb||typeof this.idb.saveProject!=='function')return false;
+    const revision=++this._autosaveRevision;
+    try{
+      await this.idb.saveProject(key,serialized,{revision});
+      this.lastAutosaveError=null;
+      this.onAutosaveSuccess?.();
+      return true;
+    }catch(error){
+      this.lastAutosaveError=error;
+      this.onAutosaveError?.(error);
+      return false;
+    }
+  }
+  async _performIdbAutosave(expectedRevision=null){
+    if(expectedRevision!=null&&this.bindingRevision!==expectedRevision)return false;
+    if(!this.identity||!this.idb||typeof this.idb.saveProject!=='function')return false;
+    let key;
+    let serialized;
+    try{
+      const project=this.snapshot();
+      if(!project)return false;
+      key=this._localKey(this.identity);
+      serialized=serializeHexProject(project,{compact:true});
+    }catch(error){
+      this.lastAutosaveError=error;
+      this.onAutosaveError?.(error);
+      return false;
+    }
+    return this._writeIdbPayload(key,serialized);
+  }
+  autosave({immediate=false}={}){
+    if(!this.identity)return false;
+    if(this.idb&&typeof this.idb.saveProject==='function'){
+      this._cancelAutosaveTimer();
+      const expectedRevision=this.bindingRevision;
+      if(immediate||this.autosaveDebounceMs===0){
+        let key;
+        let serialized;
+        try{
+          const project=this.snapshot();
+          if(!project)return false;
+          key=this._localKey(this.identity);
+          serialized=serializeHexProject(project,{compact:true});
+        }catch(error){
+          this.lastAutosaveError=error;
+          this.onAutosaveError?.(error);
+          return false;
+        }
+        this._autosavePromise=this._autosavePromise.then(
+          ()=>this._writeIdbPayload(key,serialized),
+          ()=>this._writeIdbPayload(key,serialized),
+        );
+      }else{
+        this._autosaveTimer=setTimeout(()=>{
+          this._autosaveTimer=null;
+          this._autosavePromise=this._autosavePromise.then(
+            ()=>this._performIdbAutosave(expectedRevision),
+            ()=>this._performIdbAutosave(expectedRevision),
+          );
+        },this.autosaveDebounceMs);
+      }
+      return true;
+    }
+    if(!this.storage)return false;
+    try{
+      const project=this.snapshot();
+      if(!project)return false;
+      this.storage.setItem(this._localKey(this.identity),serializeHexProject(project,{compact:true}));
+      this.lastAutosaveError=null;
+      this.onAutosaveSuccess?.();
+      return true;
+    }catch(error){
+      this.lastAutosaveError=error;
+      this.onAutosaveError?.(error);
+      return false;
+    }
+  }
+  async flushAutosave(){
+    if(this._autosaveTimer!=null){
+      this._cancelAutosaveTimer();
+      if(this.idb&&typeof this.idb.saveProject==='function'&&this.identity){
+        this.autosave({immediate:true});
+      }
+    }
+    const result=await this._autosavePromise;
+    if(this.idb&&typeof this.idb.flush==='function'){
+      await this.idb.flush();
+    }
+    return result;
   }
   exportProject(){const project=this.snapshot();if(!project)throw new Error('project-unbound');return exportHexProject(project,cleanName(this.identity?.metadata?.name)+'.hexproj');}
   async importProject(input){
-    const liveHash=this.app?.backend?.contentHash||null;
+    const liveHash=resolvePrimaryHash(this.app?.backend);
     const liveKey=liveHash?identityKey(binaryIdentity(this.app,liveHash)):'';
     if(!this.identity||!liveHash||identityKey(this.identity)!==liveKey)await this.bind();
     if(!this.identity)throw staleWorkspaceError();
@@ -505,7 +782,7 @@ export class ProductWorkspace{
     const sourceBackendGen=this.app?.backend?.gen;
     const assertCurrent=()=>{
       this._assertBinding(revision);
-      const currentHash=this.app?.backend?.contentHash||null;
+      const currentHash=resolvePrimaryHash(this.app?.backend);
       const currentLiveKey=currentHash?identityKey(binaryIdentity(this.app,currentHash)):'';
       if(identityKey(this.identity)!==boundKey || currentLiveKey!==boundKey || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
         (this.app?.store?.get?.('sliceIndex')??-1)!==sourceSlice ||
@@ -514,10 +791,32 @@ export class ProductWorkspace{
     const project=await importHexProject(input);assertCurrent();
     const match=sameProjectIdentity(project,this.identity);
     if(!match.ok){const error=new Error(match.reason);error.code='HEX_PROJECT_BINARY_MISMATCH';error.detail=match;throw error;}
-    applyWorkspaceProject(this.app,project);this.project=project;this.app.project=project;this.autosave();return project;
+    applyWorkspaceProject(this.app,project);this.project=project;this.app.project=project;this.autosave({immediate:true});return project;
   }
   _localKey(identity){return LOCAL_PREFIX+identity.hash+':'+keyOf(identity.metadata?.sliceIndex)+':'+keyOf(identity.metadata?.uuid||identity.metadata?.architecture);}
-  _loadLocal(identity){if(!this.storage)return null;try{const raw=this.storage.getItem(this._localKey(identity));return raw?parseHexProject(raw):null;}catch{return null;}}
+  async _loadLocal(identity){
+    const keys=[this._localKey(identity)];
+    if(identity?.legacyHash && identity.legacyHash!==identity.hash){
+      keys.push(this._localKey({...identity,hash:identity.legacyHash}));
+    }
+    if(this.idb&&typeof this.idb.loadProject==='function'){
+      for(const key of keys){
+        try{
+          const rec=await this.idb.loadProject(key);
+          const raw=typeof rec==='string'?rec:rec?.payload;
+          if(raw)return parseHexProject(raw);
+        }catch{/* best-effort fallback */}
+      }
+    }
+    if(!this.storage)return null;
+    for(const key of keys){
+      try{
+        const raw=this.storage.getItem(key);
+        if(raw)return parseHexProject(raw);
+      }catch{/* best-effort fallback */}
+    }
+    return null;
+  }
   async loadBaseline(file,{backend=null,signal=null}={}){
     if(!file)throw new Error('baseline-file-required');
     if(!this.identity)await this.bind();
@@ -537,7 +836,10 @@ export class ProductWorkspace{
       if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
       const slice=info.slices[sliceIndex];const arch=slice?.capability?.architecture||slice?.info?.architecture||slice?.info?.cpu||null;
       if(currentArch&&arch&&currentArch!==arch){const error=new Error(`architecture mismatch: ${currentArch} vs ${arch}`);error.code='DIFF_ARCH_MISMATCH';throw error;}
-      const hash=await other.ensureContentHash(null,signal);throwIfAborted(signal);assertCurrent();
+      const hash=typeof other.ensureBinaryId==='function'
+        ? await other.ensureBinaryId({signal})
+        : await other.ensureContentHash(null,signal);
+      throwIfAborted(signal);assertCurrent();
       const result=await other.analyze(sliceIndex,{signal});throwIfAborted(signal);assertCurrent();
       const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
       const functions=createCompactFunctionSet(symbols,arch,MAX_DIFF_FUNCTIONS);assertCurrent();

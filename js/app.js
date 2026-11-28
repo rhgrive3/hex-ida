@@ -36,6 +36,8 @@ import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 import { ProductWorkspace } from './workspace.js';
+import { isNotesIdbAvailable, NotesIdbBackend } from './platform/notes-idb.js';
+import { formatProjectError } from './project/errors.js';
 import { createLazyAppAnalysisQueryAPI } from './analysis/query/lazy-app-adapter.js';
 import { appProducerAbortError, waitForAppProducer } from './analysis/producer-wait.js';
 import { clearSchemaRecoveryTasks } from './analysis/schema-recovery-task.js';
@@ -276,6 +278,11 @@ export class App {
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
     this.noteAttachController = null;
+    this.notesIdb = isNotesIdbAvailable() ? new NotesIdbBackend() : null;
+    this._openSequence = 0;
+    this._lastSaveErrorToastAt = 0;
+    this._saveErrorActive = false;
+    this._lastSaveErrorMessage = '';
     this._deltaSaveTimer = null;
     this._applyingDelta = false;
     this.lastDeltaRestore = null;
@@ -358,6 +365,7 @@ export class App {
       navBack: $('nav-back'),
       navForward: $('nav-forward'),
       navCrumbs: $('nav-crumbs'),
+      integrityBanner: $('integrity-banner'),
       fileInput: $('file-input'),
     };
 
@@ -393,6 +401,9 @@ export class App {
     this.viewer.setCommentProvider?.((addr) => this.notes?.comment?.(addr) || null);
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
     this.workspace = new ProductWorkspace(this);
+    this.workspace.setIdb?.(this.notesIdb);
+    this.workspace.onAutosaveError = (err) => this._reportSaveError(err);
+    this.workspace.onAutosaveSuccess = () => this._clearSaveError();
     if (this.workspace && typeof this.workspace.autosave === 'function' && !this.workspace.autosave.__deltaWrapped) {
       const origAutosave = this.workspace.autosave.bind(this.workspace);
       const annSignature = (arr) => {
@@ -469,7 +480,7 @@ export class App {
     }, 300);
     if (typeof window !== 'undefined') {
       this._analysisResumePageHide = () => {
-        this.workspace?.autosave();
+        this.workspace?.autosave({ immediate: true });
         void this.flushDeltaSave();
         void this.persistAnalysisSession();
       };
@@ -599,6 +610,7 @@ export class App {
 
   onKey(e) {
     if (e.defaultPrevented) return;
+    if (this.store.get('fileLoading')) { e.preventDefault(); return; }
     const target = e.target;
     const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable);
     if (e.key === 'Escape') {
@@ -679,21 +691,129 @@ export class App {
     if (text) this.dom.loadingText.textContent = text;
   }
 
+  _applySymbolRenames(entries, { replace = false } = {}) {
+    if (!this.symbols || this.symbols === EMPTY_INDEX) return 0;
+    if (typeof this.symbols.renameMany === 'function') {
+      return this.symbols.renameMany(entries, { replace });
+    }
+    if (replace && this.symbols.renames instanceof Map) {
+      for (const k of [...this.symbols.renames.keys()]) {
+        try { this.symbols.rename(BigInt(k), ''); } catch { /* ignore */ }
+      }
+    }
+    let count = 0;
+    for (const item of entries || []) {
+      const addr = Array.isArray(item) ? item[0] : item?.addr;
+      const name = Array.isArray(item) ? item[1] : item?.name;
+      if (addr == null) continue;
+      try { this.symbols.rename(typeof addr === 'bigint' ? addr : BigInt(addr), name || ''); count++; } catch { /* ignore */ }
+    }
+    return count;
+  }
+
+  _reportSaveError(error) {
+    const msg = formatProjectError(error, lang());
+    this._saveErrorActive = true;
+    this._lastSaveErrorMessage = msg;
+    const stRight = this.dom?.stRight;
+    if (stRight) {
+      stRight.classList?.add('status-save-error');
+      stRight.title = msg;
+      const badge = t('status.saveFailed');
+      if (!String(stRight.textContent || '').includes(badge)) {
+        stRight.textContent = stRight.textContent ? `${stRight.textContent} · ${badge}` : badge;
+      }
+    }
+    const now = Date.now();
+    if (now - this._lastSaveErrorToastAt >= 10000) {
+      this._lastSaveErrorToastAt = now;
+      toast(msg);
+    }
+  }
+
+  _clearSaveError() {
+    if (!this._saveErrorActive) return;
+    this._saveErrorActive = false;
+    this._lastSaveErrorMessage = '';
+    const stRight = this.dom?.stRight;
+    if (stRight) {
+      stRight.classList?.remove('status-save-error');
+      stRight.title = '';
+      const badge = t('status.saveFailed');
+      if (stRight.textContent === badge) stRight.textContent = '';
+      else if (String(stRight.textContent || '').endsWith(` · ${badge}`)) {
+        stRight.textContent = stRight.textContent.slice(0, -(` · ${badge}`).length);
+      }
+    }
+  }
+
+  _renderIntegrityBanner(info, slice = null) {
+    const banner = this.dom?.integrityBanner || (typeof document !== 'undefined' ? document.getElementById('integrity-banner') : null);
+    if (!banner) return;
+    const truncated = Boolean(info?.truncated || slice?.info?.truncated || slice?.truncated);
+    const warnings = [];
+    const seen = new Set();
+    for (const src of [info?.warnings, slice?.warnings, slice?.info?.diagnostics, slice?.error ? [slice.error] : null]) {
+      if (!Array.isArray(src)) continue;
+      for (const item of src) {
+        const text = String(item || '').trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        warnings.push(text);
+      }
+    }
+    if (!info || (!truncated && warnings.length === 0)) {
+      banner.hidden = true;
+      banner.textContent = '';
+      return;
+    }
+    banner.textContent = '';
+    const doc = banner.ownerDocument || (typeof document !== 'undefined' ? document : null);
+    if (doc && typeof doc.createElement === 'function') {
+      const body = doc.createElement('div');
+      body.className = 'integrity-banner-body';
+      const bannerTitle = truncated ? t('err.truncatedBannerTitle') : t('err.warningBannerTitle');
+      const bannerDetail = truncated
+        ? (warnings.length ? `${t('err.truncatedBannerDetail')} (${warnings.slice(0, 2).join(' / ')})` : t('err.truncatedBannerDetail'))
+        : warnings.slice(0, 2).join(' / ');
+      const title = doc.createElement('strong');
+      title.textContent = bannerTitle;
+      const detail = doc.createElement('span');
+      detail.textContent = bannerDetail;
+      body.append(title, ' — ', detail);
+      const closeBtn = doc.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'integrity-banner-close';
+      closeBtn.setAttribute('aria-label', pick('閉じる', 'Dismiss'));
+      closeBtn.textContent = '×';
+      closeBtn.addEventListener('click', () => { banner.hidden = true; });
+      banner.append(body, closeBtn);
+    } else {
+      const bannerTitle = truncated ? t('err.truncatedBannerTitle') : t('err.warningBannerTitle');
+      const bannerDetail = truncated
+        ? (warnings.length ? `${t('err.truncatedBannerDetail')} (${warnings.slice(0, 2).join(' / ')})` : t('err.truncatedBannerDetail'))
+        : warnings.slice(0, 2).join(' / ');
+      banner.textContent = `${bannerTitle} — ${bannerDetail}`;
+    }
+    banner.hidden = false;
+  }
+
   updateChrome() {
     const info = this.store.get('fileInfo');
     const region = this.store.get('currentRegion');
+    const loading = !!this.store.get('fileLoading');
     const has = !!info;
     const desc = has ? productDescriptor(info, this.currentSlice()) : null;
-    this.dom.sections.disabled = !has;
-    this.dom.struct.disabled = !has || (desc && desc.formatId && desc.formatId !== 'macho');
-    this.dom.strings.disabled = !has;
-    this.dom.investigate.disabled = !has;
-    this.dom.tools.disabled = !has;
-    this.dom.functions.disabled = !region;
-    this.dom.jump.disabled = !region;
-    this.dom.overflow.disabled = !has;
-    this.dom.search.disabled = !region;
-    this.dom.select.disabled = !region;
+    this.dom.sections.disabled = !has || loading;
+    this.dom.struct.disabled = !has || loading || (desc && desc.formatId && desc.formatId !== 'macho');
+    this.dom.strings.disabled = !has || loading;
+    this.dom.investigate.disabled = !has || loading;
+    this.dom.tools.disabled = !has || loading;
+    this.dom.functions.disabled = !region || loading;
+    this.dom.jump.disabled = !region || loading;
+    this.dom.overflow.disabled = !has || loading;
+    this.dom.search.disabled = !region || loading;
+    this.dom.select.disabled = !region || loading;
     this.dom.empty.hidden = has;
     this.dom.navHistory.hidden = !has;
     this.dom.scrubber.classList.toggle('on', !!region);
@@ -739,9 +859,12 @@ export class App {
   onTopChange(row, addr) {
     this.dom.addrCur.textContent = addrHex(addr);
     const total = this.viewer.totalRows;
-    this.dom.stRight.textContent = total
+    const rowStatus = total
       ? t('status.rowOf', { cur: (typeof row === 'bigint' ? row + 1n : row + 1).toLocaleString(), total: total.toLocaleString() })
       : '';
+    this.dom.stRight.textContent = this._saveErrorActive
+      ? (rowStatus ? `${rowStatus} · ${t('status.saveFailed')}` : t('status.saveFailed'))
+      : rowStatus;
     this.store.set({ currentAddress: addr });
   }
 
@@ -2343,16 +2466,10 @@ export class App {
       this.v6?.importV2DeltaFields?.(delta);
 
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
-        for (const addrKey of previousNoteNames) {
-          try { this.symbols.rename(BigInt(addrKey), ''); } catch { /* ignore */ }
-        }
-        if (notes && notes !== EMPTY_NOTES) {
-          for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr, entry.name);
-        } else {
-          for (const [k, v] of Object.entries(delta.names || {})) {
-            try { this.symbols.rename(BigInt(k), v); } catch { /* ignore */ }
-          }
-        }
+        const nextEntries = (notes && notes !== EMPTY_NOTES)
+          ? notes.nameEntries()
+          : Object.entries(delta.names || {}).map(([k, v]) => ({ addr: k, name: v }));
+        this._applySymbolRenames(nextEntries, { replace: true });
         this.viewer?.setSymbols?.(this.symbols);
         this.syncSymbolsStore();
       }
@@ -2593,9 +2710,7 @@ export class App {
       this.projectAnnotations = [];
       this.lastGoal = null;
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
-        for (const addrKey of previousNoteNames) {
-          try { this.symbols.rename(BigInt(addrKey), ''); } catch { /* ignore */ }
-        }
+        this._applySymbolRenames([], { replace: true });
         this.viewer?.setSymbols?.(this.symbols);
         this.syncSymbolsStore();
       }
@@ -2625,49 +2740,67 @@ export class App {
     if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
     const sampleOpen = !!(opts && opts.sample);
     const restoredOpen = !!(opts && opts.restored);
-    this.workspace?.autosave();
+    this.workspace?.autosave({ immediate: true });
+    const openSeq = ++this._openSequence;
+    this.store.set({ fileLoading: true });
+    this.dom.app?.classList?.add('is-file-loading');
+    if (typeof document !== 'undefined') document.body?.classList?.add('is-file-loading');
     this.setBusy(true, t('status.reading', { name:file.name }));
+    this.updateChrome();
     let info;
-    try { info = await this.backend.open(file); }
-    catch (err) {
-      if (err && err.stale) return;
-      this.setBusy(false);
-      alertDialog(t('err.openTitle'), friendly(err.message));
-      return;
+    let sliceIndex = -1;
+    let resolvedOpenEpoch;
+    try {
+      try { info = await this.backend.open(file); }
+      catch (err) {
+        if (err && err.stale) return;
+        alertDialog(t('err.openTitle'), friendly(err.message));
+        return;
+      }
+      const openEpoch=this.backend.gen;
+      resolvedOpenEpoch = openEpoch;
+      this.analysisResumeReady = Promise.resolve(false);
+      this.workspace?.invalidate();
+      this.activeProject=null;
+      closeAllSheets();
+      this.sampleOpen=sampleOpen;
+      this.detailRefresh=null;
+      this.forgetSemantics(true);
+      this.symbols=EMPTY_INDEX;
+      this.symbolsReady=null;
+      this.viewer.setSymbols(EMPTY_INDEX);
+      this.store.set({ symbolsGen: 0, symbolsReady: false });
+      this.store.set({file,fileInfo:info,selectedRow:-1});
+      if (info.slices.length) {
+        sliceIndex=info.slices.findIndex((entry)=>entry.info && entry.info.isArm64);
+        if (sliceIndex < 0) sliceIndex=info.slices.findIndex((entry)=>entry.info);
+      }
+      this._resetDeltaReadiness();
+      this.noteAttachController?.abort();
+      this._undoStack.length = 0;
+      this._redoStack.length = 0;
+      this.notes?.dispose?.();
+      this.notes=EMPTY_NOTES;
+      this.projectAnnotations = [];
+      this.bookmarks?.clear?.({ silent: true });
+      this.lastDeltaRestore=null;
+      this.restoredRoutePath=null;
+      this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
+      this.store.set({ deltaRestored: null });
+      this.patches=this._createPatchSet();
+      this.store.set({patches:0});
+      this.applySlice(sliceIndex,info);
+      this._renderIntegrityBanner(info, sliceIndex >= 0 ? info.slices?.[sliceIndex] : null);
+    } finally {
+      if (openSeq === this._openSequence) {
+        this.store.set({ fileLoading: false });
+        this.dom.app?.classList?.remove('is-file-loading');
+        if (typeof document !== 'undefined') document.body?.classList?.remove('is-file-loading');
+        this.setBusy(false);
+        this.updateChrome();
+      }
     }
-    const openEpoch=this.backend.gen;
-    this.analysisResumeReady = Promise.resolve(false);
-    this.workspace?.invalidate();
-    this.activeProject=null;
-    closeAllSheets();
-    this.sampleOpen=sampleOpen;
-    this.detailRefresh=null;
-    this.forgetSemantics(true);
-    this.symbols=EMPTY_INDEX;
-    this.symbolsReady=null;
-    this.viewer.setSymbols(EMPTY_INDEX);
-    this.store.set({ symbolsGen: 0, symbolsReady: false });
-    this.store.set({file,fileInfo:info,selectedRow:-1});
-    let sliceIndex=-1;
-    if (info.slices.length) {
-      sliceIndex=info.slices.findIndex((entry)=>entry.info && entry.info.isArm64);
-      if (sliceIndex < 0) sliceIndex=info.slices.findIndex((entry)=>entry.info);
-    }
-    this._resetDeltaReadiness();
-    this.noteAttachController?.abort();
-    this._undoStack.length = 0;
-    this._redoStack.length = 0;
-    this.notes=EMPTY_NOTES;
-    this.projectAnnotations = [];
-    this.bookmarks?.clear?.({ silent: true });
-    this.lastDeltaRestore=null;
-    this.restoredRoutePath=null;
-    this.uiResume = { explorerFilter: 'all', explorerSort: 'address', lastFunctionTab: null };
-    this.store.set({ deltaRestored: null });
-    this.patches=this._createPatchSet();
-    this.store.set({patches:0});
-    this.setBusy(false);
-    this.applySlice(sliceIndex,info);
+    const openEpoch = resolvedOpenEpoch;
     const projectReady = this.attachNotes(file,info,sliceIndex,openEpoch)
       .then(()=>this.workspace?.bind())
       .then((project)=>{if(project)this.activeProject=project; return project;})
@@ -2710,6 +2843,7 @@ export class App {
     this.noteAttachController?.abort();
     const controller=new AbortController();
     this.noteAttachController=controller;
+    let notes = null;
     try {
       const [binaryId, legacyV2] = await Promise.all([
         this.backend.ensureBinaryId({ signal:controller.signal, priority:'current' }),
@@ -2720,16 +2854,35 @@ export class App {
       // Discover an existing v3 namespace cheaply; do not re-hash the active slice
       // on every cold open merely to learn whether migration data exists.
       const legacyV3=findLegacyV3NoteKey(file,info,sliceIndex);
-      const notes=new NoteStore(id,[legacyV3,legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
-      notes.onChange = () => {
+      notes=new NoteStore(id,[legacyV3,legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)],{
+        idb: this.notesIdb,
+        onSaveError: (err) => this._reportSaveError(err),
+        onSaveSuccess: () => this._clearSaveError(),
+      });
+      await notes.hydrateFromIdb?.();
+      if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('file') !== file || this.store.get('sliceIndex') !== sliceIndex) {
+        notes.dispose?.();
+        return null;
+      }
+      notes.onChange = (event) => {
+        if (event?.remote || event?.kind === 'remote-sync') {
+          if (this.symbols && this.symbols !== EMPTY_INDEX) {
+            this._applySymbolRenames(notes.nameEntries(), { replace: true });
+            this.viewer?.setSymbols?.(this.symbols);
+            this.syncSymbolsStore?.();
+          }
+          this.viewer?.invalidate?.();
+          return;
+        }
         this.viewer?.invalidate?.();
         if (this._applyingDelta) return;
         this.scheduleDeltaSave();
         this.workspace?.autosave?.();
       };
+      if (this.notes && this.notes !== notes) this.notes.dispose?.();
       this.notes=notes;
       if (this.symbols && this.symbols !== EMPTY_INDEX) {
-        for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
+        this._applySymbolRenames(notes.nameEntries(), { replace: true });
         this.viewer.setSymbols(this.symbols);
         this.syncSymbolsStore();
         this.updateChrome();
@@ -2739,6 +2892,7 @@ export class App {
       document.dispatchEvent(new CustomEvent('hex:notes-attached',{detail:{sliceIndex}}));
       return notes;
     } catch (error) {
+      if (notes && this.notes !== notes) notes.dispose?.();
       if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || controller.signal.aborted) return null;
       return null;
     } finally {
@@ -2765,6 +2919,8 @@ export class App {
     const arch = capability.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
     const canDisassemble = capability.canDisassemble === true || capability.viewerCanDisassemble === true;
     this.store.set({ sliceIndex, regions, architecture: arch, canDisassemble, capability, analysisLevel:capability.analysisLevel||'data-only', limitations:capability.limitations||[], instructionAlignment:Math.max(1,Number(capability.instructionAlignment||capability.fixedInstructionSize||1)) });
+    this.viewer?.setRelocations?.(slice?.info?.relocations || [], { isRelocatableObject: slice?.info?.filetype === 1 });
+    this._renderIntegrityBanner(info, slice);
 
     const mode = canDisassemble ? this.preferredMode : 'hex';
     this.store.set({ displayMode: mode });
@@ -2798,7 +2954,7 @@ export class App {
         // shares the same trust boundary.
         this.symbols = new SymbolIndex({ ...res, regions });
         // 前回このファイルに付けた名前を戻す（元の名前より優先される）
-        for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
+        this._applySymbolRenames(this.notes.nameEntries(), { replace: true });
         this.viewer.setSymbols(this.symbols);
         this.syncSymbolsStore(true);
         this.updateChrome();

@@ -89,7 +89,7 @@ const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 
 // #326/#327: project size is a hard boundary on both output and Blob input,
 // before Blob.text() materializes an oversized string.
 {
-  const project = createHexProject({ comments: [{ text: 'x'.repeat(MAX_PROJECT_BYTES + 1024) }] });
+  const project = createHexProject({ projectAnnotations: ['x'.repeat(MAX_PROJECT_BYTES + 1024)] });
   assert.throws(() => serializeHexProject(project), /16 MiB/);
   let textCalled = false;
   class ProbeBlob extends Blob {

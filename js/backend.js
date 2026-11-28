@@ -73,6 +73,52 @@ function semanticFunctionTarget(architecture) {
   return target;
 }
 
+const INTEGRITY_TRUNCATION_RE = /truncat(?:ed|ion)|invalid segment file\/vm range|exceeds|damaged header|could not be parsed|invalid load-command|outside (?:parent\/slice|the selected slice|slice|file)/i;
+
+export function normalizeIntegrityWarnings(result, extraWarnings = [], forceTruncated = false) {
+  if (!result || typeof result !== 'object') return result;
+  const warnings = [];
+  const seen = new Set();
+  let truncated = Boolean(forceTruncated || result.truncated === true || result.detection?.truncated === true || result.platform?.detected?.truncated === true);
+
+  const pushWarning = (value) => {
+    if (value == null) return;
+    if (Array.isArray(value)) {
+      for (const item of value) pushWarning(item);
+      return;
+    }
+    const raw = typeof value === 'string'
+      ? value
+      : (typeof value === 'object' && typeof value.message === 'string' ? value.message : null);
+    if (!raw) return;
+    const text = raw.trim();
+    if (!text) return;
+    if (INTEGRITY_TRUNCATION_RE.test(text)) truncated = true;
+    if (!seen.has(text)) {
+      seen.add(text);
+      warnings.push(text);
+    }
+  };
+
+  pushWarning(result.warnings);
+  pushWarning(extraWarnings);
+
+  if (Array.isArray(result.slices)) {
+    for (const slice of result.slices) {
+      if (!slice || typeof slice !== 'object') continue;
+      if (slice.truncated === true || slice.info?.truncated === true) truncated = true;
+      pushWarning(slice.warnings);
+      pushWarning(slice.error);
+      pushWarning(slice.info?.diagnostics);
+      pushWarning(slice.info?.warnings);
+    }
+  }
+
+  result.warnings = warnings;
+  result.truncated = truncated;
+  return result;
+}
+
 const LEGACY_MACHO_ARCHITECTURES = Object.freeze(['arm64', 'arm64e', 'arm64_32']);
 function isLegacyMachArchitecture(architecture) {
   return LEGACY_MACHO_ARCHITECTURES.includes(String(architecture || '').toLowerCase());
@@ -596,6 +642,21 @@ export class Backend {
         legacyCompatibilityParseRequired:true,
         ...(platformError ? { normalizedDyldError: platformError.message } : {}),
       };
+      const platformSliceWarnings = Array.isArray(normalized?.slices)
+        ? normalized.slices.flatMap((slice) => [
+          ...(Array.isArray(slice?.warnings) ? slice.warnings : []),
+          ...(Array.isArray(slice?.info?.diagnostics) ? slice.info.diagnostics : []),
+          ...(Array.isArray(slice?.info?.warnings) ? slice.info.warnings : []),
+          slice?.error,
+        ])
+        : [];
+      const platformSliceTruncated = Array.isArray(normalized?.slices)
+        && normalized.slices.some((slice) => slice?.truncated === true || slice?.info?.truncated === true);
+      normalizeIntegrityWarnings(
+        legacy,
+        [normalized?.warnings, platformSliceWarnings, platformError?.message],
+        Boolean(normalized?.truncated === true || detection?.truncated === true || platformSliceTruncated),
+      );
       nextLegacy = legacy;
       nextPlatform = normalized
         ? { ...normalized, normalizedDyldTruth:true, compatibility:'hybrid-macho' }
@@ -621,6 +682,11 @@ export class Backend {
         } else {
           cancelSpeculativeLegacy();
         }
+        normalizeIntegrityWarnings(
+          platformInfo,
+          [platformError?.message],
+          Boolean(platformInfo?.truncated === true || detection?.truncated === true),
+        );
         result=platformInfo;
       } else {
         const legacy=await awaitLegacyOpen();
@@ -644,9 +710,12 @@ export class Backend {
             ...(platformError ? { normalizedDyldError: platformError.message } : {}),
           };
           nextPlatform = { formatId:'macho', capability:legacy.capability, detection:detection||{formatId:'macho'}, normalizedDyldTruth:false, compatibility:'legacy-macho', fallbackFromPlatformFailure:true };
-        } else {
-          if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
         }
+        normalizeIntegrityWarnings(
+          legacy,
+          [platformError?.message],
+          Boolean(detection?.truncated === true),
+        );
         result=legacy;
       }
     }

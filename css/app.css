@@ -1749,3 +1749,64 @@ html, body {
 /* 画面の中で下へ動くだけの操作は、別画面へ行く一段より弱く見せる。 */
 .in-sheet-actions .detail-actions { padding: 2px 16px 12px; }
 .in-sheet-actions .detail-actions .chip { flex: 0 1 auto; }
+
+/* ── ファイル読み込み中ロック / 整合性警告バナー / 自動保存警告 ── */
+body.is-file-loading .loading,
+.is-file-loading .loading {
+  position: fixed;
+  inset: 0;
+  left: 0;
+  top: 0;
+  transform: none;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  pointer-events: all;
+}
+body.is-file-loading .loading[hidden],
+.is-file-loading .loading[hidden] {
+  display: none;
+}
+body.is-file-loading #overlays {
+  pointer-events: none;
+}
+
+.integrity-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: #fff4e5;
+  color: #663c00;
+  border-bottom: 1px solid #f0c36d;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.integrity-banner[hidden] {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  .integrity-banner {
+    background: #3b2806;
+    color: #ffdca8;
+    border-bottom-color: #7c5813;
+  }
+}
+
+.status-save-error {
+  color: #c62828;
+  font-weight: 600;
+}
+@media (prefers-color-scheme: dark) {
+  .status-save-error {
+    color: #ff8a80;
+  }
+}

@@ -12,21 +12,30 @@
  *   - 関数の中の変数の呼び名       varName(func, key) / setVarName(...)
  *   - 引数・戻り値に決めた型       typeOf(func, key) / setType(...)
  *
- * 保存先はブラウザの localStorage で、ファイルごとに分かれています
+ * 保存先はブラウザの IndexedDB（利用不可環境では localStorage）で、ファイルごとに分かれています
  * （内容fingerprint・active slice UUID/archで見分ける）。どこにも送信しません。
  */
 
 import { asByteSource } from './binary/source.js';
 import { hashByteSource, sha256TreeByteSource } from './platform/hash.js';
+import {
+  MAX_PROJECT_BYTES,
+  MAX_NAME_LENGTH,
+  MAX_COMMENT_LENGTH,
+  MAX_TYPE_LENGTH,
+} from './project/limits.js';
 
 const PREFIX = 'hex.notes.';
-const MAX_BYTES = 2 * 1024 * 1024;   // 1 ファイルぶんの上限（保存が壊れないように）
+export const MAX_NOTES_BYTES = MAX_PROJECT_BYTES;   // 16 MiB（MAX_PROJECT_BYTES と統一）
+export { MAX_NAME_LENGTH, MAX_COMMENT_LENGTH, MAX_TYPE_LENGTH };
+const SYNC_CHANNEL_NAME = 'hex.notes.sync.v1';
 const NOTE_KEY_CACHE = new WeakMap(); // File/ByteSource -> resolved slice identities
 const SNAPSHOT_MISSING = 'missing';
 const SNAPSHOT_VALID = 'valid';
 const SNAPSHOT_TOMBSTONE = 'tombstone';
 const SNAPSHOT_INVALID = 'invalid';
 const SNAPSHOT_UNAVAILABLE = 'unavailable';
+const STORE_KINDS = ['names', 'comments', 'vars', 'types'];
 let noteGenerationCounter = 0;
 
 /** Opaque identity for one committed base snapshot and its delta overlay. */
@@ -36,6 +45,29 @@ function nextNoteGeneration() {
   } catch { /* deterministic fallback below keeps old browsers usable */ }
   noteGenerationCounter += 1;
   return `${Date.now().toString(36)}-${noteGenerationCounter.toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function normalizeSaveError(error, fallbackCode = 'IDB_ERROR') {
+  if (error && typeof error === 'object' && typeof error.code === 'string' && error.code) {
+    return {
+      code: error.code,
+      message: error.message || String(error),
+      ...(error.cause ? { cause: error.cause } : {}),
+    };
+  }
+  const code = error?.name === 'QuotaExceededError' ? 'QUOTA_EXCEEDED' : (error?.name || fallbackCode);
+  return {
+    code,
+    message: error?.message || String(error || ''),
+  };
+}
+
+function iterEntries(source) {
+  if (!source) return [];
+  if (source instanceof Map) return source.entries();
+  if (Array.isArray(source)) return source;
+  if (typeof source === 'object') return Object.entries(source);
+  return [];
 }
 
 /** BigInt でも Number でも同じ鍵になるように、10 進の文字列にそろえる。 */
@@ -258,9 +290,33 @@ export async function noteKeyFor(file, fileInfo, sliceIndex, options = {}) {
 }
 
 export class NoteStore {
-  constructor(id, legacyIds = []) {
+  constructor(id, legacyIds = [], options = {}) {
+    const opts = options && typeof options === 'object' ? options : {};
     this.id = id || null;
     this.legacyIds = Array.from(new Set((legacyIds || []).filter((x) => x && x !== this.id)));
+    this._maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0 ? opts.maxBytes : MAX_NOTES_BYTES;
+    this._hasCustomStorage = Object.prototype.hasOwnProperty.call(opts, 'storage');
+    this._customStorage = this._hasCustomStorage ? opts.storage : null;
+    this._windowObj = Object.prototype.hasOwnProperty.call(opts, 'windowObj')
+      ? opts.windowObj
+      : (typeof window !== 'undefined' ? window : null);
+    this._idb = opts.idb || null;
+    this._useIdb = Boolean(this._idb && this.id);
+    this._enableSync = opts.enableSync !== false && Boolean(this.id);
+    this._tabId = nextNoteGeneration();
+    this._revCounter = 0;
+    this._idbRevision = 0;
+    this._idbPendingWrites = 0;
+    this._localDirty = new Map();
+    this._pingKey = this.id ? `${PREFIX}ping.${this.id}` : null;
+    this._disposed = false;
+    this._idbQueue = Promise.resolve();
+    this._channel = null;
+    this._ownsChannel = false;
+    this._onStorage = null;
+    this._onBroadcast = null;
+    this.onSaveError = typeof opts.onSaveError === 'function' ? opts.onSaveError : null;
+    this.onSaveSuccess = typeof opts.onSaveSuccess === 'function' ? opts.onSaveSuccess : null;
     this.migratedFrom = null;
     this.legacyCandidate = null;
     this.lastSaveError = null;
@@ -284,6 +340,64 @@ export class NoteStore {
     this.onChange = null;
     this._listeners = new Set();
     this.load();
+    this._setupSync(opts.broadcastChannel || null);
+  }
+
+  _storage() {
+    if (this._hasCustomStorage) return this._customStorage;
+    return typeof localStorage !== 'undefined' ? localStorage : null;
+  }
+
+  _setupSync(providedChannel) {
+    if (!this._enableSync || !this.id) return;
+    if (this._windowObj && typeof this._windowObj.addEventListener === 'function') {
+      this._onStorage = (event) => this._handleStorageEvent(event);
+      try { this._windowObj.addEventListener('storage', this._onStorage); }
+      catch { this._onStorage = null; }
+    }
+    if (providedChannel) {
+      this._channel = providedChannel;
+      this._ownsChannel = false;
+    } else if (typeof globalThis.BroadcastChannel === 'function') {
+      try {
+        this._channel = new globalThis.BroadcastChannel(SYNC_CHANNEL_NAME);
+        this._channel.unref?.();
+        this._ownsChannel = true;
+      } catch {
+        this._channel = null;
+        this._ownsChannel = false;
+      }
+    }
+    if (this._channel) {
+      this._onBroadcast = (event) => this._handleBroadcastMessage(event?.data ?? event);
+      if (typeof this._channel.addEventListener === 'function') {
+        this._channel.addEventListener('message', this._onBroadcast);
+      } else {
+        this._channel.onmessage = this._onBroadcast;
+      }
+    }
+  }
+
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    if (this._windowObj && this._onStorage && typeof this._windowObj.removeEventListener === 'function') {
+      try { this._windowObj.removeEventListener('storage', this._onStorage); } catch { /* ignore */ }
+    }
+    if (this._channel) {
+      if (this._onBroadcast && typeof this._channel.removeEventListener === 'function') {
+        try { this._channel.removeEventListener('message', this._onBroadcast); } catch { /* ignore */ }
+      } else if (this._channel.onmessage === this._onBroadcast) {
+        try { this._channel.onmessage = null; } catch { /* ignore */ }
+      }
+      if (this._ownsChannel && typeof this._channel.close === 'function') {
+        try { this._channel.close(); } catch { /* ignore */ }
+      }
+    }
+    this._onStorage = null;
+    this._onBroadcast = null;
+    this._channel = null;
+    this._ownsChannel = false;
   }
 
   setOnChange(fn) {
@@ -297,7 +411,7 @@ export class NoteStore {
   }
 
   _notifyChange(kind, detail = null) {
-    const event = { kind, detail, count: this.count };
+    const event = { kind, detail, count: this.count, remote: kind === 'remote-sync' };
     if (typeof this.onChange === 'function') {
       try { this.onChange(event); }
       catch { /* observer isolation */ }
@@ -305,6 +419,328 @@ export class NoteStore {
     for (const fn of this._listeners) {
       try { fn(event); }
       catch { /* observer isolation */ }
+    }
+  }
+
+  _markLocalDirty(kind, recordKey, value) {
+    const rev = ++this._revCounter;
+    const updatedAt = Date.now();
+    this._localDirty.set(`${kind}:${recordKey}`, {
+      kind,
+      key: String(recordKey),
+      value: value == null ? null : String(value),
+      deleted: value == null,
+      rev,
+      updatedAt,
+    });
+    return { rev, updatedAt };
+  }
+
+  _snapshotObject(generation = null) {
+    return {
+      v: 2,
+      generation: generation || this._snapshotGeneration || nextNoteGeneration(),
+      names: Object.fromEntries(this.names),
+      comments: Object.fromEntries(this.comments),
+      vars: Object.fromEntries(this.vars),
+      types: Object.fromEntries(this.types),
+      structs: this.structs,
+    };
+  }
+
+  _broadcastSync(payload) {
+    if (!this._channel || this._disposed || !this.id) return;
+    try {
+      this._channel.postMessage({
+        tabId: this._tabId,
+        storeId: this.id,
+        ...payload,
+      });
+    } catch { /* ignore cross-tab broadcast failure */ }
+  }
+
+  _writePing(rev) {
+    const storage = this._storage();
+    if (!storage || !this._pingKey || this._disposed) return;
+    try {
+      storage.setItem(this._pingKey, JSON.stringify({
+        tabId: this._tabId,
+        rev,
+        ts: Date.now(),
+      }));
+    } catch { /* ping is best effort */ }
+  }
+
+  _updateIdbRevision(revision) {
+    if (Number.isFinite(revision) && revision > this._idbRevision) {
+      this._idbRevision = revision;
+    }
+  }
+
+  _queueIdbWrite(workFn, onDone = null) {
+    this._idbPendingWrites++;
+    const task = this._idbQueue.then(async () => {
+      try {
+        if (this._disposed) return;
+        const result = await workFn();
+        if (this._disposed) return;
+        this._updateIdbRevision(result?.revision);
+        onDone?.(result);
+        if (this._idbPendingWrites <= 1) {
+          if (this._localDirty.size === 0) this.dirty = false;
+          this.lastMutationSaved = true;
+          this.lastSaveError = null;
+          this.onSaveSuccess?.();
+        }
+      } catch (error) {
+        if (this._disposed) return;
+        this.dirty = true;
+        this.lastMutationSaved = false;
+        this.lastSaveError = normalizeSaveError(error);
+        this.onSaveError?.(this.lastSaveError);
+      } finally {
+        this._idbPendingWrites = Math.max(0, this._idbPendingWrites - 1);
+      }
+    });
+    this._idbQueue = task;
+    return task;
+  }
+
+  async flush() {
+    await this._idbQueue;
+    if (this._idb && typeof this._idb.flush === 'function') {
+      await this._idb.flush();
+    }
+  }
+
+  async saveAsync({ replace = false } = {}) {
+    if (!this._useIdb) return this.save({ replace });
+    const ok = this.save({ replace });
+    if (!ok) return false;
+    await this.flush();
+    return this.lastSaveError == null;
+  }
+
+  async hydrateFromIdb() {
+    if (!this._useIdb || !this._idb || this._disposed) return { found: false, migrated: false };
+    let loaded;
+    try {
+      loaded = await this._idb.loadStore(this.id);
+    } catch (error) {
+      this.lastSaveError = normalizeSaveError(error);
+      this.onSaveError?.(this.lastSaveError);
+      return { found: false, migrated: false, error: this.lastSaveError };
+    }
+    if (this._disposed) return { found: false, migrated: false };
+    if (loaded?.found) {
+      const tombstones = loaded.tombstones instanceof Map
+        ? loaded.tombstones
+        : new Map(Object.entries(loaded.tombstones || {}));
+      if (loaded.meta?.cleared) {
+        for (const kind of STORE_KINDS) {
+          const map = this._mapForDelta(kind);
+          for (const k of [...map.keys()]) {
+            if (!this._localDirty.has(`${kind}:${k}`)) map.delete(k);
+          }
+        }
+        this._snapshotState = SNAPSHOT_TOMBSTONE;
+      } else {
+        this._snapshotState = SNAPSHOT_VALID;
+      }
+      this._updateIdbRevision(loaded.meta?.revision);
+      for (const kind of STORE_KINDS) {
+        const map = this._mapForDelta(kind);
+        const incoming = loaded.entries?.[kind];
+        const incomingKeys = new Set();
+        for (const [k, v] of iterEntries(incoming)) {
+          const keyStr = String(k);
+          incomingKeys.add(keyStr);
+          const dirtyKey = `${kind}:${keyStr}`;
+          if (this._localDirty.has(dirtyKey)) continue;
+          if (tombstones.has(dirtyKey)) {
+            map.delete(keyStr);
+            continue;
+          }
+          map.set(keyStr, String(v));
+        }
+        if (!loaded.meta?.cleared) {
+          for (const k of [...map.keys()]) {
+            if (!incomingKeys.has(k) && !this._localDirty.has(`${kind}:${k}`)) {
+              map.delete(k);
+            }
+          }
+        }
+        for (const [tKey] of tombstones) {
+          if (!tKey.startsWith(`${kind}:`) || this._localDirty.has(tKey)) continue;
+          map.delete(tKey.slice(kind.length + 1));
+        }
+      }
+      if (Array.isArray(loaded.meta?.structs) && (!this.dirty || this.structs.length === 0)) {
+        this.structs = loaded.meta.structs.slice();
+      }
+      if (typeof loaded.meta?.generation === 'string' && loaded.meta.generation) {
+        this._snapshotGeneration = loaded.meta.generation;
+      }
+      this._notifyChange('remote-sync', { source: 'idb-hydrate' });
+      return { found: true, migrated: false };
+    }
+    const hasLocalData = this.count > 0 || this.structs.length > 0 || this._snapshotState === SNAPSHOT_VALID;
+    if (hasLocalData) {
+      try {
+        const res = await this._idb.replaceStore(
+          this.id,
+          { ...this._snapshotObject(), migratedFromLocalStorage: true },
+          { replace: true },
+        );
+        if (this._disposed) return { found: false, migrated: false };
+        this._updateIdbRevision(res?.revision);
+        this._clearDeltas();
+        return { found: false, migrated: true };
+      } catch (error) {
+        this.lastSaveError = normalizeSaveError(error);
+        this.onSaveError?.(this.lastSaveError);
+        return { found: false, migrated: false, error: this.lastSaveError };
+      }
+    }
+    return { found: false, migrated: false };
+  }
+
+  /* ── タブ間同期受信 ───────────────────────────────────── */
+
+  _mergeRemoteSnapshot(o, { replace = false } = {}) {
+    if (!o || typeof o !== 'object') return;
+    if (o.cleared === true) {
+      for (const kind of STORE_KINDS) {
+        const map = this._mapForDelta(kind);
+        for (const k of [...map.keys()]) {
+          if (!this._localDirty.has(`${kind}:${k}`)) map.delete(k);
+        }
+      }
+      if (!this.dirty) this.structs = [];
+      this._snapshotState = SNAPSHOT_TOMBSTONE;
+      if (typeof o.generation === 'string' && o.generation) this._snapshotGeneration = o.generation;
+      return;
+    }
+    for (const kind of STORE_KINDS) {
+      const map = this._mapForDelta(kind);
+      const section = o[kind];
+      const remoteObj = section && typeof section === 'object' && !Array.isArray(section) ? section : {};
+      if (replace) {
+        map.clear();
+        for (const [k, v] of Object.entries(remoteObj)) map.set(k, String(v));
+      } else {
+        for (const k of [...map.keys()]) {
+          if (!Object.prototype.hasOwnProperty.call(remoteObj, k) && !this._localDirty.has(`${kind}:${k}`)) {
+            map.delete(k);
+          }
+        }
+        for (const [k, v] of Object.entries(remoteObj)) {
+          if (!this._localDirty.has(`${kind}:${k}`)) map.set(k, String(v));
+        }
+      }
+    }
+    if (Array.isArray(o.structs) && (replace || !this.dirty || this.structs.length === 0)) {
+      this.structs = o.structs.slice();
+    }
+    this._snapshotState = SNAPSHOT_VALID;
+    if (typeof o.generation === 'string' && o.generation) this._snapshotGeneration = o.generation;
+  }
+
+  _handleStorageEvent(event) {
+    if (this._disposed || !this.id || !event) return;
+    const changedKey = event.key;
+    if (changedKey === this._pingKey) {
+      if (!event.newValue) return;
+      try {
+        const ping = JSON.parse(event.newValue);
+        if (ping?.tabId === this._tabId) return;
+      } catch { /* treat as external ping */ }
+      if (this._useIdb) void this.hydrateFromIdb();
+      return;
+    }
+    if (this._useIdb) return;
+    if (changedKey === PREFIX + this.id) {
+      if (!event.newValue) return;
+      try {
+        const o = JSON.parse(event.newValue);
+        this._validatePayload(o);
+        if (o.generation && o.generation === this._snapshotGeneration) return;
+        this._mergeRemoteSnapshot(o);
+        this._snapshotBytes = new TextEncoder().encode(event.newValue).byteLength;
+        this._notifyChange('remote-sync', { op: o.cleared ? 'clear' : 'save', generation: o.generation || null });
+      } catch { /* ignore malformed remote event */ }
+      return;
+    }
+    if (this._deltaPrefix && typeof changedKey === 'string' && changedKey.startsWith(this._deltaPrefix)) {
+      if (!event.newValue) return;
+      try {
+        const delta = JSON.parse(event.newValue);
+        if (!delta || typeof delta !== 'object') return;
+        const map = this._mapForDelta(delta.kind);
+        if (!map || typeof delta.key !== 'string') return;
+        if (delta.generation != null && this._snapshotGeneration != null && delta.generation !== this._snapshotGeneration) return;
+        const dirtyKey = `${delta.kind}:${delta.key}`;
+        if (delta.deleted) map.delete(delta.key);
+        else map.set(delta.key, String(delta.value ?? ''));
+        this._localDirty.delete(dirtyKey);
+        this._notifyChange('remote-sync', {
+          op: 'delta',
+          kind: delta.kind,
+          key: delta.key,
+          value: delta.deleted ? null : String(delta.value ?? ''),
+        });
+      } catch { /* ignore malformed remote delta */ }
+    }
+  }
+
+  _handleBroadcastMessage(msg) {
+    if (this._disposed || !msg || typeof msg !== 'object') return;
+    if (msg.tabId === this._tabId || msg.storeId !== this.id) return;
+    if (msg.op === 'delta') {
+      const map = this._mapForDelta(msg.kind);
+      if (!map || typeof msg.key !== 'string') return;
+      if (msg.deleted || msg.value == null) map.delete(msg.key);
+      else map.set(msg.key, String(msg.value));
+      this._localDirty.delete(`${msg.kind}:${msg.key}`);
+      this._notifyChange('remote-sync', {
+        op: 'delta',
+        kind: msg.kind,
+        key: msg.key,
+        value: msg.deleted || msg.value == null ? null : String(msg.value),
+      });
+      return;
+    }
+    if (msg.op === 'clear') {
+      this.names.clear();
+      this.comments.clear();
+      this.vars.clear();
+      this.types.clear();
+      this.structs = [];
+      this._localDirty.clear();
+      this._snapshotState = SNAPSHOT_TOMBSTONE;
+      if (typeof msg.generation === 'string' && msg.generation) this._snapshotGeneration = msg.generation;
+      this._notifyChange('remote-sync', { op: 'clear', generation: msg.generation || null });
+      return;
+    }
+    if (msg.op === 'save') {
+      if (this._useIdb) {
+        void this.hydrateFromIdb();
+        return;
+      }
+      if (msg.snapshot) {
+        this._mergeRemoteSnapshot(msg.snapshot, { replace: Boolean(msg.replace) });
+      } else {
+        const storage = this._storage();
+        try {
+          const raw = storage?.getItem(PREFIX + this.id);
+          if (raw) {
+            const o = JSON.parse(raw);
+            this._validatePayload(o);
+            this._mergeRemoteSnapshot(o, { replace: Boolean(msg.replace) });
+          }
+        } catch { /* ignore */ }
+      }
+      this._notifyChange('remote-sync', { op: 'save', generation: msg.generation || null });
     }
   }
 
@@ -325,7 +761,7 @@ export class NoteStore {
       throw new Error('invalid-notes-snapshot');
     }
     if (o.cleared === true) return;
-    for (const field of ['names', 'comments', 'vars', 'types']) {
+    for (const field of STORE_KINDS) {
       const value = o[field];
       if (value != null && (typeof value !== 'object' || Array.isArray(value))) {
         throw new Error('invalid-notes-snapshot');
@@ -347,9 +783,11 @@ export class NoteStore {
 
   load() {
     if (!this.id) return;
+    const storage = this._storage();
+    if (!storage) return;
     this._cleanupPending = false;
     let raw = null;
-    try { raw = localStorage.getItem(PREFIX + this.id); }
+    try { raw = storage.getItem(PREFIX + this.id); }
     catch (error) {
       this._snapshotFailure(SNAPSHOT_UNAVAILABLE, error);
       this._loadDeltas({ apply: false });
@@ -396,7 +834,7 @@ export class NoteStore {
     this._loadDeltas({ apply: false });
     for (const old of this.legacyIds) {
       let legacyRaw = null;
-      try { legacyRaw = localStorage.getItem(PREFIX + old); }
+      try { legacyRaw = storage.getItem(PREFIX + old); }
       catch (error) {
         this._snapshotFailure(SNAPSHOT_UNAVAILABLE, error);
         return;
@@ -432,13 +870,14 @@ export class NoteStore {
 
   _loadDeltas({ apply = true, preserveRecoveryKeys = null } = {}) {
     this._deltaScanComplete = true;
-    if (!this._deltaPrefix || typeof localStorage === 'undefined') return { complete: true };
+    const storage = this._storage();
+    if (!this._deltaPrefix || !storage) return { complete: true };
     this._deltaBytes.clear(); this._deltaTotalBytes = 0;
     this._unreadableDeltaKeys.clear();
     const keys = [];
     try {
-      for (let index = 0; index < localStorage.length; index++) {
-        const storageKey = localStorage.key(index);
+      for (let index = 0; index < storage.length; index++) {
+        const storageKey = storage.key(index);
         if (storageKey?.startsWith(this._deltaPrefix)) keys.push(storageKey);
       }
     } catch {
@@ -451,7 +890,7 @@ export class NoteStore {
     // skipped on its own so later valid deltas still restore (issue #6307).
     for (const storageKey of keys) {
       let raw = null;
-      try { raw = localStorage.getItem(storageKey); }
+      try { raw = storage.getItem(storageKey); }
       catch {
         this._unreadableDeltaKeys.add(storageKey);
         this._deltaScanComplete = false;
@@ -511,6 +950,95 @@ export class NoteStore {
   }
 
   /**
+   * Optimistic Concurrency Control (OCC) pre-write merge for localStorage mode:
+   * Before overwriting PREFIX + this.id, re-read the persisted base snapshot
+   * and any live deltas for that base's generation. Remote additions/edits on
+   * keys not locally modified are preserved, while `_localDirty` (including
+   * local deletion tombstones) wins for keys edited in this tab.
+   */
+  _mergeStorageBeforeSave(storage) {
+    if (!storage || !this.id) return;
+    let remoteRaw = null;
+    try { remoteRaw = storage.getItem(PREFIX + this.id); }
+    catch { return; }
+    let remoteGen = this._snapshotGeneration;
+    let remoteChanged = false;
+    if (remoteRaw !== null) {
+      try {
+        const remote = JSON.parse(remoteRaw);
+        this._validatePayload(remote);
+        const parsedGen = typeof remote.generation === 'string' ? remote.generation : null;
+        if (parsedGen !== this._snapshotGeneration) {
+          remoteChanged = true;
+          remoteGen = parsedGen;
+          if (remote.cleared === true) {
+            for (const kind of STORE_KINDS) {
+              const map = this._mapForDelta(kind);
+              for (const k of [...map.keys()]) {
+                if (!this._localDirty.has(`${kind}:${k}`)) map.delete(k);
+              }
+            }
+          } else {
+            for (const kind of STORE_KINDS) {
+              const map = this._mapForDelta(kind);
+              const section = remote[kind];
+              const remoteObj = section && typeof section === 'object' && !Array.isArray(section) ? section : {};
+              for (const k of [...map.keys()]) {
+                if (!Object.prototype.hasOwnProperty.call(remoteObj, k) && !this._localDirty.has(`${kind}:${k}`)) {
+                  map.delete(k);
+                }
+              }
+              for (const [k, v] of Object.entries(remoteObj)) {
+                if (!this._localDirty.has(`${kind}:${k}`)) map.set(k, String(v));
+              }
+            }
+            if (Array.isArray(remote.structs) && (!this.dirty || this.structs.length === 0)) {
+              this.structs = remote.structs.slice();
+            }
+          }
+        }
+      } catch { return; }
+    }
+    // Also incorporate any live deltas written by another tab under remoteGen.
+    if (!this._deltaPrefix) return;
+    const keys = [];
+    try {
+      for (let i = 0; i < storage.length; i++) {
+        const sk = storage.key(i);
+        if (sk?.startsWith(this._deltaPrefix)) keys.push(sk);
+      }
+    } catch { return; }
+    keys.sort();
+    for (const sk of keys) {
+      let raw = null;
+      try { raw = storage.getItem(sk); } catch { continue; }
+      if (raw == null) continue;
+      if (!this._deltaBytes.has(sk)) {
+        try {
+          const bytes = new TextEncoder().encode(raw).byteLength;
+          this._deltaBytes.set(sk, bytes);
+          this._deltaTotalBytes += bytes;
+        } catch { /* ignore */ }
+      }
+      try {
+        const delta = JSON.parse(raw);
+        if (!delta || typeof delta !== 'object') continue;
+        const deltaGen = Object.prototype.hasOwnProperty.call(delta, 'generation') ? delta.generation : null;
+        if (deltaGen !== remoteGen) continue;
+        const map = this._mapForDelta(delta.kind);
+        if (!map || typeof delta.key !== 'string') continue;
+        const dirtyKey = `${delta.kind}:${delta.key}`;
+        if (this._localDirty.has(dirtyKey)) continue;
+        if (delta.deleted) {
+          if (remoteChanged || map.has(delta.key)) map.delete(delta.key);
+        } else {
+          map.set(delta.key, String(delta.value ?? ''));
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  /**
    * Structural revalidation for a delta record that was unreadable at load
    * time (#7160): mirrors the _loadDeltas decode boundary. Returns false when
    * the record still fails the boundary, `current` for a live record that
@@ -550,7 +1078,8 @@ export class NoteStore {
    * clear() as a destructive escape hatch.
    */
   recoverUnreadableDeltas({ quarantine = true } = {}) {
-    if (!this._deltaPrefix || typeof localStorage === 'undefined') return true;
+    const storage = this._storage();
+    if (!this._deltaPrefix || !storage) return true;
     // A failed scan with no per-key evidence may have skipped valid overlay
     // records before this instance could apply them. A metadata-only retry
     // cannot establish that this in-memory view incorporated those records.
@@ -564,7 +1093,7 @@ export class NoteStore {
     const quarantinePrefix = PREFIX + this.id + '.quarantine.';
     for (const storageKey of pending) {
       let raw = null;
-      try { raw = localStorage.getItem(storageKey); }
+      try { raw = storage.getItem(storageKey); }
       catch { failed.push(storageKey); continue; }
       if (raw == null) continue;
       const status = this._isUnreadableDeltaRecord(raw);
@@ -604,11 +1133,11 @@ export class NoteStore {
         }
       }
       try {
-        if (quarantine) localStorage.setItem(
+        if (quarantine) storage.setItem(
           quarantinePrefix + encodeURIComponent(storageKey),
           raw,
         );
-        localStorage.removeItem(storageKey);
+        storage.removeItem(storageKey);
       } catch { failed.push(storageKey); }
     }
     const retry = this._loadDeltas({ apply: false, preserveRecoveryKeys: reconstructed });
@@ -645,10 +1174,11 @@ export class NoteStore {
   }
 
   _clearDeltas() {
+    const storage = this._storage();
     const remaining = new Map();
     const failedKeys = [];
     for (const [storageKey, bytes] of this._deltaBytes) {
-      try { localStorage.removeItem(storageKey); }
+      try { storage?.removeItem(storageKey); }
       catch {
         remaining.set(storageKey, bytes);
         failedKeys.push(storageKey);
@@ -676,8 +1206,39 @@ export class NoteStore {
     };
   }
 
-  _persistDelta(kind, recordKey, value) {
+  _persistDelta(kind, recordKey, value, meta = null) {
     if (!this.id || !this._deltaPrefix) return this._saveFailure('NO_ID');
+    const rev = meta?.rev ?? ++this._revCounter;
+    const updatedAt = meta?.updatedAt ?? Date.now();
+    if (this._useIdb) {
+      const generation = this._snapshotGeneration || nextNoteGeneration();
+      this._snapshotGeneration = generation;
+      this._snapshotState = SNAPSHOT_VALID;
+      this.dirty = false;
+      this.lastMutationSaved = true;
+      const dirtyKey = `${kind}:${recordKey}`;
+      this._queueIdbWrite(
+        () => this._idb.putDelta(this.id, kind, String(recordKey), value, { generation, rev, updatedAt }),
+        () => {
+          const cur = this._localDirty.get(dirtyKey);
+          if (cur && cur.rev === rev) this._localDirty.delete(dirtyKey);
+          this._broadcastSync({
+            op: 'delta',
+            kind,
+            key: String(recordKey),
+            value: value == null ? null : String(value),
+            deleted: value == null,
+            generation,
+            rev,
+            updatedAt,
+          });
+          this._writePing(rev);
+        },
+      );
+      return true;
+    }
+    const storage = this._storage();
+    if (!storage) return this._saveFailure('STORAGE_ERROR');
     if (this._snapshotState === SNAPSHOT_INVALID || this._snapshotState === SNAPSHOT_UNAVAILABLE) {
       return this._saveFailure(
         this._snapshotState === SNAPSHOT_UNAVAILABLE ? 'SNAPSHOT_READ_ERROR' : 'INVALID_SNAPSHOT',
@@ -692,22 +1253,33 @@ export class NoteStore {
     const storageKey = this._deltaKey(kind, recordKey);
     const text = JSON.stringify({
       kind,
-      key:String(recordKey),
-      deleted:value == null,
-      generation:this._snapshotGeneration,
-      ...(value == null ? {} : { value:String(value) }),
+      key: String(recordKey),
+      deleted: value == null,
+      generation: this._snapshotGeneration,
+      ...(value == null ? {} : { value: String(value) }),
     });
     const bytes = new TextEncoder().encode(text).byteLength;
     const previousBytes = this._deltaBytes.get(storageKey) || 0;
     const projected = this._snapshotBytes + this._deltaTotalBytes - previousBytes + bytes;
-    if (projected > MAX_BYTES) return this.save();
+    if (projected > this._maxBytes) return this.save();
     try {
-      localStorage.setItem(storageKey, text);
+      storage.setItem(storageKey, text);
       this._deltaBytes.set(storageKey, bytes);
       this._deltaTotalBytes += bytes - previousBytes;
       this.dirty = false;
       if (!this._cleanupPending) this.lastSaveError = null;
       this.lastMutationSaved = true;
+      this.onSaveSuccess?.();
+      this._broadcastSync({
+        op: 'delta',
+        kind,
+        key: String(recordKey),
+        value: value == null ? null : String(value),
+        deleted: value == null,
+        generation: this._snapshotGeneration,
+        rev,
+        updatedAt,
+      });
       return true;
     } catch (error) { return this._saveFailure(error?.name || 'STORAGE_ERROR', error); }
   }
@@ -720,11 +1292,41 @@ export class NoteStore {
       message: error?.message || String(error || ''),
       ...detail,
     };
+    this.onSaveError?.(this.lastSaveError);
     return false;
   }
 
-  save() {
+  save({ replace = false } = {}) {
     if (!this.id) return this._saveFailure('NO_ID');
+    if (this._useIdb) {
+      const generation = nextNoteGeneration();
+      const rev = ++this._revCounter;
+      const snapshot = this._snapshotObject(generation);
+      const dirtySnapshot = new Map(this._localDirty);
+      this._snapshotGeneration = generation;
+      this._snapshotState = SNAPSHOT_VALID;
+      this.dirty = false;
+      this.lastMutationSaved = true;
+      this._queueIdbWrite(
+        () => this._idb.replaceStore(
+          this.id,
+          { ...snapshot, baseRevision: this._idbRevision, localDirty: dirtySnapshot },
+          { replace },
+        ),
+        () => {
+          for (const [k, meta] of dirtySnapshot) {
+            const cur = this._localDirty.get(k);
+            if (cur && cur.rev === meta.rev) this._localDirty.delete(k);
+          }
+          this._broadcastSync({ op: 'save', replace, generation, rev });
+          this._writePing(rev);
+        },
+      );
+      this._notifyChange('save');
+      return true;
+    }
+    const storage = this._storage();
+    if (!storage) return this._saveFailure('STORAGE_ERROR');
     if (this._snapshotState === SNAPSHOT_INVALID || this._snapshotState === SNAPSHOT_UNAVAILABLE) {
       return this._saveFailure(
         this._snapshotState === SNAPSHOT_UNAVAILABLE ? 'SNAPSHOT_READ_ERROR' : 'INVALID_SNAPSHOT',
@@ -738,22 +1340,17 @@ export class NoteStore {
     if (!this._deltaScanComplete && this._snapshotState !== SNAPSHOT_TOMBSTONE) {
       return this._saveFailure('DELTA_SCAN_INCOMPLETE', null, { recoveryRequired: true });
     }
+    if (!replace) {
+      this._mergeStorageBeforeSave(storage);
+    }
     const generation = nextNoteGeneration();
-    const o = {
-      v: 2,
-      generation,
-      names: Object.fromEntries(this.names),
-      comments: Object.fromEntries(this.comments),
-      vars: Object.fromEntries(this.vars),
-      types: Object.fromEntries(this.types),
-      structs: this.structs,
-    };
+    const o = this._snapshotObject(generation);
     let text;
     try { text = JSON.stringify(o); } catch (error) { return this._saveFailure('SERIALIZE_ERROR', error); }
     const bytes = new TextEncoder().encode(text).byteLength;
-    if (bytes > MAX_BYTES) return this._saveFailure('TOO_LARGE', null, { bytes, maxBytes: MAX_BYTES });
+    if (bytes > this._maxBytes) return this._saveFailure('TOO_LARGE', null, { bytes, maxBytes: this._maxBytes });
     try {
-      localStorage.setItem(PREFIX + this.id, text);
+      storage.setItem(PREFIX + this.id, text);
       this._snapshotBytes = bytes;
       this._snapshotState = SNAPSHOT_VALID;
       this._snapshotGeneration = generation;
@@ -761,13 +1358,42 @@ export class NoteStore {
       const cleanup = this._clearDeltas();
       this._cleanupPending = !cleanup.ok;
       this.dirty = false;
+      this._localDirty.clear();
       this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
+      if (!this.lastSaveError) this.onSaveSuccess?.();
+      this._broadcastSync({ op: 'save', replace, generation });
       this._notifyChange('save');
       return true;
     } catch (error) {
       return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
     }
+  }
+
+  replaceAll({ names, comments, vars, types, structs } = {}, { replaceVars = true, save = true } = {}) {
+    this.names.clear();
+    this.comments.clear();
+    this.types.clear();
+    if (replaceVars) this.vars.clear();
+    this._localDirty.clear();
+    for (const [k, v] of iterEntries(names)) {
+      if (v != null && v !== '') this.names.set(String(k), String(v));
+    }
+    for (const [k, v] of iterEntries(comments)) {
+      if (v != null && v !== '') this.comments.set(String(k), String(v));
+    }
+    for (const [k, v] of iterEntries(types)) {
+      if (v != null && v !== '') this.types.set(String(k), String(v));
+    }
+    if (replaceVars) {
+      for (const [k, v] of iterEntries(vars)) {
+        if (v != null && v !== '') this.vars.set(String(k), String(v));
+      }
+    }
+    this.structs = Array.isArray(structs) ? structs.slice() : [];
+    this.dirty = true;
+    if (!save) return true;
+    return this.save({ replace: true });
   }
 
   /* ── トランザクション ─────────────────────────────────── */
@@ -809,12 +1435,13 @@ export class NoteStore {
     const clean = cleanName(name);
     if (clean) this.names.set(k, clean);
     else this.names.delete(k);
+    const meta = this._markLocalDirty('names', k, clean || null);
     this.dirty = true;
     if (this._transactionDepth > 0 || !save) {
       this._notifyChange('name', { key: k, value: clean || null });
       return true;
     }
-    const ok = this._persistDelta('names', k, clean || null);
+    const ok = this._persistDelta('names', k, clean || null, meta);
     this._notifyChange('name', { key: k, value: clean || null });
     return ok;
   }
@@ -835,15 +1462,16 @@ export class NoteStore {
   setComment(addr, text, { save = true } = {}) {
     const k = key(addr);
     if (!k) return this._saveFailure('INVALID_KEY');
-    const clean = (text || '').toString().slice(0, 500).trim();
+    const clean = (text || '').toString().slice(0, MAX_COMMENT_LENGTH).trim();
     if (clean) this.comments.set(k, clean);
     else this.comments.delete(k);
+    const meta = this._markLocalDirty('comments', k, clean || null);
     this.dirty = true;
     if (this._transactionDepth > 0 || !save) {
       this._notifyChange('comment', { key: k, value: clean || null });
       return true;
     }
-    const ok = this._persistDelta('comments', k, clean || null);
+    const ok = this._persistDelta('comments', k, clean || null, meta);
     this._notifyChange('comment', { key: k, value: clean || null });
     return ok;
   }
@@ -860,12 +1488,13 @@ export class NoteStore {
     const clean = cleanName(name);
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
+    const meta = this._markLocalDirty('vars', kk, clean || null);
     this.dirty = true;
     if (this._transactionDepth > 0 || !save) {
       this._notifyChange('var', { key: kk, value: clean || null });
       return true;
     }
-    const ok = this._persistDelta('vars', kk, clean || null);
+    const ok = this._persistDelta('vars', kk, clean || null, meta);
     this._notifyChange('var', { key: kk, value: clean || null });
     return ok;
   }
@@ -875,15 +1504,16 @@ export class NoteStore {
   setType(func, k, type, { save = true } = {}) {
     const kk = key(func) + ':' + k;
     if (!key(func)) return this._saveFailure('INVALID_KEY');
-    const clean = (type || '').toString().slice(0, 80).trim();
+    const clean = (type || '').toString().slice(0, MAX_TYPE_LENGTH).trim();
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
+    const meta = this._markLocalDirty('types', kk, clean || null);
     this.dirty = true;
     if (this._transactionDepth > 0 || !save) {
       this._notifyChange('type', { key: kk, value: clean || null });
       return true;
     }
-    const ok = this._persistDelta('types', kk, clean || null);
+    const ok = this._persistDelta('types', kk, clean || null, meta);
     this._notifyChange('type', { key: kk, value: clean || null });
     return ok;
   }
@@ -895,17 +1525,43 @@ export class NoteStore {
   clear() {
     this.names.clear(); this.comments.clear(); this.vars.clear(); this.types.clear();
     this.structs = [];
+    this._localDirty.clear();
     this.dirty = true;
     if (!this.id) {
       this._notifyChange('clear');
       return this._saveFailure('NO_ID');
+    }
+    if (this._useIdb) {
+      const generation = nextNoteGeneration();
+      const rev = ++this._revCounter;
+      const updatedAt = Date.now();
+      this._snapshotState = SNAPSHOT_TOMBSTONE;
+      this._snapshotGeneration = generation;
+      this._snapshotLoadError = null;
+      this.dirty = false;
+      this.lastMutationSaved = true;
+      this.migratedFrom = null;
+      this._queueIdbWrite(
+        () => this._idb.clearStore(this.id, { generation, rev, updatedAt }),
+        () => {
+          this._broadcastSync({ op: 'clear', generation, rev });
+          this._writePing(rev);
+        },
+      );
+      this._notifyChange('clear');
+      return true;
+    }
+    const storage = this._storage();
+    if (!storage) {
+      this._notifyChange('clear');
+      return this._saveFailure('STORAGE_ERROR');
     }
     // Keep the legacy payload intact for old app versions, but atomically write
     // a primary-key tombstone so this version never migrates it again.
     try {
       const generation = nextNoteGeneration();
       const tombstone = JSON.stringify({ v: 2, cleared: true, generation });
-      localStorage.setItem(PREFIX + this.id, tombstone);
+      storage.setItem(PREFIX + this.id, tombstone);
       this._snapshotBytes = new TextEncoder().encode(tombstone).byteLength;
       this._snapshotState = SNAPSHOT_TOMBSTONE;
       this._snapshotGeneration = generation;
@@ -918,6 +1574,8 @@ export class NoteStore {
       this.lastSaveError = this._cleanupStatus(cleanup);
       this.lastMutationSaved = true;
       this.migratedFrom = null;
+      if (!this.lastSaveError) this.onSaveSuccess?.();
+      this._broadcastSync({ op: 'clear', generation });
       this._notifyChange('clear');
       return true;
     } catch (error) {
@@ -962,15 +1620,19 @@ export class NoteStore {
         if (typeof v !== 'string') continue;
         const clean = cleanName(v);
         if (!clean) continue;
-        this.names.set(k, clean); n++;
+        this.names.set(k, clean);
+        this._markLocalDirty('names', k, clean);
+        n++;
       }
     }
     if (comments) {
       for (const [k, v] of Object.entries(comments)) {
         if (typeof v !== 'string') continue;
-        const clean = v.slice(0, 500).trim();
+        const clean = v.slice(0, MAX_COMMENT_LENGTH).trim();
         if (!clean) continue;
-        this.comments.set(k, clean); n++;
+        this.comments.set(k, clean);
+        this._markLocalDirty('comments', k, clean);
+        n++;
       }
     }
     if (vars) {
@@ -978,15 +1640,19 @@ export class NoteStore {
         if (typeof v !== 'string') continue;
         const clean = cleanName(v);
         if (!clean) continue;
-        this.vars.set(k, clean); n++;
+        this.vars.set(k, clean);
+        this._markLocalDirty('vars', k, clean);
+        n++;
       }
     }
     if (types) {
       for (const [k, v] of Object.entries(types)) {
         if (typeof v !== 'string') continue;
-        const clean = v.slice(0, 80).trim();
+        const clean = v.slice(0, MAX_TYPE_LENGTH).trim();
         if (!clean) continue;
-        this.types.set(k, clean); n++;
+        this.types.set(k, clean);
+        this._markLocalDirty('types', k, clean);
+        n++;
       }
     }
     if (Array.isArray(o.structs)) this.structs = this.structs.concat(o.structs);
@@ -1004,7 +1670,7 @@ export function cleanName(name) {
   if (name == null) return '';
   let s = String(name).replace(/[\r\n\t]/g, ' ').trim();
   if (!s) return '';
-  if (s.length > 120) s = s.slice(0, 120);
+  if (s.length > MAX_NAME_LENGTH) s = s.slice(0, MAX_NAME_LENGTH);
   return s;
 }
 

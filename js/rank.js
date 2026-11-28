@@ -133,19 +133,43 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
     c.score += points;
   };
 
+  const safeBigInt = (v) => {
+    if (typeof v === 'bigint') return v >= 0n ? v : null;
+    if (typeof v === 'number') return Number.isSafeInteger(v) && v >= 0 ? BigInt(v) : null;
+    if (typeof v === 'string') {
+      const s = v.trim();
+      return /^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(s) ? BigInt(s) : null;
+    }
+    return null;
+  };
+  const CRYPTO_DECAY_WEIGHTS = [1, 0.5, 0.25];
   if (hasProgram && Array.isArray(cryptoConstants) && cryptoConstants.length > 0 && (goal.id === 'crypto' || goal.expects?.crypto)) {
+    const seenCryptoIdsByCand = new Map();
     for (const hit of cryptoConstants.slice(0, 64)) {
       if (hit?.address == null) continue;
-      const addr = BigInt(hit.address);
+      const addr = safeBigInt(hit.address);
+      if (addr == null) continue;
       const bytes = Number.isSafeInteger(hit.length) && hit.length > 0 ? hit.length : 16;
       const users = program.functionsReferencing(addr, BigInt(bytes));
       if (!users || !users.length) continue;
+      const hitKey = hit.id != null ? String(hit.id) : `${addr}:${hit.name ?? ''}`;
       for (const u of users) {
         const c = candidate(u.addr != null ? u.addr : u.site, u.site);
         if (!c) continue;
-        addReason(c, REASON.CRYPTO_CONST, POINTS[REASON.CRYPTO_CONST], {
-          algo: hit.id, name: hit.name, addr, site: u.site,
-        });
+        let seenCryptoIds = seenCryptoIdsByCand.get(c);
+        if (!seenCryptoIds) {
+          seenCryptoIds = new Set();
+          seenCryptoIdsByCand.set(c, seenCryptoIds);
+        }
+        if (seenCryptoIds.has(hitKey)) continue;
+        const nth = seenCryptoIds.size;
+        seenCryptoIds.add(hitKey);
+        const weight = nth < CRYPTO_DECAY_WEIGHTS.length ? CRYPTO_DECAY_WEIGHTS[nth] : 0;
+        if (weight > 0) {
+          addReason(c, REASON.CRYPTO_CONST, POINTS[REASON.CRYPTO_CONST] * weight, {
+            algo: hit.id, name: hit.name, addr, site: u.site,
+          });
+        }
       }
     }
   }
@@ -220,7 +244,10 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   /* Preserve latest-main behaviour: collect all name matches, sort by match
      quality, then cap. An address-order first-400 cap is biased. */
   if (symbols && (symbols.symbolCount > 0 || (symbols.renames?.size > 0))) {
-    const lo = region ? region.vmAddr : null, hi = region ? region.vmAddr + region.size : null;
+    const rawLo = region?.vmAddr != null && region?.size != null ? safeBigInt(region.vmAddr) : null;
+    const rawSize = rawLo != null ? safeBigInt(region.size) : null;
+    const lo = rawLo != null && rawSize != null ? rawLo : null;
+    const hi = lo != null ? lo + rawSize : null;
     const resolveCandAddr = (a) => {
       if (!symbols.functionCount) return a;
       if (typeof symbols.functionStartAt === 'function') {

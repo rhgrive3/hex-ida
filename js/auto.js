@@ -461,6 +461,14 @@ export async function autoAnalyze(opts) {
       users: [],
     });
   }
+  const FINDING_LEVEL_RANK = { high: 0, medium: 1, normal: 1, low: 2 };
+  report.findings.sort((a, b) => {
+    const actionableDiff = (b?.actionable === true ? 1 : 0) - (a?.actionable === true ? 1 : 0);
+    if (actionableDiff !== 0) return actionableDiff;
+    const rankA = Object.hasOwn(FINDING_LEVEL_RANK, a?.level) ? FINDING_LEVEL_RANK[a.level] : 3;
+    const rankB = Object.hasOwn(FINDING_LEVEL_RANK, b?.level) ? FINDING_LEVEL_RANK[b.level] : 3;
+    return rankA - rankB;
+  });
 
   progress({ phase: 'map', done: 0, all: 1 });
   const fields = o.fields || null;
@@ -734,7 +742,7 @@ export async function autoAnalyze(opts) {
       const role = inferRole({
         name: symbols ? symbols.nameAt(t.addr) : null, owner, updates,
         apis: f.apis || [], selectors,
-        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => symbols?.nameAt?.(a)).filter(Boolean) : [],
+        strings: stringFacts.map((text) => ({ text })), callees: f.calledNames || [], callers: program?.callersOf ? program.callersOf(t.addr).slice(0, 12).map((a) => (a && a.addr != null ? symbols?.nameAt?.(a.addr) : null)).filter(Boolean) : [],
         comparisons: compares.length, conditionals: f.conditionals || 0,
         calls: f.calls || 0, stores: f.stores || 0, verified: true,
       });
