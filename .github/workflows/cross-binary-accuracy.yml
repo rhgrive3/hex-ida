@@ -62,7 +62,7 @@ jobs:
             oracle: tests/oracle.YWP.ci.json.gz
           - name: TsumTsum
             fixture: TsumTsum
-            file: TsumTsum
+            file: bainary-test
             oracle: tests/oracle.TsumTsum.ci.json.gz
     steps:
       - uses: actions/checkout@v7
@@ -148,7 +148,7 @@ jobs:
             oracle: tests/oracle.YWP.ci.json.gz
           - name: TsumTsum
             fixture: TsumTsum
-            file: TsumTsum
+            file: bainary-test
             oracle: tests/oracle.TsumTsum.ci.json.gz
         partition: [core, pinpoint, pseudoc-0, pseudoc-1, pseudoc-2, pseudoc-3]
     steps:
