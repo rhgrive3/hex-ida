@@ -437,10 +437,9 @@ export class CodeViewer {
 
   setRelocations(list, { isRelocatableObject = false } = {}) {
     const map = new Map();
+    const addends = new Map();
     const priorityOf = (item) => {
       if (!item) return -1;
-      const isAddend = Boolean(item.isAddend || (item.type === 10 && !item.extern));
-      if (isAddend) return 0;
       return item.symbol != null ? (item.extern ? 3 : 2) : 1;
     };
     if (Array.isArray(list)) {
@@ -448,11 +447,22 @@ export class CodeViewer {
         if (!item || item.address == null) continue;
         try {
           const key = BigInt(item.address).toString();
+          if (item.isAddend) {
+            const val = Number(item.addend);
+            if (Number.isFinite(val) && val !== 0) addends.set(key, val);
+            continue;
+          }
           const existing = map.get(key);
           if (!existing || priorityOf(item) > priorityOf(existing)) {
             map.set(key, item);
           }
         } catch { /* ignore malformed address */ }
+      }
+    }
+    for (const [key, addend] of addends) {
+      const primary = map.get(key);
+      if (primary && (primary.addend == null || primary.addend === 0)) {
+        map.set(key, { ...primary, addend });
       }
     }
     this._relocMap = map.size > 0 ? map : null;

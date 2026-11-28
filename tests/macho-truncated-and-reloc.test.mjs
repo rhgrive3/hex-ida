@@ -388,3 +388,284 @@ test('arm64 unresolved MH_OBJECT adrp fallback suppresses misattribution on page
   assert.doesNotMatch(addNote, /_func_at_page_1000/);
   assert.match(addNote, /再配置|relocat/i);
 });
+
+test('ARM64_RELOC_ADDEND merges addend into primary relocation, suppresses standalone addend, and formats +/-0x in arm64 explain', () => {
+  clearBriefCache();
+  const mockViewer = {
+    _relocMap: null,
+    _isRelocatableObject: false,
+    _ctx: null,
+    symbols: { gen: 1, nameAt: (a) => (a === 0n ? '_func_at_zero' : null) },
+    architectureId: () => 'arm64',
+    noteStyle: 'ja',
+    rowAddress(r) { return BigInt(r) * 4n; },
+    _explainCtx: CodeViewer.prototype._explainCtx,
+  };
+
+  CodeViewer.prototype.setRelocations.call(mockViewer, [
+    // Positive addend before primary at 0x10
+    { address: 0x10n, type: 10, extern: false, isAddend: true, addend: 0x10, symbol: null },
+    { address: 0x10n, type: 3, extern: true, symbol: '_printf' },
+    // Negative addend after primary at 0x20
+    { address: 0x20n, type: 3, extern: true, symbol: '_malloc' },
+    { address: 0x20n, type: 10, extern: false, isAddend: true, addend: -0x18, symbol: null },
+    // Standalone addend at 0x30 (must NOT be registered as a primary candidate)
+    { address: 0x30n, type: 10, extern: false, isAddend: true, addend: 0x8, symbol: null },
+  ], { isRelocatableObject: true });
+
+  assert.equal(mockViewer._relocMap.get('16').symbol, '_printf');
+  assert.equal(mockViewer._relocMap.get('16').addend, 0x10);
+  assert.equal(mockViewer._relocMap.get('32').symbol, '_malloc');
+  assert.equal(mockViewer._relocMap.get('32').addend, -0x18);
+  assert.equal(mockViewer._relocMap.get('48'), undefined, 'standalone isAddend must not be returned as primary');
+
+  const ctx = mockViewer._explainCtx();
+  const ePos = explain('adrp', 'x0, #0', 0x10n, ctx);
+  assert.equal(ePos.target, null);
+  assert.match(ePos.pseudo, /_printf \+ 0x10/);
+  assert.match(ePos.summary, /_printf \+ 0x10/);
+
+  const eNeg = explain('adrp', 'x1, #0', 0x20n, ctx);
+  assert.equal(eNeg.target, null);
+  assert.match(eNeg.pseudo, /_malloc - 0x18/);
+  assert.match(eNeg.summary, /_malloc - 0x18/);
+
+  // Standalone addend address falls back to unresolved reloc rather than leaking addend entry
+  const eStandalone = explain('adrp', 'x2, #0', 0x30n, ctx);
+  assert.equal(eStandalone.target, null);
+  assert.equal(eStandalone.unresolvedRelocation, true);
+});
+
+test('non-ARM64 MH_OBJECT does not misclassify type=10 !extern as ARM64_RELOC_ADDEND', () => {
+  const MachO = loadMachO();
+  const CPU_TYPE_X86_64 = 0x01000007;
+
+  // 1. MachO.parseSectionRelocations with x86_64 vs arm64
+  const relocBytes = new Uint8Array(8);
+  const dv = new DataView(relocBytes.buffer);
+  dv.setInt32(0, 0x08, true);
+  // symbolIndex=2 (section 2), extern=0, type=10
+  dv.setUint32(4, ((2 & 0xffffff) | (0 << 24) | (2 << 25) | (0 << 27) | (10 << 28)) >>> 0, true);
+  const section = { name: '__text', segment: '__TEXT', addr: 0n };
+  const sections = [section, { name: '__cstring', segment: '__DATA', addr: 0x20n }];
+
+  const x64Parsed = MachO.parseSectionRelocations(relocBytes, section, [], sections, true, { cputype: CPU_TYPE_X86_64, architecture: 'x86_64' });
+  assert.equal(x64Parsed.length, 1);
+  assert.equal(x64Parsed[0].isAddend, undefined);
+  assert.equal(x64Parsed[0].symbol, '__DATA,__cstring');
+
+  const armParsed = MachO.parseSectionRelocations(relocBytes, section, [], sections, true, { cputype: MachO.CPU_TYPE_ARM64, architecture: 'arm64' });
+  assert.equal(armParsed.length, 1);
+  assert.equal(armParsed[0].isAddend, true);
+  assert.equal(armParsed[0].addend, 2);
+  assert.equal(armParsed[0].symbol, null);
+
+  // 2. macho-core parseMachO with CPU_TYPE_X86_64 MH_OBJECT
+  const buf = buildThinMachO64({
+    filetype: 1,
+    segFileSize: 64,
+    segVmSize: 64,
+    actualFileSize: 800,
+    withRelocs: true,
+  });
+  const x64Dv = new DataView(buf);
+  x64Dv.setInt32(4, CPU_TYPE_X86_64, true);
+  // Overwrite Entry 1 at relocOff+8 (608) to type=10, extern=0, section=2
+  x64Dv.setUint32(600 + 12, ((2 & 0xffffff) | (0 << 24) | (2 << 25) | (0 << 27) | (10 << 28)) >>> 0, true);
+  const image = parseMachO(new Uint8Array(buf));
+  assert.equal(image.arch, 'x86_64');
+  assert.equal(image.relocations.length, 2);
+  assert.equal(image.relocations[1].type, 10);
+  assert.equal(image.relocations[1].isAddend, undefined);
+  assert.equal(image.relocations[1].symbol, '__DATA,__cstring');
+});
+
+test('arm64 HANDLERS.bl and HANDLERS.b resolve MH_OBJECT ARM64_RELOC_BRANCH26 and prevent 0-addr misattribution', () => {
+  clearBriefCache();
+  const relocs = new Map([
+    ['16', { address: 0x10n, symbol: '_printf', type: 2, extern: true }],
+    ['32', { address: 0x20n, symbol: '_tail_target', type: 2, extern: true, addend: 4 }],
+  ]);
+  const ctx = {
+    gen: 10,
+    lang: 'ja',
+    symbolFor: (addr) => (addr === 0n ? '_func_at_zero' : null),
+    isRelocatableObject: true,
+    relocationFor: (addr) => (addr == null ? null : (relocs.get(BigInt(addr).toString()) || null)),
+  };
+
+  // Resolved bl
+  const eBl = explain('bl', '#0', 0x10n, ctx);
+  assert.equal(eBl.target, null);
+  assert.equal(eBl.pseudo, '_printf()');
+  assert.match(eBl.summary, /_printf/);
+  assert.doesNotMatch(eBl.summary, /_func_at_zero/);
+
+  // Resolved b with addend
+  const eB = explain('b', '#0', 0x20n, ctx);
+  assert.equal(eB.target, null);
+  assert.equal(eB.pseudo, 'goto _tail_target + 0x4');
+  assert.match(eB.summary, /_tail_target \+ 0x4/);
+  assert.doesNotMatch(eB.summary, /_func_at_zero/);
+
+  // Unresolved bl/b at 0 or self-PC placeholder
+  const eUnresBl = explain('bl', '#0', 0x40n, ctx);
+  assert.equal(eUnresBl.target, null);
+  assert.equal(eUnresBl.unresolvedRelocation, true);
+  assert.equal(eUnresBl.pseudo, '<reloc>()');
+  assert.doesNotMatch(eUnresBl.summary, /_func_at_zero/);
+
+  const eUnresBSelf = explain('b', '#0x44', 0x44n, ctx);
+  assert.equal(eUnresBSelf.target, null);
+  assert.equal(eUnresBSelf.unresolvedRelocation, true);
+  assert.equal(eUnresBSelf.pseudo, 'goto <reloc>');
+});
+
+test('MachO.parseSlice sets info.truncated=true for short load commands and out-of-slice DYSYMTAB/FUNCTION_STARTS/DATA_IN_CODE/ENCRYPTION_INFO', () => {
+  const MachO = loadMachO();
+  function buildSingleCmdMachO(cmd, cmdsize, writer) {
+    const buf = new ArrayBuffer(256);
+    const dv = new DataView(buf);
+    dv.setUint32(0, 0xfeedfacf, true); // MH_MAGIC_64
+    dv.setInt32(4, 0x0100000c, true);  // CPU_TYPE_ARM64
+    dv.setUint32(12, 2, true);         // MH_EXECUTE
+    dv.setUint32(16, 1, true);         // ncmds = 1
+    dv.setUint32(20, cmdsize, true);   // sizeofcmds
+    dv.setUint32(32, cmd, true);
+    dv.setUint32(36, cmdsize, true);
+    if (writer) writer(dv, 32);
+    return buf;
+  }
+
+  // 1. cmdsize < ABI minimum (LC_SYMTAB requires 24, give 16)
+  {
+    const buf = buildSingleCmdMachO(0x2, 16);
+    const info = MachO.parseSlice(buf, 0n, BigInt(buf.byteLength));
+    assert.equal(info.truncated, true);
+    assert.ok(info.diagnostics.some((d) => d.includes('shorter than ABI minimum')));
+  }
+  // 2. LC_DYSYMTAB outside slice
+  {
+    const buf = buildSingleCmdMachO(0xb, 80, (dv, off) => {
+      dv.setUint32(off + 56, 512, true); // indirectsymoff > 256
+      dv.setUint32(off + 60, 4, true);   // nindirectsyms
+    });
+    const info = MachO.parseSlice(buf, 0n, BigInt(buf.byteLength));
+    assert.equal(info.truncated, true);
+    assert.ok(info.diagnostics.some((d) => d.includes('LC_DYSYMTAB')));
+  }
+  // 3. LC_FUNCTION_STARTS outside slice
+  {
+    const buf = buildSingleCmdMachO(0x26, 16, (dv, off) => {
+      dv.setUint32(off + 8, 512, true);
+      dv.setUint32(off + 12, 16, true);
+    });
+    const info = MachO.parseSlice(buf, 0n, BigInt(buf.byteLength));
+    assert.equal(info.truncated, true);
+    assert.ok(info.diagnostics.some((d) => d.includes('LC_FUNCTION_STARTS')));
+  }
+  // 4. LC_DATA_IN_CODE outside slice
+  {
+    const buf = buildSingleCmdMachO(0x29, 16, (dv, off) => {
+      dv.setUint32(off + 8, 512, true);
+      dv.setUint32(off + 12, 16, true);
+    });
+    const info = MachO.parseSlice(buf, 0n, BigInt(buf.byteLength));
+    assert.equal(info.truncated, true);
+    assert.ok(info.diagnostics.some((d) => d.includes('LC_DATA_IN_CODE')));
+  }
+  // 5. LC_ENCRYPTION_INFO_64 outside slice
+  {
+    const buf = buildSingleCmdMachO(0x2c, 24, (dv, off) => {
+      dv.setUint32(off + 8, 512, true);
+      dv.setUint32(off + 12, 64, true);
+      dv.setUint32(off + 16, 1, true);
+    });
+    const info = MachO.parseSlice(buf, 0n, BigInt(buf.byteLength));
+    assert.equal(info.truncated, true);
+    assert.equal(info.encrypted, false);
+    assert.ok(info.diagnostics.some((d) => d.includes('LC_ENCRYPTION_INFO')));
+  }
+});
+
+test('panels-base.js relocationFor avoids linear sliceRelocs fallback when _relocMap exists and merges addend', () => {
+  const src = fs.readFileSync(new URL('../js/panels-base.js', import.meta.url), 'utf8');
+  assert.match(src, /const relocMap = app\.viewer\?\._relocMap;\s*if \(relocMap\)\s*\{\s*const hit = relocMap\.get\?\.\(key\) \|\| null;\s*return hit && !hit\.isAddend \? hit : null;\s*\}/);
+  assert.match(src, /if \(r\.isAddend\)/);
+  assert.match(src, /addend !== 0 && \(best\.addend == null \|\| best\.addend === 0\)/);
+});
+
+test('macho-core readRawMachOSymbolNames interns repeated strx and bounds total decoded bytes', () => {
+  // Build an MH_OBJECT with 2000 symbols all pointing to the same strx=1 ("_shared_sym")
+  // and one relocation referencing symbol index 1999.
+  const nsyms = 2000;
+  const hdrSize = 32;
+  const segCmdSize = 72 + 80;
+  const symtabCmdSize = 24;
+  const sizeofcmds = segCmdSize + symtabCmdSize;
+  const textOff = 256;
+  const relocOff = 288;
+  const symOff = 320;
+  const strOff = symOff + nsyms * 16;
+  const strTable = '\0' + '_shared_sym'.repeat(20) + '\0';
+  const totalSize = strOff + strTable.length + 16;
+
+  const buf = new ArrayBuffer(totalSize);
+  const dv = new DataView(buf);
+  const u8 = new Uint8Array(buf);
+
+  dv.setUint32(0, 0xfeedfacf, true);
+  dv.setInt32(4, 0x0100000c, true);
+  dv.setUint32(12, 1, true); // MH_OBJECT
+  dv.setUint32(16, 2, true); // ncmds
+  dv.setUint32(20, sizeofcmds, true);
+
+  let off = hdrSize;
+  dv.setUint32(off, 0x19, true);
+  dv.setUint32(off + 4, segCmdSize, true);
+  dv.setBigUint64(off + 24, 0n, true);
+  dv.setBigUint64(off + 32, 32n, true);
+  dv.setBigUint64(off + 40, BigInt(textOff), true);
+  dv.setBigUint64(off + 48, 32n, true);
+  dv.setInt32(off + 56, 7, true);
+  dv.setInt32(off + 60, 5, true);
+  dv.setUint32(off + 64, 1, true);
+
+  const s1 = off + 72;
+  writeAscii16(u8, s1, '__text');
+  writeAscii16(u8, s1 + 16, '__TEXT');
+  dv.setBigUint64(s1 + 32, 0n, true);
+  dv.setBigUint64(s1 + 40, 16n, true);
+  dv.setUint32(s1 + 48, textOff, true);
+  dv.setUint32(s1 + 52, 2, true);
+  dv.setUint32(s1 + 56, relocOff, true);
+  dv.setUint32(s1 + 60, 1, true);
+  dv.setUint32(s1 + 64, 0x80000400, true);
+
+  const lcSym = off + segCmdSize;
+  dv.setUint32(lcSym, 0x2, true);
+  dv.setUint32(lcSym + 4, 24, true);
+  dv.setUint32(lcSym + 8, symOff, true);
+  dv.setUint32(lcSym + 12, nsyms, true);
+  dv.setUint32(lcSym + 16, strOff, true);
+  dv.setUint32(lcSym + 20, strTable.length, true);
+
+  // Relocation referencing symbol index 1999
+  dv.setInt32(relocOff, 0x04, true);
+  dv.setUint32(relocOff + 4, ((1999 & 0xffffff) | (1 << 24) | (2 << 25) | (1 << 27) | (2 << 28)) >>> 0, true);
+
+  for (let i = 0; i < nsyms; i++) {
+    dv.setUint32(symOff + i * 16, 1, true); // all point to strx = 1
+    u8[symOff + i * 16 + 4] = 0x01; // N_UNDF | N_EXT
+  }
+  for (let i = 0; i < strTable.length; i++) u8[strOff + i] = strTable.charCodeAt(i);
+
+  const image = parseMachO(new Uint8Array(buf));
+  assert.equal(image.relocations.length, 1);
+  assert.equal(image.relocations[0].symbol, '_shared_sym'.repeat(20));
+
+  // Source contract check for intern Map and byte budget cap
+  const coreSrc = fs.readFileSync(new URL('../js/binary/macho-core.js', import.meta.url), 'utf8');
+  assert.match(coreSrc, /MAX_RAW_SYMBOL_NAME_BYTES\s*=\s*8\s*\*\s*1024\s*\*\s*1024/);
+  assert.match(coreSrc, /const intern = new Map\(\)/);
+});

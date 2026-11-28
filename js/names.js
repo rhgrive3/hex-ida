@@ -38,6 +38,14 @@ const SNAPSHOT_UNAVAILABLE = 'unavailable';
 const STORE_KINDS = ['names', 'comments', 'vars', 'types'];
 let noteGenerationCounter = 0;
 
+function safeLocalStorage() {
+  try {
+    return globalThis.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Opaque identity for one committed base snapshot and its delta overlay. */
 function nextNoteGeneration() {
   try {
@@ -209,7 +217,7 @@ export function noteKeyFromBinaryId(file, fileInfo, sliceIndex, binaryId) {
  * expensive sha256tree suffix is already part of the localStorage key, so
  * migration does not need to recompute it.
  */
-export function findLegacyV3NoteKey(file, fileInfo, sliceIndex, storage = globalThis.localStorage) {
+export function findLegacyV3NoteKey(file, fileInfo, sliceIndex, storage = safeLocalStorage()) {
   if (!storage || !file) return null;
   const p = noteSliceIdentityParts(file, fileInfo, sliceIndex);
   if (!p) return null;
@@ -307,6 +315,7 @@ export class NoteStore {
     this._revCounter = 0;
     this._idbRevision = 0;
     this._idbPendingWrites = 0;
+    this._hydrateSeq = 0;
     this._localDirty = new Map();
     this._pingKey = this.id ? `${PREFIX}ping.${this.id}` : null;
     this._disposed = false;
@@ -345,7 +354,7 @@ export class NoteStore {
 
   _storage() {
     if (this._hasCustomStorage) return this._customStorage;
-    return typeof localStorage !== 'undefined' ? localStorage : null;
+    return safeLocalStorage();
   }
 
   _setupSync(providedChannel) {
@@ -459,13 +468,14 @@ export class NoteStore {
     } catch { /* ignore cross-tab broadcast failure */ }
   }
 
-  _writePing(rev) {
+  _writePing(rev, idbRev = null) {
     const storage = this._storage();
     if (!storage || !this._pingKey || this._disposed) return;
     try {
       storage.setItem(this._pingKey, JSON.stringify({
         tabId: this._tabId,
         rev,
+        ...(Number.isFinite(idbRev) ? { idbRev } : {}),
         ts: Date.now(),
       }));
     } catch { /* ping is best effort */ }
@@ -481,7 +491,6 @@ export class NoteStore {
     this._idbPendingWrites++;
     const task = this._idbQueue.then(async () => {
       try {
-        if (this._disposed) return;
         const result = await workFn();
         if (this._disposed) return;
         this._updateIdbRevision(result?.revision);
@@ -523,16 +532,24 @@ export class NoteStore {
 
   async hydrateFromIdb() {
     if (!this._useIdb || !this._idb || this._disposed) return { found: false, migrated: false };
+    const seq = ++this._hydrateSeq;
     let loaded;
     try {
       loaded = await this._idb.loadStore(this.id);
     } catch (error) {
+      if (this._disposed || seq !== this._hydrateSeq) return { found: false, migrated: false };
       this.lastSaveError = normalizeSaveError(error);
       this.onSaveError?.(this.lastSaveError);
       return { found: false, migrated: false, error: this.lastSaveError };
     }
-    if (this._disposed) return { found: false, migrated: false };
+    if (this._disposed || seq !== this._hydrateSeq || this._idbPendingWrites > 0) {
+      return { found: false, migrated: false };
+    }
     if (loaded?.found) {
+      const loadedRev = Number.isFinite(loaded.meta?.revision) ? loaded.meta.revision : 0;
+      if (loadedRev < this._idbRevision) {
+        return { found: false, migrated: false };
+      }
       const tombstones = loaded.tombstones instanceof Map
         ? loaded.tombstones
         : new Map(Object.entries(loaded.tombstones || {}));
@@ -592,7 +609,7 @@ export class NoteStore {
           { ...this._snapshotObject(), migratedFromLocalStorage: true },
           { replace: true },
         );
-        if (this._disposed) return { found: false, migrated: false };
+        if (this._disposed || seq !== this._hydrateSeq) return { found: false, migrated: false };
         this._updateIdbRevision(res?.revision);
         this._clearDeltas();
         return { found: false, migrated: true };
@@ -651,11 +668,17 @@ export class NoteStore {
     const changedKey = event.key;
     if (changedKey === this._pingKey) {
       if (!event.newValue) return;
+      let ping = null;
       try {
-        const ping = JSON.parse(event.newValue);
+        ping = JSON.parse(event.newValue);
         if (ping?.tabId === this._tabId) return;
       } catch { /* treat as external ping */ }
-      if (this._useIdb) void this.hydrateFromIdb();
+      if (this._useIdb) {
+        if (ping && ping.idbRev != null && Number.isFinite(ping.idbRev) && ping.idbRev <= this._idbRevision) {
+          return;
+        }
+        void this.hydrateFromIdb();
+      }
       return;
     }
     if (this._useIdb) return;
@@ -702,6 +725,7 @@ export class NoteStore {
       if (msg.deleted || msg.value == null) map.delete(msg.key);
       else map.set(msg.key, String(msg.value));
       this._localDirty.delete(`${msg.kind}:${msg.key}`);
+      if (Number.isFinite(msg.idbRev)) this._updateIdbRevision(msg.idbRev);
       this._notifyChange('remote-sync', {
         op: 'delta',
         kind: msg.kind,
@@ -719,6 +743,7 @@ export class NoteStore {
       this._localDirty.clear();
       this._snapshotState = SNAPSHOT_TOMBSTONE;
       if (typeof msg.generation === 'string' && msg.generation) this._snapshotGeneration = msg.generation;
+      if (Number.isFinite(msg.idbRev)) this._updateIdbRevision(msg.idbRev);
       this._notifyChange('remote-sync', { op: 'clear', generation: msg.generation || null });
       return;
     }
@@ -1219,9 +1244,10 @@ export class NoteStore {
       const dirtyKey = `${kind}:${recordKey}`;
       this._queueIdbWrite(
         () => this._idb.putDelta(this.id, kind, String(recordKey), value, { generation, rev, updatedAt }),
-        () => {
+        (result) => {
           const cur = this._localDirty.get(dirtyKey);
           if (cur && cur.rev === rev) this._localDirty.delete(dirtyKey);
+          const idbRev = Number.isFinite(result?.revision) ? result.revision : this._idbRevision;
           this._broadcastSync({
             op: 'delta',
             kind,
@@ -1230,9 +1256,10 @@ export class NoteStore {
             deleted: value == null,
             generation,
             rev,
+            idbRev,
             updatedAt,
           });
-          this._writePing(rev);
+          this._writePing(rev, idbRev);
         },
       );
       return true;
@@ -1262,10 +1289,13 @@ export class NoteStore {
     const previousBytes = this._deltaBytes.get(storageKey) || 0;
     const projected = this._snapshotBytes + this._deltaTotalBytes - previousBytes + bytes;
     if (projected > this._maxBytes) return this.save();
+    const dirtyKey = `${kind}:${recordKey}`;
     try {
       storage.setItem(storageKey, text);
       this._deltaBytes.set(storageKey, bytes);
       this._deltaTotalBytes += bytes - previousBytes;
+      const cur = this._localDirty.get(dirtyKey);
+      if (cur && cur.rev === rev) this._localDirty.delete(dirtyKey);
       this.dirty = false;
       if (!this._cleanupPending) this.lastSaveError = null;
       this.lastMutationSaved = true;
@@ -1313,13 +1343,14 @@ export class NoteStore {
           { ...snapshot, baseRevision: this._idbRevision, localDirty: dirtySnapshot },
           { replace },
         ),
-        () => {
+        (result) => {
           for (const [k, meta] of dirtySnapshot) {
             const cur = this._localDirty.get(k);
             if (cur && cur.rev === meta.rev) this._localDirty.delete(k);
           }
-          this._broadcastSync({ op: 'save', replace, generation, rev });
-          this._writePing(rev);
+          const idbRev = Number.isFinite(result?.revision) ? result.revision : this._idbRevision;
+          this._broadcastSync({ op: 'save', replace, generation, rev, idbRev });
+          this._writePing(rev, idbRev);
         },
       );
       this._notifyChange('save');
@@ -1543,9 +1574,10 @@ export class NoteStore {
       this.migratedFrom = null;
       this._queueIdbWrite(
         () => this._idb.clearStore(this.id, { generation, rev, updatedAt }),
-        () => {
-          this._broadcastSync({ op: 'clear', generation, rev });
-          this._writePing(rev);
+        (result) => {
+          const idbRev = Number.isFinite(result?.revision) ? result.revision : this._idbRevision;
+          this._broadcastSync({ op: 'clear', generation, rev, idbRev });
+          this._writePing(rev, idbRev);
         },
       );
       this._notifyChange('clear');

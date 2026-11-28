@@ -7,6 +7,7 @@ import {
   MAX_COMMENT_LENGTH,
   MAX_TYPE_LENGTH,
   cleanName,
+  findLegacyV3NoteKey,
 } from '../js/names.js';
 import { MAX_PROJECT_BYTES } from '../js/project/limits.js';
 import { NotesIdbBackend } from '../js/platform/notes-idb.js';
@@ -701,4 +702,193 @@ test('real NotesIdbBackend + NoteStore integration: 2-tab IDB OCC merge, replace
   tabA.dispose();
   tabB.dispose();
   await idb.close();
+});
+
+test('storage-denied environment (localStorage getter throws SecurityError) does not throw in NoteStore or findLegacyV3NoteKey', () => {
+  const originalDesc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      const err = new Error('Access is denied for this document.');
+      err.name = 'SecurityError';
+      throw err;
+    },
+  });
+  try {
+    const file = new Uint8Array([1, 2, 3, 4]);
+    assert.equal(findLegacyV3NoteKey(file, null, 0), null);
+    const notes = new NoteStore('origin-null-file', [], { enableSync: false });
+    assert.equal(notes.count, 0);
+    notes.dispose();
+  } finally {
+    if (originalDesc) Object.defineProperty(globalThis, 'localStorage', originalDesc);
+    else delete globalThis.localStorage;
+  }
+});
+
+test('localStorage _persistDelta clears _localDirty on success to avoid leak and stale overwrite in 2-tab OCC save', () => {
+  const storage = new MockStorage();
+  const tabA = new NoteStore('ls-dirty-clear', [], { storage, enableSync: false });
+  assert.equal(tabA.setName(0x1000n, 'v0'), true);
+  // Second mutation uses _persistDelta path (snapshot is now SNAPSHOT_VALID).
+  assert.equal(tabA.setName(0x1000n, 'v1_from_a'), true);
+  assert.equal(tabA._localDirty.has('names:4096'), false, '_localDirty must be cleared after localStorage _persistDelta succeeds');
+
+  // Tab B loads and updates 0x1000 -> v2_from_b and commits a new snapshot.
+  const tabB = new NoteStore('ls-dirty-clear', [], { storage, enableSync: false });
+  assert.equal(tabB.nameOf(0x1000n), 'v1_from_a');
+  assert.equal(tabB.setName(0x1000n, 'v2_from_b'), true);
+  assert.equal(tabB.save(), true);
+
+  // Tab A edits an unrelated key 0x2000 and calls save() -> must NOT clobber Tab B's v2_from_b with stale v1_from_a.
+  assert.equal(tabA.setName(0x2000n, 'added_a', { save: false }), true);
+  assert.equal(tabA.save(), true);
+
+  const reopened = new NoteStore('ls-dirty-clear', [], { storage, enableSync: false });
+  assert.equal(reopened.nameOf(0x1000n), 'v2_from_b', 'stale value from earlier _persistDelta must not overwrite newer Tab B edit');
+  assert.equal(reopened.nameOf(0x2000n), 'added_a');
+});
+
+test('hydrateFromIdb discards out-of-order/stale snapshots and skips rewind during pending writes; BroadcastChannel delta updates _idbRevision to skip redundant ping hydrate', async () => {
+  const storage = new MockStorage();
+  const bus = new MockBroadcastBus();
+  const winA = new MockWindow();
+  const winB = new MockWindow();
+  const idb = new MockNotesIdb();
+
+  // Track loadStore calls on Tab B.
+  let loadCalls = 0;
+  const origLoadStore = idb.loadStore.bind(idb);
+  idb.loadStore = async (storeId) => {
+    loadCalls++;
+    return origLoadStore(storeId);
+  };
+
+  const tabA = new NoteStore('idb-sync-opt', [], {
+    storage,
+    idb,
+    windowObj: winA,
+    broadcastChannel: bus.createChannel(),
+  });
+  const tabB = new NoteStore('idb-sync-opt', [], {
+    storage,
+    idb,
+    windowObj: winB,
+    broadcastChannel: bus.createChannel(),
+  });
+
+  // Tab A writes a delta -> BroadcastChannel delivers delta with idbRev=1 to Tab B, then storage ping arrives with idbRev=1.
+  assert.equal(tabA.setName(0x1000n, 'synced_fast'), true);
+  await tabA.flush();
+  assert.equal(tabB.nameOf(0x1000n), 'synced_fast');
+  assert.equal(tabB._idbRevision, 1, 'BroadcastChannel delta must advance receiver _idbRevision');
+
+  const pingRaw = storage.getItem('hex.notes.ping.idb-sync-opt');
+  assert.ok(pingRaw);
+  assert.equal(JSON.parse(pingRaw).idbRev, 1);
+
+  loadCalls = 0;
+  winB.dispatchStorage('hex.notes.ping.idb-sync-opt', pingRaw);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(loadCalls, 0, 'ping with idbRev <= _idbRevision must skip hydrateFromIdb()');
+
+  // Out-of-order hydrateFromIdb: slow first load (rev 1) resolves AFTER fast second load (rev 2).
+  let releaseSlowLoad;
+  const slowLoadPromise = new Promise((resolve) => { releaseSlowLoad = resolve; });
+  let callIndex = 0;
+  idb.loadStore = async () => {
+    callIndex++;
+    if (callIndex === 1) {
+      await slowLoadPromise;
+      return {
+        found: true,
+        entries: { names: new Map([['4096', 'stale_rev_1']]), comments: new Map(), vars: new Map(), types: new Map() },
+        tombstones: new Map(),
+        meta: { revision: 1, generation: 'g1', cleared: false, structs: [] },
+      };
+    }
+    return {
+      found: true,
+      entries: { names: new Map([['4096', 'fresh_rev_2']]), comments: new Map(), vars: new Map(), types: new Map() },
+      tombstones: new Map(),
+      meta: { revision: 2, generation: 'g2', cleared: false, structs: [] },
+    };
+  };
+
+  const pSlow = tabB.hydrateFromIdb();
+  const pFast = tabB.hydrateFromIdb();
+  await pFast;
+  assert.equal(tabB.nameOf(0x1000n), 'fresh_rev_2');
+  assert.equal(tabB._idbRevision, 2);
+
+  releaseSlowLoad();
+  await pSlow;
+  assert.equal(tabB.nameOf(0x1000n), 'fresh_rev_2', 'out-of-order older hydrateFromIdb must be discarded');
+
+  // Also reject a newer call that returns revision < _idbRevision.
+  idb.loadStore = async () => ({
+    found: true,
+    entries: { names: new Map([['4096', 'older_than_idb_rev']]), comments: new Map(), vars: new Map(), types: new Map() },
+    tombstones: new Map(),
+    meta: { revision: 1, generation: 'g1', cleared: false, structs: [] },
+  });
+  await tabB.hydrateFromIdb();
+  assert.equal(tabB.nameOf(0x1000n), 'fresh_rev_2', 'loaded.meta.revision < _idbRevision must be discarded');
+
+  // While a local IDB write is in-flight (_idbPendingWrites > 0), hydrateFromIdb must not rewind in-memory state.
+  let releasePut;
+  const putGate = new Promise((resolve) => { releasePut = resolve; });
+  const origPutDelta = idb.putDelta.bind(idb);
+  idb.putDelta = async (...args) => {
+    await putGate;
+    return origPutDelta(...args);
+  };
+  idb.loadStore = async () => ({
+    found: true,
+    entries: { names: new Map([['4096', 'remote_before_clear']]), comments: new Map(), vars: new Map(), types: new Map() },
+    tombstones: new Map(),
+    meta: { revision: 3, generation: 'g3', cleared: false, structs: [] },
+  });
+  tabB.setName(0x2000n, 'pending_local');
+  assert.ok(tabB._idbPendingWrites > 0);
+  await tabB.hydrateFromIdb();
+  assert.equal(tabB.nameOf(0x1000n), 'fresh_rev_2', 'hydrateFromIdb must not apply snapshot while local IDB write is pending');
+  assert.equal(tabB.nameOf(0x2000n), 'pending_local');
+  releasePut();
+  await tabB.flush();
+
+  tabA.dispose();
+  tabB.dispose();
+});
+
+test('NoteStore.dispose() lets already-queued IDB writes finish while suppressing callbacks', async () => {
+  const idb = new MockNotesIdb();
+  let releasePut;
+  const gate = new Promise((resolve) => { releasePut = resolve; });
+  const origPutDelta = idb.putDelta.bind(idb);
+  idb.putDelta = async (...args) => {
+    await gate;
+    return origPutDelta(...args);
+  };
+
+  let saveSuccessCount = 0;
+  let saveErrorCount = 0;
+  const notes = new NoteStore('dispose-flush-file', [], {
+    storage: new MockStorage(),
+    idb,
+    enableSync: false,
+    onSaveSuccess: () => { saveSuccessCount++; },
+    onSaveError: () => { saveErrorCount++; },
+  });
+
+  assert.equal(notes.setName(0x1000n, 'must_not_be_lost'), true);
+  // Immediately dispose (simulating file switch) before queued write finishes.
+  notes.dispose();
+  releasePut();
+  await notes.flush();
+
+  const persisted = await idb.loadStore('dispose-flush-file');
+  assert.equal(persisted.entries.names.get('4096'), 'must_not_be_lost', 'queued IDB write must complete even after dispose()');
+  assert.equal(saveSuccessCount, 0, 'onSaveSuccess must be suppressed after dispose()');
+  assert.equal(saveErrorCount, 0, 'onSaveError must be suppressed after dispose()');
 });

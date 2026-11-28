@@ -218,6 +218,11 @@ function normalizeCursorIndex(value) {
 
 const DECIMAL_ADDRESS = /^(?:0|[1-9][0-9]*)$/;
 const HEX_ADDRESS = /^0[xX][0-9a-fA-F]+$/;
+// Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
+// A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
+// inside the size-limited file from paying unbounded conversion cost (#5906).
+const MAX_BIGINT_HEX_DIGITS = 128;
+const MAX_BIGINT_DECIMAL_DIGITS = 160;
 
 function canonicalAnnotationAddressKey(value, field = 'address') {
   if (typeof value === 'bigint') {
@@ -232,8 +237,16 @@ function canonicalAnnotationAddressKey(value, field = 'address') {
   }
   if (typeof value === 'string') {
     const text = value.trim();
-    if (!DECIMAL_ADDRESS.test(text) && !HEX_ADDRESS.test(text)) {
+    const isHex = HEX_ADDRESS.test(text);
+    const isDecimal = !isHex && DECIMAL_ADDRESS.test(text);
+    if (!isHex && !isDecimal) {
       throw new ProjectFormatError(`${field} must be a canonical decimal or hex address`);
+    }
+    if (isHex && text.length - 2 > MAX_BIGINT_HEX_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
+    }
+    if (isDecimal && text.length > MAX_BIGINT_DECIMAL_DIGITS) {
+      throw new ProjectFormatError(`${field} exceeds the project resource limit`, 'resource-limit');
     }
     try {
       return BigInt(text).toString();
@@ -407,11 +420,14 @@ export function validatePatchEntries(entries, name = 'user.patches') {
       && entry.addr != null
       && Object.prototype.hasOwnProperty.call(entry, 'bytes')
       && isValidPatchBytes(entry.bytes)) {
+      let start;
       try {
-        canonicalAnnotationAddressKey(entry.addr, `${name}[${index}].addr`);
-      } catch {
+        start = BigInt(canonicalAnnotationAddressKey(entry.addr, `${name}[${index}].addr`));
+      } catch (err) {
+        if (err instanceof ProjectFormatError && err.code === 'resource-limit') throw err;
         throw new ProjectFormatError(`${name}[${index}].addr is invalid`, 'HEX_PROJECT_INVALID_PATCH');
       }
+      ranges.push({ start, end: start + BigInt(entry.bytes.length), index });
       continue;
     }
     const start = normalizePatchOffset(entry.offset, `${name}[${index}].offset`);
@@ -466,8 +482,19 @@ function normalizeCurrentFunction(value) {
     }
     return BigInt(value);
   }
-  if (typeof value !== 'string' || (!DECIMAL_ADDRESS.test(value) && !HEX_ADDRESS.test(value))) {
+  if (typeof value !== 'string') {
     throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+  const isHex = HEX_ADDRESS.test(value);
+  const isDecimal = !isHex && DECIMAL_ADDRESS.test(value);
+  if (!isHex && !isDecimal) {
+    throw new ProjectFormatError('navigation.currentFunction must be an integer');
+  }
+  if (isHex && value.length - 2 > MAX_BIGINT_HEX_DIGITS) {
+    throw new ProjectFormatError('navigation.currentFunction exceeds the project resource limit', 'resource-limit');
+  }
+  if (isDecimal && value.length > MAX_BIGINT_DECIMAL_DIGITS) {
+    throw new ProjectFormatError('navigation.currentFunction exceeds the project resource limit', 'resource-limit');
   }
   try {
     return BigInt(value);
@@ -513,11 +540,6 @@ const BIGINT_TAG = '$hexBigInt';
 const ESCAPED_TAG = /^\$(\$*)\$hexBigInt$/;
 const BIGINT_ENCODING_FIELD = 'bigIntEncoding';
 const BIGINT_ENCODING_VERSION = 1;
-// Hex projects persist machine integers (addresses/offsets/ids, ≤ 64–128 bits).
-// A per-value magnitude budget checked BEFORE BigInt() keeps a hostile scalar
-// inside the size-limited file from paying unbounded conversion cost (#5906).
-const MAX_BIGINT_HEX_DIGITS = 128;
-
 function escapeBigIntTag(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const keys = Object.keys(value);

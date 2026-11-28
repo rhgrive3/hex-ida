@@ -523,3 +523,89 @@ test('QuotaExceededError and generic IDB failures are normalized and do not pois
 
   await backend.close();
 });
+
+test('replaceStore(replace: false) after clearStore does not resurrect untouched entries, only applies localDirty', async () => {
+  const { factory } = createMockIndexedDB();
+  const backend = new NotesIdbBackend({ indexedDB: factory });
+
+  await backend.putDelta('bin-clear-occ', 'names', '0x1000', 'old_entry_a');
+  await backend.putDelta('bin-clear-occ', 'names', '0x2000', 'old_entry_b');
+  const cleared = await backend.clearStore('bin-clear-occ', { generation: 'g-clear' });
+  assert.equal(cleared.revision, 3);
+
+  // Tab A (stale baseRevision=2) saves with no localDirty -> must stay cleared and not resurrect old entries.
+  const resEmpty = await backend.replaceStore('bin-clear-occ', {
+    baseRevision: 2,
+    names: new Map([['0x1000', 'old_entry_a'], ['0x2000', 'old_entry_b']]),
+    localDirty: new Map(),
+  }, { replace: false });
+  assert.equal(resEmpty.revision, 4);
+  const afterEmpty = await backend.loadStore('bin-clear-occ');
+  assert.equal(afterEmpty.entries.names.size, 0, 'untouched incomingLive entries must not be resurrected after clearStore');
+  assert.equal(afterEmpty.meta.cleared, true, 'cleared flag should stay true when no live localDirty entries were written');
+
+  // Tab B (also stale baseRevision=2) has one localDirty addition -> only localDirty is written, old_entry_a stays gone.
+  const resDirty = await backend.replaceStore('bin-clear-occ', {
+    baseRevision: 2,
+    names: new Map([['0x1000', 'old_entry_a'], ['0x3000', 'new_after_clear']]),
+    localDirty: new Map([
+      ['names:0x3000', { value: 'new_after_clear', deleted: false, updatedAt: 500 }],
+    ]),
+  }, { replace: false });
+  assert.equal(resDirty.revision, 5);
+  const afterDirty = await backend.loadStore('bin-clear-occ');
+  assert.equal(afterDirty.entries.names.has('0x1000'), false, 'untouched entry must not resurrect');
+  assert.equal(afterDirty.entries.names.get('0x3000'), 'new_after_clear', 'localDirty entry must be applied');
+  assert.equal(afterDirty.meta.cleared, false, 'cleared flag turns false once live localDirty entry is written');
+
+  await backend.close();
+});
+
+test('db.onclose resets cached handle so subsequent operations reopen cleanly', async () => {
+  const { factory } = createMockIndexedDB();
+  const backend = new NotesIdbBackend({ indexedDB: factory });
+
+  const db1 = await backend.open();
+  assert.equal(typeof db1.onclose, 'function', 'open() must attach db.onclose handler');
+  await backend.putDelta('bin-close', 'names', '0x10', 'before_close');
+
+  // Simulate unexpected browser/GC close event.
+  db1.onclose();
+  assert.equal(backend._db, null, 'db.onclose must clear cached _db handle');
+
+  const db2 = await backend.open();
+  assert.notEqual(db2, db1, 'subsequent open() must acquire a fresh handle');
+  const loaded = await backend.loadStore('bin-close');
+  assert.equal(loaded.entries.names.get('0x10'), 'before_close');
+
+  await backend.close();
+});
+
+test('replaceStore(replace: true) writes new records before deleting stale keys so mid-write QuotaExceededError preserves existing data', async () => {
+  const { factory, stats } = createMockIndexedDB();
+  const backend = new NotesIdbBackend({ indexedDB: factory });
+
+  await backend.putDelta('bin-quota-replace', 'names', '0x1000', 'existing_safe_1');
+  await backend.putDelta('bin-quota-replace', 'names', '0x2000', 'existing_safe_2');
+
+  // Fail on the 2nd put of the replacement (triggers QuotaExceededError during put phase).
+  stats.failPutAfter = stats.puts + 1;
+  await assert.rejects(
+    () => backend.replaceStore('bin-quota-replace', {
+      names: new Map([
+        ['0x3000', 'new_1'],
+        ['0x4000', 'new_2'],
+        ['0x5000', 'new_3'],
+      ]),
+    }, { chunkSize: 1, replace: true }),
+    (err) => err?.code === 'QUOTA_EXCEEDED',
+  );
+
+  // Existing staleKeys must NOT have been deleted before the failed put phase.
+  stats.failPutAfter = Infinity;
+  const loaded = await backend.loadStore('bin-quota-replace');
+  assert.equal(loaded.entries.names.get('0x1000'), 'existing_safe_1', 'existing entry 1 must survive mid-write QuotaExceededError');
+  assert.equal(loaded.entries.names.get('0x2000'), 'existing_safe_2', 'existing entry 2 must survive mid-write QuotaExceededError');
+
+  await backend.close();
+});
