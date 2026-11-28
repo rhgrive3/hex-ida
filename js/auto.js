@@ -542,7 +542,31 @@ export async function autoAnalyze(opts) {
         ptrSize: o.ptrSize ?? 8,
         pointerFormat: o.pointerFormat ?? null,
         resolveBindSymbol: typeof o.resolveBindSymbol === 'function' ? o.resolveBindSymbol : null,
-        stringsByFunc: o.stringsByFunc ?? null,
+        stringsByFunc: (() => {
+          if (o.stringsByFunc != null) return o.stringsByFunc;
+          if (!Array.isArray(strings) || strings.length === 0 || !program || typeof program.functionsReferencing !== 'function') {
+            return null;
+          }
+          const map = new Map();
+          const maxStrScan = Math.min(strings.length, 10000);
+          for (let si = 0; si < maxStrScan; si++) {
+            const st = strings[si];
+            if (!st || st.addr == null || typeof st.text !== 'string' || st.text.length < 3) continue;
+            const refs = program.functionsReferencing(st.addr);
+            if (!Array.isArray(refs) || refs.length === 0) continue;
+            for (let ri = 0; ri < refs.length; ri++) {
+              const fnAddr = refs[ri]?.addr ?? refs[ri];
+              if (typeof fnAddr !== 'bigint') continue;
+              let list = map.get(fnAddr);
+              if (!list) {
+                list = [];
+                map.set(fnAddr, list);
+              }
+              if (list.length < 16) list.push(st.text);
+            }
+          }
+          return map.size > 0 ? map : null;
+        })(),
         apisByFunc: o.apisByFunc ?? null,
         cryptoHints: o.cryptoHints ?? null,
         objcModel: o.objcModel ?? null,
@@ -554,7 +578,7 @@ export async function autoAnalyze(opts) {
       if (
         wa.rmw || wa.x86Rmw || wa.vtables || wa.jumpTables || wa.constTables
         || wa.callgraph || wa.objcSwift || wa.xrefLinks
-        || wa.cxxRtti || wa.unifiedMetadata || wa.virtualTree || wa.semanticNames || wa.classFields
+        || wa.cxxRtti || wa.vtableRefOwners || wa.objcMethods || wa.unifiedMetadata || wa.virtualTree || wa.semanticNames || wa.classFields
       ) {
         report.wasmAnalysis = wa;
       }
