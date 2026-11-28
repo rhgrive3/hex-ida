@@ -8,6 +8,7 @@ import { reasonText, statusNotice } from '../primitives.js';
 import { showField } from './field-access.js';
 import { appendJevAlternativeAction } from '../jev-advisory.js';
 import { showPatchEditor } from '../../tools.js';
+import { notifyMission } from '../mission.js';
 
 function isAbort(error) { return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'; }
 function functionLabel(app, address) {
@@ -279,6 +280,7 @@ function fieldLabel(target) {
 export function showCandidates(app, goal) {
   if (!goal) return null;
   app.lastGoal = goal;
+  notifyMission();
   void app.persistAnalysisSession?.(['lastGoal']);
   const initialGen = app?.backend?.gen;
   const initialFile = app?.store?.get?.('fileInfo');
@@ -320,6 +322,7 @@ export function showCandidates(app, goal) {
         fields: result.context?.fields || null,
         setAt: Date.now(),
       };
+      notifyMission();
       openFunction(app, sheet, targetAddr, tab);
     };
     if (pin?.top && pin.verdict !== VERDICT.NONE) {

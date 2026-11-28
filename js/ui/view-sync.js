@@ -43,7 +43,10 @@ export function highlightGraphNode(graphRoot, nodes, addr) {
   const index = nodeIndexForAddress(nodes, addr);
   if (index < 0 || !graphRoot?.querySelectorAll) return null;
   const id = String(nodes[index].id);
-  for (const g of graphRoot.querySelectorAll('.g-node.g-sync')) g.classList.remove('g-sync');
+  for (const g of graphRoot.querySelectorAll('.g-node.g-sync')) {
+    g.classList.remove('g-sync');
+    g.removeAttribute?.('aria-current');
+  }
   const target = [...graphRoot.querySelectorAll('.g-node')].find((g) => g.getAttribute('data-node-id') === id) || null;
   if (target) {
     target.classList.add('g-sync');

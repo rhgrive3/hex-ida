@@ -33,7 +33,7 @@ import * as explorerIndex from './explorer-index.js';
 import { reportFile } from './investigation-report.js';
 import { setSyncAddress, syncAddressFor, highlightGraphNode } from './view-sync.js';
 import { findEntryPaths } from '../analysis/entry-paths.js';
-import { markMission, missionSteps, missionFunction } from './mission.js';
+import { markMission, missionSteps, missionFunction, notifyMission } from './mission.js';
 import { probeFunction, summarize as summarizeProbe, arityFromPseudocode, formatArgs, formatValue } from '../analysis/io-probe.js';
 import { libraryIndexFor, libraryInfoAt, isFoldable, libraryKindLabel, classifyClassName, recognitionVendorContext } from '../analysis/library-code.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
@@ -224,6 +224,7 @@ export function editBookmarkNote(app, addr, name) {
   const save = () => {
     if (!app.bookmarks?.has?.(addr)) app.bookmarks?.toggle?.(addr, { name });
     app.bookmarks?.setNote?.(addr, { note: input.value.trim(), name });
+    notifyMission();
     sheet.close();
     toast(text('ブックマークメモを保存しました。', 'Bookmark note saved.'));
   };
@@ -453,7 +454,7 @@ function collectFrequentFunctions(app, limit = 5) {
   return out.slice(0, limit);
 }
 
-function buildMissionSection(app, router) {
+export function buildMissionSection(app, router, { signal = null } = {}) {
   const wrap = h('div', 'ui-quickstart-section ui-mission');
   const render = () => {
     const steps = missionSteps(app);
@@ -487,21 +488,41 @@ function buildMissionSection(app, router) {
     wrap.replaceChildren(heading, list);
   };
   render();
+  let mounted = false;
+  let cleaned = false;
+  const markMounted = () => {
+    if (cleaned || !wrap.isConnected) return false;
+    mounted = true;
+    if (wrap.dataset) wrap.dataset.mounted = '1';
+    return true;
+  };
   const refresh = () => {
-    if (!wrap.isConnected) { if (wrap.dataset.mounted) cleanup(); return; }
-    wrap.dataset.mounted = '1';
+    if (cleaned) return;
+    if (!wrap.isConnected) {
+      if (mounted || wrap.dataset?.mounted) cleanup();
+      return;
+    }
+    markMounted();
     render();
   };
   const unsubNotes = app?.notes?.subscribe?.(refresh) || null;
   const doc = globalThis.document;
   const win = globalThis.window;
   const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
     doc?.removeEventListener?.('hex:mission', refresh);
     win?.removeEventListener?.('hashchange', refresh);
     if (typeof unsubNotes === 'function') unsubNotes();
   };
   doc?.addEventListener?.('hex:mission', refresh);
   win?.addEventListener?.('hashchange', refresh);
+  if (signal) {
+    if (signal.aborted) cleanup();
+    else signal.addEventListener?.('abort', cleanup, { once: true });
+  }
+  queueMicrotask(() => { markMounted(); });
+  wrap._cleanupMission = cleanup;
   return wrap;
 }
 
@@ -591,7 +612,9 @@ export function buildInitialLandingCard(app, router, { onDismiss = null } = {}) 
   }));
   goalsWrap.append(goalBar);
   c.body.append(goalsWrap);
-  c.body.append(buildMissionSection(app, router));
+  const missionEl = buildMissionSection(app, router);
+  c.body.append(missionEl);
+  c.root._cleanupMission = missionEl._cleanupMission;
 
   const classes = collectTopClassesOrModules(app, 5);
   if (classes.length) {
@@ -733,7 +756,9 @@ function runInvestigation(app, query) {
         toast(text('質問を解析できませんでした。対象や動作をもう少し具体的に書いてください。', 'Could not compile that question. Describe the target or action more specifically.') + missing);
         return null;
       }
-      return showCandidates(app, { ...goal, query: compiled });
+      const res = showCandidates(app, { ...goal, query: compiled });
+      notifyMission();
+      return res;
     } catch (error) {
       toast(text('質問の解析に失敗しました。', 'Question compilation failed.') + ' ' + String(error?.message || error));
       return null;
@@ -741,7 +766,7 @@ function runInvestigation(app, query) {
   });
 }
 
-function renderInvestigate(app, router, route = null) {
+function renderInvestigate(app, router, route = null, routeContext = {}) {
   const s = screen(text('何を知りたい？', 'What do you want to know?'), {
     id: 'investigate',
     subtitle: text('探したい処理や値を入力すると、候補関数を自動で絞り込みます。',
@@ -855,9 +880,11 @@ if (!app.store?.get?.('fileInfo')) {
   }
 }
 s.body.append(hero.root);
+let missionSection = null;
 if (app.store?.get?.('fileInfo')) {
   const missionCard = card(null, { className: 'ui-mission-card' });
-  missionCard.body.append(buildMissionSection(app, router));
+  missionSection = buildMissionSection(app, router, { signal: routeContext?.signal || null });
+  missionCard.body.append(missionSection);
   s.body.append(missionCard.root);
 }
 
@@ -885,7 +912,7 @@ if (app.store?.get?.('fileInfo')) {
     for (const q of recent) list.append(listRow({ title: q, onClick: () => { input.value = q; runInvestigation(app, q); } }));
     s.body.append(list);
   }
-  return { root: s.root, focus: () => input.focus(), dispose: () => { disposed = true; } };
+  return { root: s.root, focus: () => input.focus(), dispose: () => { disposed = true; missionSection?._cleanupMission?.(); } };
 }
 
 function lowerBoundBigInt(array, value) {
@@ -1506,11 +1533,15 @@ function renderExplorer(app, router, route, routeContext = {}) {
       editedChip.setAttribute('aria-pressed', String(filterMode === 'edited'));
     }
     if (libraryChip) {
+      const libraryFilterApplicable = filterMode === 'all';
       libraryChip.textContent = text('ライブラリを隠す', 'Hide libraries');
       libraryChip.setAttribute('aria-pressed', String(hideLibrary));
+      libraryChip.hidden = !libraryFilterApplicable;
+      libraryChip.disabled = !libraryFilterApplicable;
     }
   };
   const setHideLibrary = (next) => {
+    if (filterMode !== 'all') return;
     hideLibrary = Boolean(next);
     queryOffset = 0;
     pendingVirtualState = null;
@@ -3247,6 +3278,7 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
 
   const renderRuntimeTab = () => {
     const runScope = createChildTaskScope(routeSignal);
+    const ioScope = createChildTaskScope(routeSignal);
     const root = h('div', 'ui-card-grid');
     const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('この関数だけを、端末の中の安全な実行環境（サンドボックス）で動かして、何が起きるかを記録します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
     const resultHost = h('div', 'ui-runtime-result');
@@ -3283,8 +3315,9 @@ function renderFunctionWorkspace(app, router, route, routeContext = {}) {
     const ioHost = h('div', 'ui-io-result');
     const ioRun = uiButton(text('試す', 'Try'), { cls: 'ui-primary-action ui-io-run' });
     ioRun.addEventListener('click', async () => {
+      if (guardFileLoading(app)) return;
       ioRun.disabled = true;
-      const ioSignal = runScope.spawn('io-probe-replaced');
+      const ioSignal = ioScope.spawn('io-probe-replaced');
       ioHost.replaceChildren(loadingState(text('実行しています…', 'Running…')));
       try {
         let arity = null;
@@ -3531,6 +3564,7 @@ async function exportProjectFromProduct(app) {
   catch(error){toast(formatProjectError(error, i18nLang()));}
 }
 function exportReportFromProduct(app, format) {
+  if (guardFileLoading(app)) return;
   try { const { blob, name } = reportFile(app, format, { ja: ja() }); downloadBlob(blob, name); markMission(app, 'report'); toast(text('レポートを書き出しました。', 'Report exported.')); }
   catch (error) { toast(text('レポートを書き出せませんでした。', 'Could not export the report.')); console.error(error); }
 }
@@ -4591,19 +4625,24 @@ export function installProductUI(app) {
   let lastDeltaToken = null;
   let appliedDeltaRouteToken = null;
   let userNavigatedSinceFileOpen = false;
+  const clearLandingHost = () => {
+    landingHost.firstElementChild?._cleanupMission?.();
+    landingHost.replaceChildren();
+  };
   const syncLandingCard = () => {
     const onBareCode = router?.current?.route?.id === 'code' && !router?.current?.params?.address;
     const hasFile = !!app.store?.get?.('fileInfo');
     if (!onBareCode || !hasFile || userNavigatedSinceFileOpen || landingDismissed) {
       landingHost.hidden = true;
-      landingHost.replaceChildren();
+      clearLandingHost();
       return;
     }
+    clearLandingHost();
     landingHost.replaceChildren(buildInitialLandingCard(app, router, {
       onDismiss: () => {
         landingDismissed = true;
         landingHost.hidden = true;
-        landingHost.replaceChildren();
+        clearLandingHost();
       },
     }));
     landingHost.hidden = false;

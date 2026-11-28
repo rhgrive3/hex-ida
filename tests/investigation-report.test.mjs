@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { collectReport, reportHtml, reportMarkdown } from '../js/ui/investigation-report.js';
 
 function fakeApp() {
@@ -50,4 +51,9 @@ test('Markdown report keeps tables intact', () => {
 test('empty project writes a single short line', () => {
   const app = { store: { get: () => null } };
   assert.match(reportMarkdown(collectReport(app), { ja: true }), /記録はまだありません。/);
+});
+
+test('exportReportFromProduct guards against fileLoading', () => {
+  const productBase = fs.readFileSync(new URL('../js/ui/product-base.js', import.meta.url), 'utf8');
+  assert.match(productBase, /function exportReportFromProduct\(app,\s*format\)\s*\{\s*\n\s*if\s*\(guardFileLoading\(app\)\)\s*return;/);
 });

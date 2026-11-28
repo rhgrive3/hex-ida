@@ -445,8 +445,8 @@ export function createDecompilerProvenanceView(query, options = {}) {
     history.replaceChildren();
     const active = new Set(outcome.entities.map(entity => entity.lineIndex));
     for (let index = 0; index < rows.length; index++) {
-      rows[index].classList.toggle('selected', active.has(index));
-      rows[index].setAttribute('aria-current', active.has(index) ? 'true' : 'false');
+      rows[index]?.classList.toggle('selected', active.has(index));
+      rows[index]?.setAttribute('aria-current', active.has(index) ? 'true' : 'false');
     }
     if (outcome.state !== 'ready') {
       status.textContent = reasonText(outcome.reason);
@@ -577,15 +577,29 @@ export function createDecompilerProvenanceView(query, options = {}) {
     rows[idx]?.scrollIntoView?.({ block:'nearest' });
   };
   const sourceLineFor = (address) => {
-    let exact = -1, nearest = -1, nearestAddr = null;
+    let visibleExact = -1, visibleNearest = -1, visibleNearestAddr = null;
+    let hiddenExact = -1, hiddenNearest = -1, hiddenNearestAddr = null;
     for (let i = 0; sourceLines && i < sourceLines.length; i++) {
+      const visible = Boolean(rows[i]);
       for (const value of sourceAddrsOf(i)) {
-        if (value === address) { exact = i; break; }
-        if (value < address && (nearestAddr == null || value > nearestAddr)) { nearest = i; nearestAddr = value; }
+        if (value === address) {
+          if (visible) { visibleExact = i; break; }
+          if (hiddenExact < 0) hiddenExact = i;
+        } else if (value < address) {
+          if (visible && (visibleNearestAddr == null || value > visibleNearestAddr)) {
+            visibleNearest = i;
+            visibleNearestAddr = value;
+          } else if (!visible && (hiddenNearestAddr == null || value > hiddenNearestAddr)) {
+            hiddenNearest = i;
+            hiddenNearestAddr = value;
+          }
+        }
       }
-      if (exact >= 0) break;
+      if (visibleExact >= 0) break;
     }
-    return exact >= 0 ? exact : nearest;
+    if (visibleExact >= 0) return visibleExact;
+    if (visibleNearest >= 0) return visibleNearest;
+    return hiddenExact >= 0 ? hiddenExact : hiddenNearest;
   };
   const find = uiButton(text('命令 → 疑似C', 'Instruction → pseudocode'), { cls:'ui-secondary-action', onClick:() => {
     const address = parseAddress(input.value);
@@ -594,12 +608,29 @@ export function createDecompilerProvenanceView(query, options = {}) {
       show({ state:'unavailable', reason:'invalid-address', entities:EMPTY });
       return;
     }
+    if (!navigation.available && sourceMap) {
+      const idx = sourceLineFor(address);
+      if (idx >= 0) {
+        selectSource(idx);
+      } else {
+        action++;
+        details.replaceChildren();
+        history.replaceChildren();
+        for (let index = 0; index < rows.length; index++) {
+          rows[index]?.classList.remove('selected');
+          rows[index]?.setAttribute('aria-current', 'false');
+        }
+        currentSelectedAddr = null;
+        status.textContent = text('この命令に対応する表示行はありません。', 'No rendered line maps to this instruction.');
+      }
+      return;
+    }
     return select(() => navigation.selectOrigin('addr', address));
   } });
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); find.click(); }
   });
-  input.disabled = find.disabled = !navigation.available;
+  input.disabled = find.disabled = !(navigation.available || sourceMap);
   if (Array.isArray(options.extraToolbarActions)) {
     for (const extra of options.extraToolbarActions) {
       if (extra) controls.append(extra);

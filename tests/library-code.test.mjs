@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   libraryIndexFor, libraryInfoAt, isFoldable, classifyClassName, recognitionVendorContext,
 } from '../js/analysis/library-code.js';
@@ -90,4 +91,13 @@ test('Meta FB-prefixed ad classes are not labelled Google Mobile Ads', () => {
   assert.equal(vendorOf('FBInterstitialAd')?.vendor, 'Meta Audience Network');
   assert.equal(vendorOf('FBAdView')?.vendor, 'Meta Audience Network');
   assert.equal(vendorOf('GADInterstitialAd')?.vendor, 'Google Mobile Ads');
+});
+
+test('renderExplorer hides and disables libraryChip when filterMode is saved or edited', () => {
+  const productBase = fs.readFileSync(new URL('../js/ui/product-base.js', import.meta.url), 'utf8');
+  assert.match(
+    productBase,
+    /const libraryFilterApplicable = filterMode === 'all';[\s\S]*?libraryChip\.hidden = !libraryFilterApplicable;[\s\S]*?libraryChip\.disabled = !libraryFilterApplicable;/
+  );
+  assert.match(productBase, /const setHideLibrary = \(next\) => \{\s*\n\s*if \(filterMode !== 'all'\) return;/);
 });

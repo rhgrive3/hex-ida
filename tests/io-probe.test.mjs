@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { probeFunction, summarize, arityFromPseudocode, asReturnInt, inputVectors } from '../js/analysis/io-probe.js';
 
 const traceOf = (fn, extra = {}) => async (_app, _addr, { args }) => {
@@ -54,4 +55,10 @@ test('arity comes from the decompiled signature', () => {
   assert.equal(arityFromPseudocode('void g(void)\n{\n}'), 0);
   assert.equal(arityFromPseudocode('no signature'), null);
   assert.equal(inputVectors(9)[0].length, 4);
+});
+
+test('renderRuntimeTab isolates ioRun task scope and guards against fileLoading', () => {
+  const productBase = fs.readFileSync(new URL('../js/ui/product-base.js', import.meta.url), 'utf8');
+  assert.match(productBase, /const runScope = createChildTaskScope\(routeSignal\);\s*\n\s*const ioScope = createChildTaskScope\(routeSignal\);/);
+  assert.match(productBase, /ioRun\.addEventListener\('click',\s*async\s*\(\)\s*=>\s*\{\s*\n\s*if\s*\(guardFileLoading\(app\)\)\s*return;\s*\n\s*ioRun\.disabled = true;\s*\n\s*const ioSignal = ioScope\.spawn\('io-probe-replaced'\);/);
 });

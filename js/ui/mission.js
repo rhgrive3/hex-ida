@@ -5,12 +5,26 @@
  */
 const marks = new WeakMap();
 
+function fileKeyOf(info) {
+  if (!info || typeof info !== 'object') return null;
+  const name = String(info.name ?? info.fileName ?? '');
+  const size = info.size ?? info.byteLength ?? '';
+  const arch = String(info.arch ?? info.architecture ?? info.cpu ?? '');
+  const format = String(info.format ?? '');
+  const hash = String(info.sha256 ?? info.hash ?? '');
+  return JSON.stringify([name, size === '' ? '' : String(size), arch, format, hash]);
+}
+
 function stateOf(app) {
   let s = marks.get(app);
-  if (!s) { s = { fileInfo: null, openedFunction: null, readPseudo: false, report: false }; marks.set(app, s); }
-  const info = app?.store?.get?.('fileInfo') || null;
-  if (s.fileInfo !== info) Object.assign(s, { fileInfo: info, openedFunction: null, readPseudo: false, report: false });
+  if (!s) { s = { fileKey: null, openedFunction: null, readPseudo: false, report: false }; marks.set(app, s); }
+  const key = fileKeyOf(app?.store?.get?.('fileInfo') || null);
+  if (s.fileKey !== key) Object.assign(s, { fileKey: key, openedFunction: null, readPseudo: false, report: false });
   return s;
+}
+
+export function notifyMission() {
+  try { globalThis.document?.dispatchEvent?.(new CustomEvent('hex:mission')); } catch { /* no DOM */ }
 }
 
 export function markMission(app, key, value = true) {
@@ -19,7 +33,7 @@ export function markMission(app, key, value = true) {
   if (key === 'open-function') { try { s.openedFunction = BigInt(value); } catch { /* ignore */ } }
   else if (key === 'read-pseudo') s.readPseudo = true;
   else if (key === 'report') s.report = true;
-  try { globalThis.document?.dispatchEvent?.(new CustomEvent('hex:mission')); } catch { /* no DOM */ }
+  notifyMission();
 }
 
 function hasUserNames(app) {
