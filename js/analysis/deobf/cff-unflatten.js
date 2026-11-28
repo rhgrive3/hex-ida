@@ -361,13 +361,14 @@ export function runCffUnflattenWasm(blocks, edges, opts = {}) {
     const inEdgeBytes = edges.length * 16;
     const maxOutEdges = Math.max(64, blocks.length * 4);
     const outEdgeBytes = maxOutEdges * 16;
-    const totalNeeded = blkBytes + inEdgeBytes + outEdgeBytes + 64;
+    const alignPad = (8 - (base & 7)) & 7;
+    const totalNeeded = alignPad + blkBytes + inEdgeBytes + outEdgeBytes + 64;
     if (scratchSize < totalNeeded) {
       recordFallback('CFF_SCRATCH_OOM');
       return null;
     }
 
-    const blkPtr = base;
+    const blkPtr = (base + 7) & ~7;
     const inEdgePtr = blkPtr + blkBytes;
     const outEdgePtr = inEdgePtr + inEdgeBytes;
     const resPtr = (outEdgePtr + outEdgeBytes + 7) & ~7;

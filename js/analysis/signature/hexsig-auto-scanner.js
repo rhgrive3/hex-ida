@@ -964,7 +964,7 @@ export function createHexSigAutoScanner({
 
       for (let i = 0; i < totalFuncs; i++) {
         if (signal?.aborted) {
-          if (typeof onNamed === 'function') flushChunkBatch();
+          flushChunkBatch();
           safeInvokeCallback(onProgress, {
             phase: 'hexsig',
             status: AUTO_ANALYSIS_STATUS.ABORTED,
@@ -1028,7 +1028,7 @@ export function createHexSigAutoScanner({
                 }
 
                 if (signal?.aborted) {
-                  if (typeof onNamed === 'function') flushChunkBatch();
+                  flushChunkBatch();
                   safeInvokeCallback(onProgress, {
                     phase: 'hexsig',
                     status: AUTO_ANALYSIS_STATUS.ABORTED,
@@ -1098,7 +1098,7 @@ export function createHexSigAutoScanner({
                         // Ignore optional anchor provider errors and proceed with prologue matching.
                       }
                       if (signal?.aborted) {
-                        if (typeof onNamed === 'function') flushChunkBatch();
+                        flushChunkBatch();
                         safeInvokeCallback(onProgress, {
                           phase: 'hexsig',
                           status: AUTO_ANALYSIS_STATUS.ABORTED,

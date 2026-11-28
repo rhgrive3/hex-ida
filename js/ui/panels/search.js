@@ -119,7 +119,20 @@ function collectStrings(app) {
   return out;
 }
 
+function syncAutoReportWasm(app) {
+  const report = app?.autoReport?.report;
+  if (!report) return;
+  try {
+    if (typeof app._syncAutoReportWasmAnalysis === 'function') {
+      app._syncAutoReportWasmAnalysis(report);
+    } else if (report.wasmAnalysis && !app.v6Workbench?._wasmAnalysis && typeof app.v6Workbench?.ingestWasmAnalysis === 'function') {
+      app.v6Workbench.ingestWasmAnalysis(report.wasmAnalysis);
+    }
+  } catch { /* non-fatal */ }
+}
+
 function collectClassesAndFields(app, inferredClasses) {
+  syncAutoReportWasm(app);
   const classes = [];
   const fields = [];
   const seenClassNames = new Set();
@@ -351,6 +364,7 @@ export function createSearchRunLifecycle() {
 }
 
 export function showSearch(app) {
+  syncAutoReportWasm(app);
   const region = app.store?.get?.('currentRegion');
   const virtualTree = typeof app?.v6Workbench?.getVirtualTree === 'function'
     ? app.v6Workbench.getVirtualTree()

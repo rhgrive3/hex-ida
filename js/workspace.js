@@ -190,7 +190,7 @@ function aiTurns(){
 // `content:<hash>[:<slice>]` binary identity. Project round-trips must match
 // both spellings, or valid sessions are dropped on export/import (#5652).
 function sessionMatchesBinaryHash(sessionBinaryId, hash) {
-  if (!sessionBinaryId || !hash) return false;
+  if (typeof sessionBinaryId !== 'string' || !sessionBinaryId || !hash) return false;
   if (sessionBinaryId === hash) return true;
   if (sessionBinaryId === `content:${hash}`) return true;
   return sessionBinaryId.startsWith(`content:${hash}:`);
@@ -293,7 +293,7 @@ export function applyWorkspaceProject(app, project){
     const before = p.before;
     const after = p.after;
     if(!before || !after || typeof before.length!=='number' || typeof after.length!=='number' || before.length===0 || before.length!==after.length){
-      throw new ProjectFormatError('patch before/after bytes are invalid','HEX_PROJECT_INVALID_PATCH');
+      throw new ProjectFormatError('patch before/after bytes must have the same non-zero length','HEX_PROJECT_INVALID_PATCH');
     }
     if(fileSize!=null && offset + BigInt(after.length) > fileSize){
       throw new ProjectFormatError(
@@ -352,6 +352,9 @@ export function applyWorkspaceProject(app, project){
   if(canRegisterSessions && Array.isArray(project.findings?.investigationSessions)){
     for(const session of project.findings.investigationSessions){
       if(!session || typeof session !== 'object' || !session.id) continue;
+      if(session.binaryId != null && (typeof session.binaryId !== 'string' || !session.binaryId.trim())){
+        throw new ProjectFormatError('session binaryId must be a non-empty string', 'HEX_PROJECT_INVALID');
+      }
       const sessionBinaryId = session.binaryId || null;
       if(sessionBinaryId && (primaryHash || legacyHash) && !sessionMatchesAnyHash(sessionBinaryId, primaryHash, legacyHash)) continue;
       if(!isValidSessionId(session.id)) continue; // `register` would no-op; do not validate a record it will drop.

@@ -479,7 +479,6 @@ export async function autoAnalyze(opts) {
   report.stats.fields = fields ? fields.fieldCount : 0;
   await tick();
 
-  if (cancelled()) { report.notes.push('cancelled'); return report; }
   try {
     const codeBytes = o.codeBytes
       || (o.region && o.region.bytes instanceof Uint8Array ? o.region.bytes : null)
@@ -490,16 +489,20 @@ export async function autoAnalyze(opts) {
       ? o.dataSections
       : extractConstDataSectionsFromImage(o.image);
     const imageBase = o.imageBase ?? o.image?.imageBase ?? null;
-    if (
+    const hasWasmBinaryInputs = Boolean(
       codeBytes
       || dataBytes
-      || program
       || (dataSections && dataSections.length > 0)
       || o.textConstBytes
       || o.image
       || o.objcModel
       || o.swiftModel
-    ) {
+    );
+    if (hasWasmBinaryInputs && cancelled()) {
+      report.notes.push('cancelled');
+      return report;
+    }
+    if (hasWasmBinaryInputs || program) {
       let imgTextLo = null;
       let imgTextHi = null;
       if (Array.isArray(o.image?.sections)) {

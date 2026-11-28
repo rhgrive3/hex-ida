@@ -1485,7 +1485,14 @@ export function resolveStrippedCxxRtti(opts = {}) {
           const slotVa = vtableVa + (BigInt(s) * slotStrideBig);
 
           if (s >= minSlotCount) {
-            if (knownVtableHeaders.has(slotVa) || knownRttiVas.has(slotVa)) break;
+            if (
+              knownVtableHeaders.has(slotVa)
+              || knownRttiVas.has(slotVa)
+              || (slotVa <= MAX_SAFE_BASE && (
+                knownVtableHeadersNum?.has(Number(slotVa))
+                || knownRttiVasNum?.has(Number(slotVa))
+              ))
+            ) break;
           }
 
           const raw = slotStride === 4

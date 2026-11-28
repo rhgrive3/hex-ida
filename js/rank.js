@@ -463,7 +463,10 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   }
 
   if (normalizedClassOwners) {
-    const lo = region ? region.vmAddr : null, hi = region ? region.vmAddr + region.size : null;
+    const rawLo = region?.vmAddr != null && region?.size != null ? safeBigInt(region.vmAddr) : null;
+    const rawSize = rawLo != null ? safeBigInt(region.size) : null;
+    const lo = rawLo != null && rawSize != null ? rawLo : null;
+    const hi = lo != null ? lo + rawSize : null;
     const ownerMatches = [];
     for (const [key, entry] of normalizedClassOwners.entries()) {
       if (lo != null && (entry.addr < lo || entry.addr >= hi)) continue;

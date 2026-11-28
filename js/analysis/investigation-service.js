@@ -813,6 +813,7 @@ export class InvestigationService {
         knowledgeLimit:512,
       });
     } catch (error) { if (options.signal?.aborted) throw error; }
+    const sliceInfo = this.app.currentSlice?.()?.info || null;
     const report = await autoAnalyze({
       strings:context.strings,
       program:context.program,
@@ -823,6 +824,17 @@ export class InvestigationService {
       shapes:context.shapes,
       cryptoScan:context.cryptoScan || null,
       recognition,
+      image:this.app.image ?? this.app.backend?.image ?? null,
+      dataSections:Array.isArray(this.app.dataSections) ? this.app.dataSections : null,
+      objcModel:context.metadata?.objc ?? this.app.objcModel ?? null,
+      swiftModel:context.metadata?.swift ?? this.app.swiftModel ?? null,
+      codeBytes:this.app.codeBytes ?? null,
+      dataBytes:this.app.dataBytes ?? null,
+      textConstBytes:this.app.textConstBytes ?? null,
+      textConstVa:this.app.textConstVa ?? null,
+      dataVa:this.app.dataVa ?? null,
+      imageBase:this.app.imageBase ?? this.app.image?.imageBase ?? sliceInfo?.textVM ?? null,
+      architecture:storeValue(this.app, 'architecture') || this.app.currentSlice?.()?.capability?.architecture || sliceInfo?.architecture || null,
       analyze:this.#addressAwareAnalyzer(options.signal || null),
       scanAccess:this.#globalAccessScanner(options.signal || null),
       isCancelled:() => !!options.signal?.aborted,
