@@ -37,6 +37,8 @@ const VENDOR_PATTERNS = [
   { vendor: 'Apple Security', kind: 'crypto', re: /^_+Sec(?:Key|Trust|Item|Random|Certificate|Policy)/ },
   { vendor: 'Apple StoreKit', kind: 'purchase', re: /^_?\$s8StoreKit|^_+SK(?:Payment|Product|Receipt|Storefront|Store)/ },
   { vendor: 'AppLovin', kind: 'ads', re: /applovin|\bmax(mediation|adview|reward)/i },
+  /* Meta's FB-prefixed ad classes (FBInterstitialAd, FBAdView …) must not fall into the generic `interstitialad` rule below. */
+  { vendor: 'Meta Audience Network', kind: 'ads', re: /^_?FB(?:Ad[A-Z]|NativeAd|NativeBannerAd|InterstitialAd|RewardedVideoAd|RewardedInterstitialAd|MediaView|AudienceNetwork)/ },
   { vendor: 'Google Mobile Ads', kind: 'ads', re: /admob|googlemobileads|gadmob|interstitialad/i, textRe: /admob|googlemobileads|gadmob/i },
   { vendor: 'Unity Ads', kind: 'ads', re: /unityads|unityservices|unityanalytics/i },
   { vendor: 'Vungle', kind: 'ads', re: /vungle|liftoff/i },

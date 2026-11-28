@@ -509,6 +509,7 @@ export function createDecompilerProvenanceView(query, options = {}) {
     status.textContent = `${outcome.entities.length} ` + text('行が対応しています。', 'matching lines.');
     const addresses = [...new Set(outcome.entities.flatMap(entity => entity.origins.addresses).map(String))];
     currentSelectedAddr = addresses.length ? BigInt(addresses[0]) : null;
+    if (currentSelectedAddr != null) { try { options.onSelectAddress?.(currentSelectedAddr); } catch { /* observer only */ } }
     const records = [...new Set(outcome.entities.flatMap(entity => entity.recordRefs))];
     const kinds = [...new Set(records.map(index => query.value.renderProvenance.ledger[index]?.kind).filter(Boolean))];
     const renderAddresses = offset => {
@@ -541,6 +542,50 @@ export function createDecompilerProvenanceView(query, options = {}) {
       row?.scrollIntoView?.({ block:'nearest' });
       row?.focus?.({ preventScroll:true });
     }
+  };
+  /* Fallback line map: when the render-provenance map is unavailable, each
+     rendered line still carries the instruction addresses it was built from. */
+  const sourceLines = Array.isArray(query?.value?.lines) ? query.value.lines : null;
+  const sourcePrelude = sourceLines ? preludeLength(sourceLines) : 0;
+  const sourceAddrsOf = (idx) => {
+    const line = sourceLines?.[idx];
+    if (!line || idx < sourcePrelude || line.kind === 'sig' || line.kind === 'decl' || line.kind === 'blank') return [];
+    const raw = line?.source?.addresses?.length ? line.source.addresses : (line?.addr != null ? [line.addr] : []);
+    const out = [];
+    for (const value of raw) { try { out.push(BigInt(value)); } catch { /* skip */ } }
+    return out;
+  };
+  const sourceMap = !navigation.available && Array.isArray(sourceLines) && sourceLines.some((_line, i) => sourceAddrsOf(i).length > 0);
+  const selectSource = (idx) => {
+    action++;
+    details.replaceChildren();
+    history.replaceChildren();
+    const addrs = sourceAddrsOf(idx);
+    for (let index = 0; index < rows.length; index++) {
+      rows[index]?.classList.toggle('selected', index === idx);
+      rows[index]?.setAttribute('aria-current', index === idx ? 'true' : 'false');
+    }
+    if (!addrs.length) return;
+    currentSelectedAddr = addrs[0];
+    try { options.onSelectAddress?.(currentSelectedAddr); } catch { /* observer only */ }
+    status.textContent = (addrs.length > 1 ? `${label(addrs[0])} +${addrs.length - 1}` : label(addrs[0])) + ` (${navigation.reason})`;
+    for (const value of addrs.slice(0, 64)) {
+      details.append(uiButton(label(value), { cls:'ui-secondary-action', onClick:() => {
+        if (!options.signal?.aborted && options.isCurrent?.() !== false) options.onNavigate?.(value);
+      } }));
+    }
+    rows[idx]?.scrollIntoView?.({ block:'nearest' });
+  };
+  const sourceLineFor = (address) => {
+    let exact = -1, nearest = -1, nearestAddr = null;
+    for (let i = 0; sourceLines && i < sourceLines.length; i++) {
+      for (const value of sourceAddrsOf(i)) {
+        if (value === address) { exact = i; break; }
+        if (value < address && (nearestAddr == null || value > nearestAddr)) { nearest = i; nearestAddr = value; }
+      }
+      if (exact >= 0) break;
+    }
+    return exact >= 0 ? exact : nearest;
   };
   const find = uiButton(text('命令 → 疑似C', 'Instruction → pseudocode'), { cls:'ui-secondary-action', onClick:() => {
     const address = parseAddress(input.value);
@@ -675,6 +720,20 @@ export function createDecompilerProvenanceView(query, options = {}) {
             if (event.defaultPrevented) return;
             if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); return select(() => navigation.selectLine(origIdx)); }
           });
+        } else if (sourceMap && sourceAddrsOf(origIdx).length) {
+          row.tabIndex = 0;
+          row.setAttribute('role', 'button');
+          row.classList.add('has-source');
+          row.addEventListener('click', (event) => {
+            if (typeof window !== 'undefined' && window.getSelection?.()?.toString()) return;
+            const tokEl = event?.target?.closest?.('[data-tok]');
+            if (tokEl && row.contains?.(tokEl) && (tokEl.classList.contains('tok-fn-link') || tokEl.classList.contains('tok-addr-link'))) return;
+            selectSource(origIdx);
+          });
+          row.addEventListener('keydown', event => {
+            if (event.defaultPrevented) return;
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectSource(origIdx); }
+          });
         }
         rows[origIdx] = row;
         code.append(row);
@@ -708,14 +767,19 @@ export function createDecompilerProvenanceView(query, options = {}) {
   }
   status.textContent = navigation.available
     ? text('行を選ぶと元の命令を表示します。命令アドレスから逆引きもできます。', 'Select a line to inspect its instructions, or look up an instruction address.')
+    : sourceMap ? text('対応表なし。行を押すと、その行に記録された命令の位置を表示します。', 'No verified map. Tap a line to show the instructions recorded for it.') + ` (${navigation.reason})`
     : reasonText(navigation.reason) + text('行を選んで元の命令を見る機能は、この関数では使えません。', ' Selecting a line to see its instructions is not available here.') + ` (${navigation.reason})`;
   root.append(controls, code, status, details, history);
-  if (options.initialAddr != null && navigation.available) {
+  if (options.initialAddr != null && (navigation.available || sourceMap)) {
     let initAddr = null;
     try { initAddr = typeof options.initialAddr === 'bigint' ? options.initialAddr : BigInt(options.initialAddr); } catch { initAddr = null; }
     if (initAddr != null && initAddr >= 0n) {
       input.value = addrHex(initAddr);
-      void select(() => navigation.selectOrigin('addr', initAddr));
+      if (navigation.available) void select(() => navigation.selectOrigin('addr', initAddr));
+      else {
+        const idx = sourceLineFor(initAddr);
+        if (idx >= 0) selectSource(idx);
+      }
     }
   }
   return Object.freeze({ root, code, navigation, tokenHighlight, selectedAddress: () => currentSelectedAddr });

@@ -8,6 +8,8 @@ import { showRename, showComment, showPatches } from '../tools.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 
 import { uiRoot } from '../ui-root.js';
+import { libraryInfoAt, isFoldable, libraryKindLabel } from '../analysis/library-code.js';
+import { markMission } from './mission.js';
 
 // Follow the in-app language setting (the UI root's lang), not only the
 // browser locale, so these screens switch language with the rest of Hex.
@@ -252,6 +254,7 @@ function evidenceList(items) {
     if (kind === 'signature-hint' && detail) return text(`既知の関数に似ている: ${detail}`, `signature hint: ${detail}`);
     if (kind === 'signature' && detail) return text(`既知の関数と一致: ${detail}`, `known signature: ${detail}`);
     if (kind === 'system-library' && detail) return text(`システムライブラリ: ${detail}`, `system library: ${detail}`);
+    if (kind === 'vendor' && detail) return text(`ライブラリ: ${detail}`, `library: ${detail}`);
     return raw;
   }).join(' · ');
 }
@@ -318,6 +321,14 @@ function renderCanonicalFunctionOverview(app, router, route, meta, queries) {
     return { root:s.root };
   }
   const s = screen(currentFunctionName(app, address), { id:'function', subtitle:addressText(address), actions });
+  markMission(app, 'open-function', address);
+  const libInfo = libraryInfoAt(app, address);
+  if (isFoldable(libInfo)) {
+    s.body.append(h('p', 'ui-hint ui-library-note', text(
+      `ライブラリ: ${libInfo.vendor}（${libraryKindLabel(libInfo.kind, true)}）`,
+      `Library: ${libInfo.vendor} (${libraryKindLabel(libInfo.kind, false)})`,
+    )));
+  }
   let unsubNotes = null;
   let overviewDisposed = false;
   const syncLiveName = () => {
